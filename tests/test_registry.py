@@ -10,7 +10,7 @@ def all_sources():
 
 
 def test_only_keeps_named_sources(all_sources):
-    assert [s.name for s in select_sources(all_sources, only=["crtsh", "amass"])] == ["crtsh", "amass"]
+    assert [s.name for s in select_sources(all_sources, only=["crtsh", "bbot"])] == ["crtsh", "bbot"]
 
 
 def test_exclude_drops_named_sources(all_sources):

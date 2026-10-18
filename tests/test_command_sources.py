@@ -3,7 +3,7 @@ import json
 import pytest
 
 from conftest import pairs
-from easm.sources.tools import Amass, Bbot, Dnstwist, Subfinder
+from easm.sources.tools import Bbot, Dnstwist, Subfinder
 
 D = "example.com"
 
@@ -30,7 +30,6 @@ def _contains(argv: list[str], flags: list[str]) -> bool:
     ("cls", "flags"),
     [
         (Bbot, ["-rf", "passive"]),
-        (Amass, ["-passive"]),
         (Subfinder, ["-d", D]),
     ],
 )
@@ -49,7 +48,7 @@ def test_dnstwist_never_enables_active_probes():
 
 
 def test_command_source_unavailable_when_binary_missing():
-    assert Amass(runner=Recorder(), which=lambda _: None).available() is False
+    assert Subfinder(runner=Recorder(), which=lambda _: None).available() is False
 
 
 def test_bbot_parses_dns_name_events_with_resolved_hosts():
@@ -68,16 +67,12 @@ def test_bbot_parses_dns_name_events_with_resolved_hosts():
     }
 
 
-def test_amass_extracts_names_from_graph_style_output():
-    stdout = (
-        "www.example.com (FQDN) --> a_record --> 93.184.216.34 (IPAddress)\n"
-        "example.com (FQDN) --> ns_record --> ns1.dnshost.net (FQDN)\n"
-        "dev.example.com\n"
-    )
-    assert {h for h, _ in pairs(Amass(runner=Recorder(stdout)).collect(D))} == {
-        "www.example.com",
-        "example.com",
-        "dev.example.com",
+def test_subfinder_keeps_only_in_scope_names_from_stdout():
+    stdout = "www.example.com\nDEV.example.com\nexample.com.attacker.net\n[WRN] rate limited by chaos\n"
+
+    assert pairs(Subfinder(runner=Recorder(stdout)).collect(D)) == {
+        ("www.example.com", None),
+        ("dev.example.com", None),
     }
 
 

@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 import httpx
 
 from easm.sources.base import Source
-from easm.sources.tools import Amass, Bbot, Dnstwist, Subfinder
+from easm.sources.tools import Bbot, Dnstwist, Subfinder
 from easm.sources.web import CertSpotter, CrtSh, HackerTarget, Otx, RapidDns, Shodan, UrlScan, VirusTotal, Wayback
 
 
@@ -23,7 +23,6 @@ def build_sources(http: httpx.Client, env: Mapping[str, str]) -> list[Source]:
         Shodan(http, env.get("SHODAN_API_KEY")),
         VirusTotal(http, env.get("VIRUSTOTAL_API_KEY")),
         Subfinder(),
-        Amass(),
         Bbot(),
         Dnstwist(),
     ]

@@ -46,7 +46,6 @@ corroborate each finding.
 | Shodan DNS | Subdomains + records | **required** `SHODAN_API_KEY` |
 | VirusTotal | Subdomain relations | **required** `VIRUSTOTAL_API_KEY` (free tier) |
 | subfinder | CLI, passive by design | binary on PATH |
-| amass | CLI, `enum -passive` | binary on PATH |
 | bbot | CLI, `-p subdomain-enum -rf passive` | binary on PATH (Linux/macOS/WSL) |
 | dnstwist | Lookalike domains, DNS only (no `--mxcheck/--banners/--lsh/--phash`) | bundled |
 | dnspython | A/AAAA/CNAME resolution of every discovered name | none |
@@ -58,7 +57,7 @@ a rate limit is recorded in `assets.json` and the rest of the run continues. HTT
 and 429 (honouring `Retry-After`).
 
 Optional tools: `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`,
-`go install github.com/owasp-amass/amass/v4/...@master`, `pipx install bbot`.
+`uv tool install bbot`.
 
 ## Development
 

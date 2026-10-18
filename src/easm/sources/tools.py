@@ -12,27 +12,16 @@ from easm.names import extract_hostnames
 from easm.sources.base import CommandSource
 
 
-class _HostnameScraper(CommandSource):
-    """Tools whose stdout we only need to scrape for in-scope hostnames."""
-
-    def parse(self, output: str, domain: str) -> Iterator[Observation]:
-        return (Observation(self.name, h) for h in extract_hostnames(output, domain))
-
-
-class Amass(_HostnameScraper):
-    name = binary = "amass"
-
-    def argv(self, domain: str) -> list[str]:
-        return [self.binary, "enum", "-passive", "-d", domain, "-timeout", "20"]
-
-
-class Subfinder(_HostnameScraper):
+class Subfinder(CommandSource):
     """ProjectDiscovery subfinder: passive-only by design."""
 
     name = binary = "subfinder"
 
     def argv(self, domain: str) -> list[str]:
         return [self.binary, "-d", domain, "-silent", "-all"]
+
+    def parse(self, output: str, domain: str) -> Iterator[Observation]:
+        return (Observation(self.name, h) for h in extract_hostnames(output, domain))
 
 
 class Bbot(CommandSource):
