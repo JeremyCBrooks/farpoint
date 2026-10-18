@@ -52,6 +52,7 @@ corroborate each finding.
 | Shodan InternetDB | Ports/CVEs/hostnames per IP | none |
 | RDAP (IANA bootstrap → RIR) | IP owner and network | none |
 
+Keys are read from the environment or from a `.env` file in the current directory (shell wins).
 Sources with no key or binary are skipped and listed in the summary. A source that errors or hits
 a rate limit is recorded in `assets.json` and the rest of the run continues. HTTP calls retry 5xx
 and 429 (honouring `Retry-After`).

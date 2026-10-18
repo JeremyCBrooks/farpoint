@@ -41,7 +41,22 @@ def _csv(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def load_dotenv(path: Path) -> None:
+    """Set KEY=value pairs from `path` (if present) without overriding variables already in the environment."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        if not sep or not key or key.startswith("#"):
+            continue
+        value = value.split(" #", 1)[0].strip().strip("'\"")
+        if value:
+            os.environ.setdefault(key, value)
+
+
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv(Path(".env"))
     parser = _parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(message)s", stream=sys.stderr)
