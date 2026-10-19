@@ -20,13 +20,26 @@ uv run easm example.com --exclude dnstwist   # dnstwist is the slowest source (s
 
 ## Output (`--out`, default `./out`)
 
+Runs **accumulate**: each run is merged into the inventory already in the output directory, so you
+can scan domains one at a time, re-run a source that failed, or re-scan weekly into the same folder.
+Hosts, IPs and lookalikes are de-duplicated across runs and their IPs/CNAMEs/sources/ports/CVEs
+unioned; `resolves` and IP owner take the latest run's answer when it has one. Every row carries
+`first_seen`/`last_seen` (UTC), so `first_seen` = the latest `updated_at` means "new this run".
+To start fresh, use a new `--out` or delete the directory.
+
 | File | Contents |
 |---|---|
 | `hosts.txt` / `ips.txt` | Plain sorted lists, good for piping into other tools |
-| `hosts.csv` | hostname, resolves (yes/no), ips, cnames, sources |
-| `ips.csv` | ip, org, network, ports, vulns, hostnames, sources |
+| `hosts.csv` | hostname, resolves (yes/no/blank = unchecked), ips, cnames, sources, first/last seen |
+| `ips.csv` | ip, org, network, ports, vulns, hostnames, sources, first/last seen |
 | `lookalikes.csv` | Registered typosquat/homoglyph domains and their IPs |
-| `assets.json` | Everything above, plus per-source errors and skipped sources |
+| `assets.json` | The inventory itself: everything above, plus `runs` (per-run domains, errors, skipped sources) |
+
+`assets.json` is the source of truth; the other files are regenerated from it on every run. Writes
+are atomic, and on Linux/macOS locked so concurrent runs into one folder don't lose results (on
+Windows, don't run two scans into the same folder at once). A run refuses to start if the existing
+`assets.json` can't be read; if it becomes unreadable mid-scan, the run is saved beside it as
+`assets.unmerged-<time>.json` instead.
 
 `resolves=no` with IPs listed means a **historical** record: the name was in CT/passive DNS but no
 longer resolves. These are worth checking for dangling DNS. `sources` shows which datasets

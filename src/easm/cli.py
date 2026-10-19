@@ -13,7 +13,7 @@ import httpx
 from easm.enrich import InternetDb, Rdap
 from easm.names import parse_domains
 from easm.pipeline import Pipeline
-from easm.output import write_outputs
+from easm.output import ReportError, load_report, write_outputs
 from easm.resolve import DnsResolver
 from easm.sources import build_sources, select_sources
 
@@ -78,6 +78,11 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    try:
+        load_report(args.out)  # fail before a long scan, not after it
+    except ReportError as exc:
+        parser.error(str(exc))
+
     pipeline = Pipeline(
         sources=sources,
         lookup=None if args.no_resolve else DnsResolver(args.nameserver).lookup,
@@ -85,16 +90,23 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
     )
     inv = pipeline.run(domains)
-    write_outputs(inv, args.out)
+    try:
+        report = write_outputs(inv, args.out)
+    except ReportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
-    live = sum(1 for h in inv.hosts.values() if h.resolves)
-    print(f"domains:    {', '.join(inv.domains)}")
-    print(f"hostnames:  {len(inv.hosts)} ({live} resolving)")
-    print(f"ips:        {len(inv.ips)}")
-    print(f"lookalikes: {len(inv.lookalikes)}")
+    new = report["runs"][-1]["new"]
+    live = sum(1 for h in report["hosts"] if h["resolves"])
+    print(f"this run:   {', '.join(inv.domains)}")
+    runs = len(report["runs"])
+    print(f"inventory:  {len(report['domains'])} domains, {runs} run{'s' if runs != 1 else ''} merged")
+    print(f"hostnames:  {len(report['hosts'])} ({live} resolving, {new['hosts']} new)")
+    print(f"ips:        {len(report['ips'])} ({new['ips']} new)")
+    print(f"lookalikes: {len(report['lookalikes'])} ({new['lookalikes']} new)")
     if inv.skipped:
         print(f"skipped:    {', '.join(inv.skipped)} (no API key / not installed)")
     if inv.errors:
-        print(f"errors:     {len(inv.errors)} (see assets.json)")
+        print(f"errors:     {len(inv.errors)} this run (see assets.json)")
     print(f"output:     {args.out.resolve()}")
     return 0
