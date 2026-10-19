@@ -33,7 +33,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, cached_property
 from importlib import resources
 from pathlib import Path
 
@@ -48,6 +48,8 @@ W_COOC, W_POPULAR = 0.3, 0.3
 W_FLIP, W_DROP, W_NUMBER, W_PREFIX, W_ACROSS = 0.3, 0.3, 0.25, 0.5, 0.8
 W_WORD, WORD_SCALE = 0.15, 100  # the standalone word at rank r scores W_WORD / (1 + r / WORD_SCALE)
 W_WEAK = 0.4  # variants of a name never seen with an address (often a source's junk) count for less
+W_CORPUS, W_CORPUS_WORD = 0.05, 0.3 # cross-organisation evidence, when a corpus is available
+CORPUS_SMOOTHING = 10  # a corpus share is n / (organisations + this): a modifier seen at 3 of 4 is no certainty
 MODS_PER_STEM = 40
 
 _RUN_RE = re.compile(r"[a-z]+|[0-9]+|[^a-z0-9]+")
@@ -64,23 +66,53 @@ class GuessConfig:
 
 
 @dataclass(frozen=True)
-class Prior:
-    """Naming habits shared across organisations, from a popularity ranking of subdomain labels."""
+class Corpus:
+    """Naming statistics across many organisations, built by easm.corpus: how many organisations use
+    each modifier, use two modifiers on one stem (BARE: the stem also exists alone), or have a
+    standalone name."""
 
-    words: Mapping[str, int]  # popular standalone label -> rank, 0 = most common
+    orgs: int
+    modifiers: Mapping[str, int]
+    cooccur: Mapping[str, Mapping[str, int]]
+    words: Mapping[str, int]
 
     @staticmethod
-    def from_lines(lines: Iterable[str]) -> Prior:
+    def from_json(data: Mapping) -> Corpus:
+        return Corpus(data["orgs"], data["modifiers"], data["cooccur"], data["words"])
+
+    def follows(self, own: Iterable[str]) -> dict[str, tuple[float, str]]:
+        """Modifiers organisations use on a stem that has `own`: mod -> (best share of organisations
+        with one of `own` that also use it on the same stem, smoothed towards zero; which one)."""
+        best: dict[str, tuple[float, str]] = {}
+        for o in own:
+            base = self.orgs if o == BARE else self.modifiers.get(o, 0)
+            for mod, n in self.cooccur.get(o, {}).items() if base else ():
+                if n / (base + CORPUS_SMOOTHING) > best.get(mod, (0.0, ""))[0]:
+                    best[mod] = (n / (base + CORPUS_SMOOTHING), o)
+        return best
+
+
+@dataclass(frozen=True)
+class Prior:
+    """Naming habits shared across organisations: a popularity ranking of subdomain labels and,
+    when built, a corpus of how organisations combine them."""
+
+    words: Mapping[str, int]  # popular standalone label -> rank, 0 = most common
+    corpus: Corpus | None = None
+
+    @staticmethod
+    def from_lines(lines: Iterable[str], corpus: Corpus | None = None) -> Prior:
         """`lines`: labels, most popular first."""
         ranked: dict[str, int] = {}
         for word in _clean(lines):
             ranked.setdefault(word, len(ranked))
-        return Prior(ranked)
+        return Prior(ranked, corpus)
 
-    @property
+    @cached_property
     def dictionary(self) -> frozenset[str]:
         """Words a run-together label may end in (athenauat = athena + uat)."""
-        return frozenset(w for w in self.words if w.isalpha() and len(w) >= 2)
+        corpus_mods = self.corpus.modifiers if self.corpus else {}
+        return frozenset(w for w in [*self.words, *corpus_mods] if w.isalpha() and len(w) >= 2)
 
 
 def _clean(lines: Iterable[str]) -> list[str]:
@@ -89,9 +121,11 @@ def _clean(lines: Iterable[str]) -> list[str]:
 
 
 @cache
-def bundled_prior() -> Prior:
-    text = resources.files("easm.data").joinpath("subdomains.txt").read_text(encoding="utf-8")
-    return Prior.from_lines(text.splitlines())
+def bundled_prior(corpus: bool = True) -> Prior:
+    data = resources.files("easm.data")
+    built = data.joinpath("corpus.json")
+    stats = Corpus.from_json(json.loads(built.read_text(encoding="utf-8"))) if corpus and built.is_file() else None
+    return Prior.from_lines(data.joinpath("subdomains.txt").read_text(encoding="utf-8").splitlines(), stats)
 
 
 def render(label: Label) -> str:
@@ -151,8 +185,9 @@ class Taxonomy:
         return tuple(tokens) or (("", ""),)
 
     def _split(self, run: str) -> list[str]:
-        """portaltest -> [portal, test]: a known word followed by a modifier, longest word first."""
-        for i in range(len(run) - 2, 2, -1):
+        """portaltest -> [portal, test]: a known word followed by a modifier, longest word first. Both
+        parts have at least three letters, or ordinary words split (testing -> test + ing)."""
+        for i in range(len(run) - 3, 2, -1):
             if run[:i] in self.words and run[i:] in self.modifier_vocab:
                 return [run[:i], run[i:]]
         return [run]
@@ -180,15 +215,22 @@ class Taxonomy:
         """Modifiers `stem` has not been seen with, best first, each with why it scored as it did."""
         if stem not in self._mod_cache:
             own = self.stem_mods.get(stem, {BARE})
-            pool = set(self.mod_stems) - own - {BARE, stem}
+            follows = self.prior.corpus.follows(own) if self.prior.corpus else {}
+            pool = (set(self.mod_stems) | set(follows)) - own - {BARE, stem}
             scored = []
             for mod in pool:
                 cooc, via = max(((self.cooc[o][mod] / self.mod_stems[o], o) for o in own if self.mod_stems[o]), default=(0.0, ""))
                 popular = self.mod_stems[mod] / self.n_modified
-                score = W_COOC * cooc + W_POPULAR * popular
+                share, after = follows.get(mod, (0.0, ""))
+                score = W_COOC * cooc + W_POPULAR * popular + W_CORPUS * share
                 seen = f"with '{via}'" if via else "that exist alone"
                 why = [f"{self.cooc[via][mod]}/{self.mod_stems[via]} stems {seen} also have it"] if cooc else []
                 why += [f"used by {self.mod_stems[mod]}/{self.n_modified} modified stems"] if popular else []
+                if share:
+                    corpus = self.prior.corpus
+                    base = corpus.modifiers[after] if after != BARE else corpus.orgs
+                    elsewhere = f"'{after}'" if after else "a stem that exists alone"
+                    why.append(f"{corpus.cooccur[after][mod]} of {base} organisations with {elsewhere} use it on the same stem")
                 scored.append((mod, score, "; ".join(why)))
             scored.sort(key=lambda ms: (-ms[1], ms[0]))
             self._mod_cache[stem] = scored[:MODS_PER_STEM]
@@ -227,6 +269,10 @@ class Taxonomy:
         self._across(domain, add)
         for word, rank in self.prior.words.items():  # most of the candidates: explained only on request
             add([((word, ""),)], "word", W_WORD / (1 + rank / WORD_SCALE), f"#{rank + 1} most popular subdomain name" if explain else "")
+        corpus = self.prior.corpus
+        for word, n in corpus.words.items() if corpus else ():
+            why = f"standalone name at {n}/{corpus.orgs} organisations" if explain else ""
+            add([((word, ""),)], "corpus-word", W_CORPUS_WORD * n / corpus.orgs, why)
         totals = {name: sum(score for score, _ in kinds.values()) for name, kinds in scores.items()}
         return {name: scores[name] for name in sorted(totals, key=lambda name: (-totals[name], name))}
 
@@ -327,14 +373,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--sample", type=int, default=300, help="hide at most this many hosts (default: 300)")
     p.add_argument("--rank", action="append", default=[], help="also report where this hostname ranks (repeatable)")
     p.add_argument("--show", type=int, default=0, help="print the top N candidates per domain")
+    p.add_argument("--no-corpus", action="store_true", help="ignore the cross-organisation corpus, for comparison")
     p.add_argument("-v", "--verbose", action="store_true", help="print every hidden host's rank")
     args = p.parse_args(argv)
+    prior = bundled_prior(corpus=not args.no_corpus)
 
     report = json.loads((args.out / "assets.json").read_text(encoding="utf-8"))
     hosts = {h["hostname"]: h.get("cnames", []) for h in report["hosts"]}
     domains = report["domains"]
     weak = {h["hostname"] for h in report["hosts"] if not h.get("ips")}
-    model = Taxonomy(hosts, domains, weak=weak)
+    model = Taxonomy(hosts, domains, prior, weak)
     for name in args.rank:
         ranked = model.explain(root_of(name, domains) or "")
         order = list(ranked)
@@ -344,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     for domain in domains if args.show else []:
         print(f"top {args.show} for {domain}:", *model.candidates(domain)[: args.show], sep="\n  ")
 
-    ranks = leave_one_out(hosts, domains, args.sample, weak=weak)
+    ranks = leave_one_out(hosts, domains, args.sample, prior, weak)
     if args.verbose:
         for host, rank in sorted(ranks.items(), key=lambda hr: (hr[1] is None, hr[1] or 0, hr[0])):
             print(f"  {rank if rank else '-':>6}  {host}")

@@ -16,6 +16,7 @@ easm = "easm.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
+corpus = ["cryptography>=42", "psycopg[binary]>=3.1"]  # only for building the naming corpus (python -m easm.corpus)
 
 [build-system]
 requires = ["hatchling"]

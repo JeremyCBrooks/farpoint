@@ -50,6 +50,25 @@ from SecLists (MIT). Popular labels are tried as standalone names (`files`), and
 inventory without any DNS traffic, `uv run python -m easm.guess out` hides each known host in turn and
 reports how often a model learned from the rest ranks it within 100/500/2000 guesses.
 
+### Cross-organisation corpus (optional)
+
+What one organisation's names can't teach (that `dev` usually comes with `prod`, that `-apim` names
+exist) comes from how many other organisations name their hosts. `easm.corpus` builds those statistics:
+it samples organisations from organisation-validated certificates in public CT logs (one domain per
+certificate subject), fetches each one's names from crt.sh's public database (one query at a time;
+organisations too large for its query limit are skipped), and counts each organisation once per modifier, modifier pair and standalone name. When
+`src/easm/data/corpus.json` exists, `--guess` uses it automatically.
+
+```bash
+uv sync --group corpus
+uv run python -m easm.corpus orgs  -d corpus --count 2000     # minutes
+uv run python -m easm.corpus fetch -d corpus                  # hours (resumable; re-run after a stop)
+uv run python -m easm.corpus evaluate -d corpus               # cross-validated: with vs without corpus
+uv run python -m easm.corpus stats -d corpus --exclude example.com --out src/easm/data/corpus.json
+```
+
+Use `--exclude` for any organisation you will evaluate on, so its own names can't leak into the priors.
+
 ## Progress and stopping a scan
 
 In a terminal, easm shows one live line per source and domain: a spinner while it runs, what it is
