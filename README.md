@@ -18,6 +18,7 @@ uv run easm --list-sources                   # what's usable on this machine
 uv run easm example.com --only crtsh,certspotter --no-enrich
 uv run easm example.com --exclude dnstwist   # dnstwist is the slowest source (several minutes)
 uv run easm example.com --guess              # also predict unseen names and test them in DNS (not passive)
+uv run easm example.com --tenants            # also look for its tenants on SaaS platforms (not passive)
 ```
 
 ## Guessing unseen names (`--guess`)
@@ -45,8 +46,8 @@ exist. Only use it where that is acceptable.
 
 Nothing in the model is specific to one organisation. Everything is learned from the names being
 scanned, except a weak prior: `src/easm/data/subdomains.txt`, a popularity ranking of subdomain labels
-from SecLists (MIT). Popular labels are tried as standalone names (`files`), and the most popular
-1000 are also candidate modifiers, weighted by rank (`dev` #18 far above `uat` #685). To measure it on an
+from SecLists (MIT). Popular labels are tried as standalone names (`files`) and split run-together
+labels (`athenauat` = `athena` + `uat`); modifiers come only from the organisation's own names. To measure it on an
 inventory without any DNS traffic, `uv run python -m easm.guess out` hides each known host in turn and
 reports how often a model learned from the rest ranks it within 100/500/2000 guesses.
 
@@ -68,6 +69,31 @@ uv run python -m easm.corpus stats -d corpus --exclude example.com --out src/eas
 ```
 
 Use `--exclude` for any organisation you will evaluate on, so its own names can't leak into the priors.
+On a 42-organisation pilot the corpus was neutral (cross-validated recall unchanged), so none is bundled.
+
+## Third-party tenants (`--tenants`)
+
+Organisations also exist on other companies' platforms, under names no scan of their own domains
+sees: `example.sharepoint.com`, `example-dev.appiancloud.com`, `example.my.salesforce.com`.
+`--tenants` looks for them, choosing platforms in this order:
+
+1. tenant names a scan domain's TXT records give outright (`EXAMPLE123.onmicrosoft.com`)
+2. platforms the domain's own records say it uses: verification TXT strings
+   (`atlassian-domain-verification`, `MS=`) and SPF includes (`include:spf.appiancloud.com`).
+   Here the organisation's most used modifiers are tried too (`example-dev`, `example-test`)
+3. zones the organisation's CNAMEs point into (this run and earlier ones in `--out`)
+4. every platform in `src/easm/data/tenants.json`, a table of generic tenant name patterns
+
+Tenants are named after each scan domain's first label. Each pattern is first checked with three
+random names: on a platform that answers any name, a tenant counts only if it answers differently.
+Where DNS can't tell (Atlassian, Slack and others answer every name the same way), the bare name is
+kept as **unverified**, and only when the domain's own records name the platform. Each tenant's
+`tie` says what links it to the organisation: `records` (its own TXT/SPF), `cname`, or `name` (a name
+match only, which could be another organisation with the same name). `--tenant-budget N` caps the
+lookups (default 800, a few seconds).
+
+**Not passive:** the platforms' nameservers see the lookups (the organisation's own nameservers see
+one TXT query per domain). Results go to `tenants.csv` and the `tenants` section of `assets.json`.
 
 ## Progress and stopping a scan
 
@@ -98,6 +124,7 @@ To start fresh, use a new `--out` or delete the directory.
 | `hosts.csv` | hostname, resolves (yes/no/blank = unchecked), ips, cnames, sources, first/last seen |
 | `ips.csv` | ip, org, network, ports, vulns, hostnames, sources, first/last seen |
 | `lookalikes.csv` | Registered typosquat/homoglyph domains and their IPs |
+| `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, evidence, ips, cnames, first/last seen |
 | `assets.json` | The inventory itself: everything above, plus `runs` (per-run domains, errors, skipped sources) |
 
 `assets.json` is the source of truth; the other files are regenerated from it on every run. Writes

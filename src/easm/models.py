@@ -56,6 +56,20 @@ class LookalikeRecord:
     sources: set[str] = field(default_factory=set)
 
 
+@dataclass
+class TenantRecord:
+    """A name on a third-party platform that carries the organisation's name (see easm.tenants)."""
+
+    hostname: str
+    vendor: str
+    domain: str  # the scan domain whose name it carries
+    tie: str  # what links it to the organisation: "records", "cname" or "name" (a name match only)
+    verified: bool  # False: the platform answers any name, so DNS can't tell whether it exists
+    evidence: set[str] = field(default_factory=set)
+    ips: set[str] = field(default_factory=set)
+    cnames: set[str] = field(default_factory=set)
+
+
 @dataclass(frozen=True)
 class SourceError:
     source: str
@@ -69,6 +83,7 @@ class Inventory:
         self.hosts: dict[str, HostRecord] = {}
         self.ips: dict[str, IpRecord] = {}
         self.lookalikes: dict[str, LookalikeRecord] = {}
+        self.tenants: dict[str, TenantRecord] = {}
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial

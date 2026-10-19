@@ -13,6 +13,11 @@ class Resolution:
     ips: tuple[str, ...] = ()
     cnames: tuple[str, ...] = ()
     timed_out: bool = False  # no answer either way: the name is unchecked, not "doesn't resolve"
+    exists: bool = False  # the name has records, even if no address (an MX-only name)
+
+    @property
+    def found(self) -> bool:
+        return bool(self.ips or self.cnames) or self.exists
 
 
 class DnsResolver:
@@ -38,14 +43,17 @@ class DnsResolver:
     def lookup(self, hostname: str) -> Resolution:
         ips: list[str] = []
         cnames: list[str] = []
-        timed_out = nxdomain = False
+        timed_out = nxdomain = nodata = False
         for rdtype in ("A", "AAAA"):
             try:
                 answer = self._resolve(hostname, rdtype)
             except dns.resolver.NXDOMAIN:
                 nxdomain = True
                 continue
-            except (dns.resolver.NoAnswer, dns.resolver.NoNameservers):
+            except dns.resolver.NoAnswer:
+                nodata = True
+                continue
+            except dns.resolver.NoNameservers:
                 continue
             except dns.exception.Timeout:
                 timed_out = True
@@ -54,4 +62,12 @@ class DnsResolver:
             for rrset in answer.chaining_result.cnames:
                 cnames.extend(r.target.to_text().rstrip(".") for r in rrset)
         unchecked = timed_out and not ips and not nxdomain
-        return Resolution(tuple(dict.fromkeys(ips)), tuple(dict.fromkeys(cnames)), timed_out=unchecked)
+        return Resolution(tuple(dict.fromkeys(ips)), tuple(dict.fromkeys(cnames)), timed_out=unchecked, exists=nodata and not nxdomain)
+
+    def txt(self, hostname: str) -> list[str]:
+        """The name's TXT strings (each record's parts joined); none if it has none or doesn't exist."""
+        try:
+            answer = self._resolve(hostname, "TXT")
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+            return []
+        return [b"".join(r.strings).decode("utf-8", "replace") for r in answer]

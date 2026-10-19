@@ -26,6 +26,7 @@ except ImportError:  # Windows: no advisory locking
     fcntl = None
 
 from easm.models import Inventory, Observation
+from easm.tenants import TIES as _TIES
 
 
 def _ip_key(ip: str) -> tuple[int, int]:
@@ -69,6 +70,22 @@ def _ip_rows(inv: Inventory) -> list[dict]:
     ]
 
 
+def _tenant_rows(inv: Inventory) -> list[dict]:
+    return [
+        {
+            "tenant": t.hostname,
+            "vendor": t.vendor,
+            "domain": t.domain,
+            "tie": t.tie,
+            "verified": t.verified,
+            "evidence": sorted(t.evidence),
+            "ips": _ips(t.ips),
+            "cnames": sorted(t.cnames),
+        }
+        for t in sorted(inv.tenants.values(), key=lambda t: t.hostname)
+    ]
+
+
 class ReportError(Exception):
     """The existing assets.json can't be read, so merging into it would lose history."""
 
@@ -85,6 +102,7 @@ _ROW_LISTS = {
     "hosts": ("hostname", ("ips", "cnames", "sources")),
     "ips": ("ip", ("ports", "vulns", "hostnames", "sources")),
     "lookalikes": ("domain", ("ips", "sources")),
+    "tenants": ("tenant", ("evidence", "ips", "cnames")),
 }
 
 
@@ -163,14 +181,25 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     def lookalike(old, new):
         return {"ips": _ips(set(old.get("ips", [])) | set(new["ips"])), "sources": _union(old.get("sources", []), new["sources"])}
 
+    def tenant(old, new):
+        stronger = max(old, new, key=lambda row: _TIES.index(row.get("tie")) if row.get("tie") in _TIES else -1)
+        return {
+            "vendor": stronger.get("vendor"),
+            "tie": stronger.get("tie"),
+            "verified": bool(old.get("verified") or new["verified"]),
+            **{f: _union(old.get(f, []), new[f]) for f in ("evidence", "cnames")},
+            "ips": _ips(set(old.get("ips", [])) | set(new["ips"])),
+        }
+
     hosts, new_hosts = _merge_rows(prior.get("hosts", []), current["hosts"], "hostname", host, stamp, prior_stamp)
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
     lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), current["lookalikes"], "domain", lookalike, stamp, prior_stamp)
+    tenants, new_tenants = _merge_rows(prior.get("tenants", []), current.get("tenants", []), "tenant", tenant, stamp, prior_stamp)
     run = {
         "at": stamp,
         "domains": current["domains"],
         "interrupted": bool(current.get("interrupted")),
-        "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes},
+        "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes, "tenants": new_tenants},
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
     }
@@ -180,6 +209,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "hosts": sorted(hosts, key=lambda h: h["hostname"]),
         "ips": sorted(ips, key=lambda r: _ip_key(r["ip"])),
         "lookalikes": sorted(lookalikes, key=lambda r: r["domain"]),
+        "tenants": sorted(tenants, key=lambda r: r["tenant"]),
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
         "runs": sorted([*prior.get("runs", []), run], key=lambda r: r["at"]),
@@ -243,6 +273,7 @@ def run_report(inv: Inventory) -> dict:
             {"domain": r.domain, "ips": _ips(r.ips), "sources": sorted(r.sources)}
             for r in sorted(inv.lookalikes.values(), key=lambda r: r.domain)
         ],
+        "tenants": _tenant_rows(inv),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
         "interrupted": inv.interrupted,
@@ -258,6 +289,8 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
     write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "vulns", "hostnames", "sources", *seen]))
     write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
+    if report.get("tenants"):  # only once --tenants has found some
+        write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "evidence", "ips", "cnames", *seen]))
 
 
 def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None) -> dict:

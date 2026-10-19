@@ -22,6 +22,7 @@ from easm.output import Checkpointer, ReportError, load_report, now_stamp, recov
 from easm.progress import LiveReporter, NullReporter
 from easm.resolve import DnsResolver
 from easm.sources import build_sources, select_sources
+from easm.tenants import TenantConfig
 
 USER_AGENT = "easm/0.1 (passive OSINT discovery)"
 
@@ -43,6 +44,14 @@ def _parser() -> argparse.ArgumentParser:
         "(not passive: the domain's own nameservers see one query per guess)",
     )
     p.add_argument("--guess-budget", type=int, default=2000, metavar="N", help="DNS lookups per domain for --guess (default: 2000)")
+    p.add_argument(
+        "--tenants",
+        action="store_true",
+        help="also look for the organisation's tenants on SaaS and cloud platforms (example.sharepoint.com), "
+        "chosen from the domains' TXT/SPF records, their CNAMEs and generic name patterns "
+        "(not passive: the platforms' nameservers see the lookups)",
+    )
+    p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
     p.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout in seconds (default: 60)")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--list-sources", action="store_true", help="show sources and whether each is usable here")
@@ -74,6 +83,12 @@ def _guess_config(budget: int, report: dict | None) -> GuessConfig:
     hosts = report["hosts"] if report else []
     known = {h["hostname"]: h.get("cnames", []) for h in hosts}
     return GuessConfig(budget=budget, known=known, known_weak=frozenset(h["hostname"] for h in hosts if not h.get("ips")))
+
+
+def _tenant_config(budget: int, report: dict | None) -> TenantConfig:
+    """Earlier runs' hosts also teach the organisation's modifiers, and their CNAMEs which platforms it uses."""
+    hosts = report["hosts"] if report else []
+    return TenantConfig(budget=budget, known={h["hostname"]: h.get("cnames", []) for h in hosts})
 
 
 def _on_interrupt(stop_scan: bool):
@@ -109,10 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     domains = parse_domains(lines)
     if not domains:
         parser.error("no valid domains given")
-    if args.guess and args.no_resolve:
-        parser.error("--guess needs DNS resolution; drop --no-resolve")
+    for flag in ("guess", "tenants"):
+        if getattr(args, flag) and args.no_resolve:
+            parser.error(f"--{flag} needs DNS resolution; drop --no-resolve")
     if args.guess_budget < 1:
         parser.error("--guess-budget must be at least 1")
+    if args.tenant_budget < 1:
+        parser.error("--tenant-budget must be at least 1")
     try:
         sources = select_sources(all_sources, only=_csv(args.only), exclude=_csv(args.exclude))
     except ValueError as exc:
@@ -131,14 +149,17 @@ def main(argv: list[str] | None = None) -> int:
         logging.getLogger().setLevel(logging.ERROR)  # failures show on their progress line instead
     checkpoint = Checkpointer(args.out)
     reporter = LiveReporter(console) if live else NullReporter()
+    resolver = DnsResolver(args.nameserver)
     pipeline = Pipeline(
         sources=sources,
-        lookup=None if args.no_resolve else DnsResolver(args.nameserver).lookup,
+        lookup=None if args.no_resolve else resolver.lookup,
         enrichers=[] if args.no_enrich else [InternetDb(http, retries=2), Rdap(http, retries=2)],  # one per IP: fail fast
         workers=args.workers,
         reporter=reporter,
         checkpoint=checkpoint,
         guess=_guess_config(args.guess_budget, prior_report) if args.guess else None,
+        tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
+        txt=resolver.txt,
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -184,6 +205,9 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer) -> int:
     print(f"hostnames:  {len(report['hosts'])} ({live} resolving, {new['hosts']} new)")
     print(f"ips:        {len(report['ips'])} ({new['ips']} new)")
     print(f"lookalikes: {len(report['lookalikes'])} ({new['lookalikes']} new)")
+    if report["tenants"]:
+        verified = sum(1 for t in report["tenants"] if t["verified"])
+        print(f"tenants:    {len(report['tenants'])} ({verified} verified in DNS, {new['tenants']} new)")
     if inv.skipped:
         print(f"skipped:    {', '.join(inv.skipped)} (no API key / not installed)")
     if inv.errors:

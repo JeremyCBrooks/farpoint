@@ -1,4 +1,4 @@
-"""Orchestration: sources -> scoped inventory -> DNS resolution -> (opt-in) guessing -> IP enrichment."""
+"""Orchestration: sources -> scoped inventory -> DNS resolution -> (opt-in) tenants and guessing -> IP enrichment."""
 
 from __future__ import annotations
 
@@ -12,11 +12,12 @@ from dataclasses import dataclass, field
 from easm import runtime
 from easm.enrich import Enricher
 from easm.guess import GuessConfig, Taxonomy, parent_of
-from easm.models import Inventory, Observation, SourceError
+from easm.models import Inventory, Observation, SourceError, TenantRecord
 from easm.names import is_public_ip
 from easm.progress import NullReporter, ProgressReporter
 from easm.resolve import Resolution
 from easm.sources.base import Source
+from easm.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, org_modifiers, org_tokens, plan, random_name
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ class Pipeline:
     reporter: ProgressReporter = field(default_factory=NullReporter)
     checkpoint: Callable[[Inventory, Mapping[Key, list[Observation]]], None] | None = None  # after each job: (inv, in-progress pages)
     guess: GuessConfig | None = None  # predict unseen names and test them in DNS (needs `lookup`)
+    tenants: TenantConfig | None = None  # look for the organisation's tenants on SaaS platforms (needs `lookup`, `txt`)
+    txt: Callable[[str], list[str]] | None = None  # a name's TXT strings
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -48,6 +51,8 @@ class Pipeline:
             self._collect(inv)
             if self.lookup:
                 self._resolve(inv)
+                if self.tenants and self.txt:
+                    self._tenants(inv)
                 if self.guess:
                     self._guess(inv)
             if self.enrichers:
@@ -172,6 +177,62 @@ class Pipeline:
             for (_, host), res in self._fan_out(inv, jobs, on_done=tick):
                 _record_resolution(inv, host, res)
             pending = set(inv.hosts) - attempted
+
+    def _tenants(self, inv: Inventory) -> None:
+        """Tenant patterns from the domains' own TXT/SPF records, their CNAMEs and the bundled table,
+        strongest tie first, each checked with random names and then tried, within the budget."""
+        config = self.tenants
+        txt: dict[str, list[str]] = {}
+        for (_, domain), strings in self._fan_out(inv, {("tenants-txt", d): (lambda d=d: self.txt(d)) for d in inv.domains}):
+            txt[domain] = strings
+        hosts = {h: set(c) for h, c in config.known.items() if inv.scope_of(h)}
+        for h, r in inv.hosts.items():
+            hosts[h] = hosts.get(h, set()) | r.cnames
+        probes = plan(inv.domains, txt, [c for cnames in hosts.values() for c in cnames], config.vendors if config.vendors is not None else bundled_vendors())
+        tokens = org_tokens(inv.domains)
+        modifiers, sep = org_modifiers(hosts, inv.domains)
+
+        budget, chosen = config.budget, []
+        for probe in probes:
+            names = candidate_names(probe, tokens, modifiers, sep)[: max(budget - WILDCARD_PROBES, 0)]
+            if not names:
+                break
+            budget -= WILDCARD_PROBES + len(names)
+            chosen.append((probe, names))
+        done, failed, total = [0], [0], [sum(WILDCARD_PROBES + len(names) for _, names in chosen)]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("tenants", done[0], total[0], failed[0])
+
+        self.reporter.phase("tenants", 0, total[0])
+        jobs = {("tenants-wildcard", f"{probe.pattern}#{i}"): (lambda p=probe: self.lookup(random_name(p))) for probe, _ in chosen for i in range(WILDCARD_PROBES)}
+        answers: dict[str, list[Resolution]] = {}
+        for (_, key), res in self._fan_out(inv, jobs, on_done=tick):
+            answers.setdefault(key.rsplit("#", 1)[0], []).append(res)
+        wildcards: dict[str, Resolution | None] = {}
+        for probe, _ in chosen:
+            got = answers.get(probe.pattern, [])
+            if len(got) < WILDCARD_PROBES or any(a.timed_out for a in got):
+                inv.errors.append(SourceError("tenants", probe.pattern, "wildcard check got no answer; pattern not tried"))
+            elif found := [a for a in got if a.found]:
+                wildcards[probe.pattern] = Resolution(
+                    tuple(sorted({ip for a in found for ip in a.ips})), tuple(sorted({c for a in found for c in a.cnames})), exists=True
+                )
+            else:
+                wildcards[probe.pattern] = None
+        tries = {name: (probe, domain, bare) for probe, names in chosen if probe.pattern in wildcards for name, domain, bare in names}
+        jobs = {("tenants", name): (lambda n=name: self.lookup(n)) for name in tries}
+        for (_, name), res in self._fan_out(inv, jobs, on_done=tick):
+            probe, domain, bare = tries[name]
+            if res.timed_out or not res.found:
+                continue
+            verified = not _wildcard_answer(res, wildcards[probe.pattern])
+            tie, evidence = probe.tie_for(domain)
+            if verified or (bare and tie == "records"):
+                _record_tenant(inv, name, probe.vendor, domain, tie, evidence, verified, res)
+        log.info("tenants: %d found", len(inv.tenants))
 
     def _guess(self, inv: Inventory) -> None:
         """Rounds of: learn the naming taxonomy from everything known, test the best untried candidates
@@ -308,6 +369,18 @@ def _record_resolution(inv: Inventory, host: str, res: Resolution) -> None:
         inv.add(Observation("dns", host, ip))
     for cname in res.cnames:
         inv.add(Observation("dns-cname", cname))
+
+
+def _record_tenant(inv: Inventory, name: str, vendor: str, domain: str, tie: str, evidence: str, verified: bool, res: Resolution) -> None:
+    record = inv.tenants.get(name)
+    if record is None:
+        record = inv.tenants[name] = TenantRecord(name, vendor, domain, tie, verified)
+    elif TIES.index(tie) > TIES.index(record.tie):
+        record.tie, record.vendor = tie, vendor
+    record.verified = record.verified or verified
+    record.evidence.add(evidence)
+    record.ips.update(res.ips)
+    record.cnames.update(res.cnames)
 
 
 def _wildcard_answer(res: Resolution, wildcard: Resolution | None) -> bool:
