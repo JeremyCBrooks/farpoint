@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = Pipeline(
         sources=sources,
         lookup=None if args.no_resolve else DnsResolver(args.nameserver).lookup,
-        enrichers=[] if args.no_enrich else [InternetDb(http), Rdap(http)],
+        enrichers=[] if args.no_enrich else [InternetDb(http, retries=2), Rdap(http, retries=2)],  # one per IP: fail fast
         workers=args.workers,
     )
     inv = pipeline.run(domains)

@@ -1,4 +1,22 @@
 import httpx
+import pytest
+
+from easm.sources import base
+
+
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch):
+    """Record HTTP backoff/pacing sleeps instead of sleeping, advancing the clock the throttle reads."""
+    clock = [1000.0]
+    recorded: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        recorded.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(base.time, "sleep", sleep)
+    monkeypatch.setattr(base.time, "monotonic", lambda: clock[0])
+    return recorded
 
 
 def fake_http(routes: dict) -> httpx.Client:

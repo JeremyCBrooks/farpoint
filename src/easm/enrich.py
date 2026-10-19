@@ -22,6 +22,7 @@ class InternetDb(HttpSource):
     """Shodan InternetDB: free, keyless, pre-collected ports/CVEs/hostnames."""
 
     name = "shodan-internetdb"
+    max_concurrency = 8
 
     def enrich(self, ip: str) -> IpDetails:
         try:
@@ -40,6 +41,7 @@ class Rdap(HttpSource):
     """
 
     name = "rdap"
+    max_concurrency = 8  # spread across the five RIRs
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)

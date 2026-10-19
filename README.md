@@ -54,8 +54,11 @@ corroborate each finding.
 
 Keys are read from the environment or from a `.env` file in the current directory (shell wins).
 Sources with no key or binary are skipped and listed in the summary. A source that errors or hits
-a rate limit is recorded in `assets.json` and the rest of the run continues. HTTP calls retry 5xx
-and 429 (honouring `Retry-After`).
+a rate limit is recorded in `assets.json` (with any pages it returned first kept) and the rest of the run
+continues. HTTP calls are throttled per service (VirusTotal is paced to the free tier's 4 requests/minute,
+Shodan to 1/second) and retry transport errors, 5xx and 429 with exponential backoff and jitter
+(honouring `Retry-After`). DNS timeouts are retried once; a name that still times out is left
+blank in `resolves` rather than reported as `no`.
 
 Optional tools: `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`,
 `uv tool install bbot`.

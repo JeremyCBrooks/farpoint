@@ -17,6 +17,7 @@ class CrtSh(HttpSource):
     """Certificate transparency via crt.sh (no key)."""
 
     name = "crtsh"
+    max_concurrency = 1  # overloaded public service
 
     def collect(self, domain: str) -> Iterator[Observation]:
         rows = self.get("https://crt.sh/", params={"q": f"%.{domain}", "output": "json"}).json()
@@ -63,6 +64,7 @@ class Wayback(HttpSource):
 
     name = "wayback"
     limit = 100_000
+    max_concurrency = 2
 
     def collect(self, domain: str) -> Iterator[Observation]:
         params = {"url": f"*.{domain}", "fl": "original", "collapse": "urlkey", "limit": str(self.limit)}
@@ -75,6 +77,7 @@ class Otx(HttpSource):
     """AlienVault OTX passive DNS (key optional)."""
 
     name = "otx"
+    max_concurrency = 2
 
     def collect(self, domain: str) -> Iterator[Observation]:
         headers = {"X-OTX-API-KEY": self.api_key} if self.api_key else {}
@@ -103,6 +106,7 @@ class RapidDns(HttpSource):
     """rapiddns.io subdomain table (HTML)."""
 
     name = "rapiddns"
+    max_concurrency = 1
 
     def collect(self, domain: str) -> Iterator[Observation]:
         html = self.get(f"https://rapiddns.io/subdomain/{domain}", params={"full": "1"}).text
@@ -119,6 +123,8 @@ class Shodan(HttpSource):
     name = "shodan"
     key_required = True
     max_pages = 5
+    max_concurrency = 1
+    min_interval = 1.0  # API limit: 1 request/second
 
     def collect(self, domain: str) -> Iterator[Observation]:
         for page in range(1, self.max_pages + 1):
@@ -137,6 +143,8 @@ class VirusTotal(HttpSource):
 
     name = "virustotal"
     key_required = True
+    max_concurrency = 1
+    min_interval = 15.5  # free tier: 4 requests/minute
 
     def collect(self, domain: str) -> Iterator[Observation]:
         url: str | None = f"https://www.virustotal.com/api/v3/domains/{domain}/subdomains?limit=40"
