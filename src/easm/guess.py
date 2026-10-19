@@ -11,6 +11,8 @@ are modifiers. Candidates for a domain come from:
     stems and how common they are in this organisation (api-dev -> api-prod, once some other name or
     CNAME target here uses 'prod')
   - joining a modifier the other way (portaltest -> portal-test), dropping one, nearby numbers
+  - the organisation's tenants on other platforms, found by easm.tenants: their words besides its
+    name (example-mft-traffic.vendor.co -> mft, mft-traffic), tried before anything else
   - prefixes reused over many names (www.), names repeated across the input domains
   - popular standalone names from a cross-organisation ranking, for hosts no pattern predicts
 Each kind of evidence contributes its best score once; a candidate's rank is the sum.
@@ -48,9 +50,12 @@ W_COOC, W_POPULAR = 0.3, 0.3
 W_FLIP, W_DROP, W_NUMBER, W_PREFIX, W_ACROSS = 0.3, 0.3, 0.25, 0.5, 0.8
 W_WORD, WORD_SCALE = 0.15, 100  # the standalone word at rank r scores W_WORD / (1 + r / WORD_SCALE)
 W_WEAK = 0.4  # variants of a name never seen with an address (often a source's junk) count for less
+W_TENANT = 1.0  # names taken from the organisation's tenants on other platforms: real names, tried first
+TENANT_NAMES = 10  # most guesses one tenant suggests
 W_CORPUS, W_CORPUS_WORD = 0.05, 0.3 # cross-organisation evidence, when a corpus is available
 CORPUS_SMOOTHING = 10  # a corpus share is n / (organisations + this): a modifier seen at 3 of 4 is no certainty
 MODS_PER_STEM = 40
+RETRY_DAYS = 90  # a guess that didn't exist is tried again after this long
 
 _RUN_RE = re.compile(r"[a-z]+|[0-9]+|[^a-z0-9]+")
 _WORD_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -63,6 +68,9 @@ class GuessConfig:
     prior: Prior | None = None  # None: the bundled one
     known: Mapping[str, Sequence[str]] = field(default_factory=dict)  # earlier runs' hosts -> CNAMEs: learned from, never re-tested
     known_weak: frozenset[str] = frozenset()  # those of them never seen with an address
+    tenants: Mapping[str, str] = field(default_factory=dict)  # earlier runs' verified tenants -> the scan domain each is named after
+    tried: frozenset[str] = frozenset()  # guesses earlier runs tested lately: skipped, so each run goes deeper
+    rate: float | None = None  # at most this many lookups a second (None: as fast as the workers go)
 
 
 @dataclass(frozen=True)
@@ -143,11 +151,18 @@ class Taxonomy:
     """What a set of known hostnames says about how their organisation names hosts."""
 
     def __init__(
-        self, hosts: Mapping[str, Iterable[str]], domains: Sequence[str], prior: Prior | None = None, weak: Iterable[str] = ()
+        self,
+        hosts: Mapping[str, Iterable[str]],
+        domains: Sequence[str],
+        prior: Prior | None = None,
+        weak: Iterable[str] = (),
+        tenants: Mapping[str, str] | None = None,
     ) -> None:
         """`hosts` maps each known hostname to its CNAME targets, which often carry the organisation's
         internal names (portal.example.com -> portal-prod.azurewebsites.net). `weak` names have never had
-        an address: they still teach the taxonomy, but their own variants are tried later."""
+        an address: they still teach the taxonomy, but their own variants are tried later. `tenants` maps
+        the organisation's tenants on other platforms to the scan domain each is named after
+        (example-mft-traffic.vendor.co -> example.com): their other words are likely host names."""
         self.prior = prior or bundled_prior()
         self.domains = list(domains)
         self.known = set(hosts)
@@ -165,7 +180,15 @@ class Taxonomy:
         self.modifier_vocab = hyphenated | self.prior.dictionary
         self.names = [_Name(root, tuple(self.tokenize(label) for label in labels), w) for root, labels, w in lefts]
 
+        own = {text for name in self.names for label in name.labels for text, _ in label}
+        self.tenant_words = {}  # tenant -> (domain, words before the organisation's name, new words after it)
+        for t, d in (tenants or {}).items():
+            before, after = tenant_words(t, d)
+            if any(w not in own for w in after):  # example-dev teaches nothing its own names don't
+                self.tenant_words[t] = (d, before, after)
+        self.words |= {w for _, _, after in self.tenant_words.values() for w in after}
         evidence = [label for name in self.names for label in name.labels]
+        evidence += [self.tokenize("-".join(after)) for _, _, after in self.tenant_words.values()]
         stems = {label[0][0] for label in evidence}
         for targets in hosts.values():
             for target in targets:
@@ -265,6 +288,7 @@ class Taxonomy:
                 weight, note = (W_WEAK, " (never seen with an address)") if name.weak else (1.0, "")
                 source = f"{_render_name(name)}{note}"
                 self._variants(name, lambda labels, kind, score, why: add(labels, kind, score * weight, f"from {source}: {why}"))
+        self._from_tenants(domain, add)
         self._prefixes(domain, add)
         self._across(domain, add)
         for word, rank in self.prior.words.items():  # most of the candidates: explained only on request
@@ -304,6 +328,15 @@ class Taxonomy:
                         number = str(k).zfill(len(text)) if text.startswith("0") else str(k)  # app07 -> app08, app10 -> app9
                         add([first[:i] + ((number, sep),) + first[i + 1 :], *parent], "number", W_NUMBER, f"number {text} -> {number}")
 
+    def _from_tenants(self, domain: str, add: Callable[[Sequence[Label], str, float, str], None]) -> None:
+        """A tenant's words besides the organisation's name, as names under the domain it is named after:
+        example-mft-traffic -> mft-traffic, mft, traffic; uat-example-mft -> also uat-mft, mft-uat."""
+        for tenant, (named_after, before, after) in self.tenant_words.items():
+            if named_after == domain:
+                names = ["-".join(after), *after, *(n for p in before for n in (f"{p}-{after[0]}", f"{after[0]}-{p}"))]
+                for i, name in enumerate(list(dict.fromkeys(names))[:TENANT_NAMES]):
+                    add([self.tokenize(name)], "tenant", W_TENANT * (1 - i / 100), f"from tenant {tenant}")
+
     def _prefixes(self, domain: str, add: Callable[[Sequence[Label], str, float, str], None]) -> None:
         """A leftmost label seen over several parents (www.) is tried over the others."""
         parents: dict[Label, set[tuple[str, tuple[Label, ...]]]] = defaultdict(set)
@@ -331,6 +364,18 @@ class Taxonomy:
                 for labels in lefts - here:
                     why = f"exists under {root}, {len(lefts & here)}/{len(lefts)} of whose names also exist here"
                     add(labels, "across", W_ACROSS * share, why)
+
+
+def tenant_words(tenant: str, domain: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The words of a tenant's first label before and after the organisation's name (the domain's first
+    label): uat-example-mft-traffic -> (uat,), (mft, traffic). Nothing if the name isn't in it."""
+    org, parts = domain.split(".")[0], tenant.split(".")[0].split("-")
+    for i, part in enumerate(parts):
+        if part.startswith(org):
+            after = ([part[len(org) :]] if part != org else []) + parts[i + 1 :]
+            words = lambda ps: tuple(p for p in ps if p.isalpha() and len(p) > 1)
+            return words(parts[:i]), words(after)
+    return (), ()
 
 
 def _render_name(name: _Name) -> str:

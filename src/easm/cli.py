@@ -45,6 +45,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--guess-budget", type=int, default=2000, metavar="N", help="DNS lookups per domain for --guess (default: 2000)")
     p.add_argument(
+        "--guess-rate", type=float, metavar="N", help="at most N --guess lookups a second, to spread them out (default: no limit)"
+    )
+    p.add_argument(
         "--tenants",
         action="store_true",
         help="also look for the organisation's tenants on SaaS and cloud platforms (example.sharepoint.com), "
@@ -78,11 +81,21 @@ def load_dotenv(path: Path) -> None:
             os.environ.setdefault(key, value)
 
 
-def _guess_config(budget: int, report: dict | None) -> GuessConfig:
-    """Guessing also learns from the inventory earlier runs left in the output directory."""
+def _guess_config(budget: int, report: dict | None, rate: float | None = None) -> GuessConfig:
+    """Guessing also learns from the inventory earlier runs left in the output directory, and skips
+    the names they already tested, so each run goes further down the list."""
     hosts = report["hosts"] if report else []
     known = {h["hostname"]: h.get("cnames", []) for h in hosts}
-    return GuessConfig(budget=budget, known=known, known_weak=frozenset(h["hostname"] for h in hosts if not h.get("ips")))
+    tenants = {t["tenant"]: t["domain"] for t in (report or {}).get("tenants", []) if t.get("verified") and t.get("domain")}
+    guessed = (report or {}).get("guessed", {})
+    return GuessConfig(
+        budget=budget,
+        known=known,
+        known_weak=frozenset(h["hostname"] for h in hosts if not h.get("ips")),
+        tenants=tenants,
+        tried=frozenset(guessed),  # the merge already dropped ones old enough to try again
+        rate=rate,
+    )
 
 
 def _tenant_config(budget: int, report: dict | None) -> TenantConfig:
@@ -129,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--{flag} needs DNS resolution; drop --no-resolve")
     if args.guess_budget < 1:
         parser.error("--guess-budget must be at least 1")
+    if args.guess_rate is not None and args.guess_rate <= 0:
+        parser.error("--guess-rate must be positive")
     if args.tenant_budget < 1:
         parser.error("--tenant-budget must be at least 1")
     try:
@@ -157,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
         reporter=reporter,
         checkpoint=checkpoint,
-        guess=_guess_config(args.guess_budget, prior_report) if args.guess else None,
+        guess=_guess_config(args.guess_budget, prior_report, args.guess_rate) if args.guess else None,
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
     )

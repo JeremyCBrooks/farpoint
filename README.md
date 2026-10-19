@@ -33,9 +33,16 @@ internal names like `portal-prod.azurewebsites.net`), then predicts and tests na
 - the other way of joining (`portaltest` → `portal-test`), dropping a modifier, nearby numbers
 - prefixes the organisation reuses (`www.`), names repeated across the input domains
 - popular standalone names (`files`, `sftp`, `vpn`), from a cross-organisation ranking
+- with `--tenants`, the words of the organisation's verified tenants besides its own name, tried first
+  (`example-mft-traffic.vendor.co` → `mft-traffic`, `mft`, `traffic`), unless its names already use them
 
 Names found in one round teach the next (3 rounds). `--guess-budget N` caps the lookups per domain,
-wildcard probes included (default 2000, a minute or two). Before testing names under a parent, three
+wildcard probes included (default 2000, a minute or two). Every name tested is remembered in
+`assets.json` (`guessed`), and later runs into the same `--out` skip it, so each run goes further
+down the list: names ranked deep (around #15,000) are reached after about 8 runs at the default
+budget. A name is tried again 90 days after it was last tested. `--guess-rate N` spreads lookups out to at
+most N a second (2000 at 5/s takes about 7 minutes), so the domain's nameservers see a trickle, not a
+burst. Before testing names under a parent, three
 random names there are looked up. If those resolve (wildcard DNS), a guess only counts if it has an
 address or alias of its own. If they get no answer, no guesses are tested there. If most guesses under
 a parent resolve anyway (a wildcard rotating addresses), they are all discarded. Skipped and discarded
@@ -92,6 +99,10 @@ kept as **unverified**, and only when the domain's own records name the platform
 match only, which could be another organisation with the same name). `--tenant-budget N` caps the
 lookups (default 800, a few seconds).
 
+A CNAME target outside the scan domains whose name carries the organisation's (`files.example.com` →
+`example-files.vault.io`) is recorded as a tenant too, and each tenant lists the organisation's hosts
+that point at it (`hosts`).
+
 **Not passive:** the platforms' nameservers see the lookups (the organisation's own nameservers see
 one TXT query per domain). Results go to `tenants.csv` and the `tenants` section of `assets.json`.
 
@@ -124,7 +135,7 @@ To start fresh, use a new `--out` or delete the directory.
 | `hosts.csv` | hostname, resolves (yes/no/blank = unchecked), ips, cnames, sources, first/last seen |
 | `ips.csv` | ip, org, network, ports, vulns, hostnames, sources, first/last seen |
 | `lookalikes.csv` | Registered typosquat/homoglyph domains and their IPs |
-| `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, evidence, ips, cnames, first/last seen |
+| `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames, first/last seen |
 | `assets.json` | The inventory itself: everything above, plus `runs` (per-run domains, errors, skipped sources) |
 
 `assets.json` is the source of truth; the other files are regenerated from it on every run. Writes

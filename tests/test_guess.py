@@ -270,3 +270,83 @@ def test_no_guessing_unless_asked():
     source = StaticSource("s", [Observation("s", "api-dev.example.com")])
     Pipeline(sources=[source], lookup=lambda h: asked.append(h) or Resolution()).run(["example.com"])
     assert sorted(asked) == ["api-dev.example.com", "example.com"]
+
+
+def test_a_tenants_other_words_are_guessed_first_under_the_domain_it_is_named_after():
+    tenants = {"uat-example-mft-traffic.vendor.co": "example.com", "example.docs-cloud.net": "example.com"}
+    m = Taxonomy({"www.example.com": [], "portal.example.org": []}, ["example.com", "example.org"], PRIOR, tenants=tenants)
+    top = m.candidates("example.com")[:5]
+    assert top[:3] == ["mft-traffic.example.com", "mft.example.com", "traffic.example.com"]
+    assert set(top[3:]) == {"uat-mft.example.com", "mft-uat.example.com"}
+    assert "from tenant uat-example-mft-traffic.vendor.co" in m.explain("example.com")["mft.example.com"]["tenant"][1]
+    assert "mft.example.org" not in m.candidates("example.org")[:10]  # named after example.com, not example.org
+
+
+def test_verified_tenants_feed_guessing_in_the_same_run():
+    from easm.tenants import TenantConfig, Vendor
+
+    table = {
+        "example-files.vault-cloud.io": Resolution(ips=("192.0.2.40",)),
+        "files.example.com": Resolution(ips=("192.0.2.41",), cnames=("example-files.vault-cloud.io",)),
+    }
+    txt = {"example.com": ["v=spf1 include:spf.vault-cloud.io -all"]}
+    src = StaticSource("crtsh", [Observation("crtsh", "www.example.com"), Observation("crtsh", "app-files.example.com")])
+    inv = Pipeline(
+        sources=[src],
+        lookup=dns_table(table),
+        txt=lambda d: txt.get(d, []),
+        tenants=TenantConfig(vendors=[Vendor("Vault", ("{org}.vault-cloud.io",))]),
+        guess=GuessConfig(budget=20, prior=PRIOR),
+    ).run(["example.com"])
+    assert "example-files.vault-cloud.io" in inv.tenants  # an SPF sender, with the organisation's 'files' modifier
+    assert "guess" in inv.hosts["files.example.com"].sources
+
+
+def test_a_tenant_whose_words_the_organisation_already_uses_suggests_nothing():
+    m = Taxonomy({"app-dev.example.com": []}, ["example.com"], PRIOR, tenants={"example-dev.vault-cloud.io": "example.com"})
+    assert m.tenant_words == {}
+    assert not any("tenant" in kinds for kinds in m.explain("example.com").values())
+
+
+def test_guesses_earlier_runs_tested_are_skipped_so_each_run_goes_deeper():
+    src = StaticSource("crtsh", [Observation("crtsh", "api-dev.example.com"), Observation("crtsh", "web-dev.example.com"), Observation("crtsh", "web-prod.example.com")])
+    first = Pipeline(sources=[src], lookup=dns_table({}), guess=GuessConfig(budget=8, rounds=1, prior=PRIOR)).run(["example.com"])
+    assert len(first.guessed) == 5  # 8 lookups, 3 of them the wildcard check
+    second = Pipeline(sources=[src], lookup=dns_table({}), guess=GuessConfig(budget=8, rounds=1, prior=PRIOR, tried=frozenset(first.guessed))).run(["example.com"])
+    assert second.guessed and not second.guessed & first.guessed
+
+
+def test_guess_rate_spaces_lookups_out(monkeypatch):
+    from easm import pipeline, runtime
+
+    clock, slept = [0.0], []
+    monkeypatch.setattr(pipeline.time, "monotonic", lambda: clock[0])
+
+    def sleep(seconds):
+        slept.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(runtime, "sleep", sleep)
+    paced = pipeline._paced(lambda name: Resolution(), rate=4)
+    for name in ("a", "b", "c"):
+        paced(name)
+    assert slept == [0.25, 0.25]
+
+
+def test_a_found_guesss_alias_to_a_tenant_teaches_the_next_round():
+    from easm.tenants import TenantConfig
+
+    table = {
+        "mft.example.com": Resolution(ips=("192.0.2.50",), cnames=("example-mft-traffic.vendor.co",)),
+        "traffic.example.com": Resolution(ips=("192.0.2.51",)),
+    }
+    src = StaticSource("crtsh", [Observation("crtsh", "www.example.com")])
+    inv = Pipeline(
+        sources=[src],
+        lookup=dns_table(table),
+        txt=lambda d: [],
+        tenants=TenantConfig(vendors=[]),
+        guess=GuessConfig(budget=12, rounds=2, prior=Prior.from_lines(["mft"])),
+    ).run(["example.com"])
+    assert inv.tenants["example-mft-traffic.vendor.co"].tie == "cname"
+    assert "guess" in inv.hosts["traffic.example.com"].sources  # 'traffic' came only from the tenant

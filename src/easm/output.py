@@ -17,7 +17,7 @@ import secrets
 import tempfile
 import time
 from collections.abc import Iterable, Iterator, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
@@ -25,6 +25,7 @@ try:
 except ImportError:  # Windows: no advisory locking
     fcntl = None
 
+from easm.guess import RETRY_DAYS
 from easm.models import Inventory, Observation
 from easm.tenants import TIES as _TIES
 
@@ -102,7 +103,7 @@ _ROW_LISTS = {
     "hosts": ("hostname", ("ips", "cnames", "sources")),
     "ips": ("ip", ("ports", "vulns", "hostnames", "sources")),
     "lookalikes": ("domain", ("ips", "sources")),
-    "tenants": ("tenant", ("evidence", "ips", "cnames")),
+    "tenants": ("tenant", ("evidence", "ips", "cnames", "hosts")),
 }
 
 
@@ -113,6 +114,11 @@ def _validate(report) -> None:
     for field in ("domains", "runs", *_ROW_LISTS):
         if not isinstance(report.get(field, []), list):
             raise ValueError(f"'{field}' is not a list")
+    guessed = report.get("guessed", {})  # name -> when last tested (a run's own report: a list of names)
+    if not (isinstance(guessed, list) and all(isinstance(n, str) for n in guessed)) and not (
+        isinstance(guessed, dict) and all(isinstance(n, str) and isinstance(at, str) for n, at in guessed.items())
+    ):
+        raise ValueError("'guessed' is not a list of names or a map of names to times")
     for field, (key, lists) in _ROW_LISTS.items():
         for i, row in enumerate(report.get(field, [])):
             where = f"{field}[{i}]"
@@ -195,6 +201,20 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
     lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), current["lookalikes"], "domain", lookalike, stamp, prior_stamp)
     tenants, new_tenants = _merge_rows(prior.get("tenants", []), current.get("tenants", []), "tenant", tenant, stamp, prior_stamp)
+    prior_guessed = prior.get("guessed", {})
+    if isinstance(prior_guessed, list):
+        prior_guessed = dict.fromkeys(prior_guessed, prior_stamp)
+    try:
+        cutoff = _stamp(datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) - timedelta(days=RETRY_DAYS))
+    except ValueError:  # not a timestamp easm wrote: keep everything
+        cutoff = ""
+    guessed = {n: at for n, at in prior_guessed.items() if at >= cutoff}  # older ones are tried again
+    guessed.update(dict.fromkeys(current.get("guessed", []), stamp))
+    pointing: dict[str, list[str]] = {}  # tenant -> the organisation's hosts whose CNAMEs reach it
+    for h in hosts:
+        for cname in h.get("cnames", []):
+            pointing.setdefault(cname, []).append(h["hostname"])
+    tenants = [{**t, "hosts": sorted(pointing.get(t["tenant"], []))} for t in tenants]
     run = {
         "at": stamp,
         "domains": current["domains"],
@@ -210,6 +230,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "ips": sorted(ips, key=lambda r: _ip_key(r["ip"])),
         "lookalikes": sorted(lookalikes, key=lambda r: r["domain"]),
         "tenants": sorted(tenants, key=lambda r: r["tenant"]),
+        "guessed": dict(sorted(guessed.items())),
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
         "runs": sorted([*prior.get("runs", []), run], key=lambda r: r["at"]),
@@ -274,6 +295,7 @@ def run_report(inv: Inventory) -> dict:
             for r in sorted(inv.lookalikes.values(), key=lambda r: r.domain)
         ],
         "tenants": _tenant_rows(inv),
+        "guessed": sorted(inv.guessed),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
         "interrupted": inv.interrupted,
@@ -290,7 +312,7 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "vulns", "hostnames", "sources", *seen]))
     write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
     if report.get("tenants"):  # only once --tenants has found some
-        write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "evidence", "ips", "cnames", *seen]))
+        write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
 
 
 def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None) -> dict:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import secrets
+import threading
+import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,7 +19,7 @@ from easm.names import is_public_ip
 from easm.progress import NullReporter, ProgressReporter
 from easm.resolve import Resolution
 from easm.sources.base import Source
-from easm.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, org_modifiers, org_tokens, plan, random_name
+from easm.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, named_after, org_modifiers, org_tokens, plan, random_name, registered
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +193,7 @@ class Pipeline:
         probes = plan(inv.domains, txt, [c for cnames in hosts.values() for c in cnames], config.vendors if config.vendors is not None else bundled_vendors())
         tokens = org_tokens(inv.domains)
         modifiers, sep = org_modifiers(hosts, inv.domains)
+        _cname_tenants(inv, hosts)
 
         budget, chosen = config.budget, []
         for probe in probes:
@@ -239,7 +242,8 @@ class Pipeline:
         per domain (probes included, within its budget), keep those that resolve and aren't a
         wildcard's answer, then resolve whatever in-scope CNAME targets the new names point at."""
         known = {h: cnames for h, cnames in self.guess.known.items() if inv.scope_of(h)}
-        tried = set(inv.hosts) | set(known)  # never offered again
+        tried = set(inv.hosts) | set(known) | set(self.guess.tried)  # never offered again
+        lookup = _paced(self.lookup, self.guess.rate)
         checked = set(inv.hosts)  # resolution already attempted this run
         budget = dict.fromkeys(inv.domains, self.guess.budget)
         wildcards: dict[str, Resolution | None] = {}  # parent -> wildcard answer; timed_out: unknown, don't guess there
@@ -258,12 +262,13 @@ class Pipeline:
             hosts = {h: set(c) for h, c in known.items()}
             for h, r in inv.hosts.items():
                 hosts[h] = hosts.get(h, set()) | r.cnames
-            model = Taxonomy(hosts, inv.domains, self.guess.prior, weak={h for h in hosts if not has_address(h)})
+            tenants = {**self.guess.tenants, **{t.hostname: t.domain for t in inv.tenants.values() if t.verified}}
+            model = Taxonomy(hosts, inv.domains, self.guess.prior, weak={h for h in hosts if not has_address(h)}, tenants=tenants)
             batch, probing = self._pick(model, inv.domains, tried, budget, wildcards)
             if not batch:
                 break
             tried.update(batch)
-            self._probe_wildcards(inv, probing, wildcards)
+            self._probe_wildcards(inv, probing, wildcards, lookup)
             usable = []
             for name, domain in batch.items():
                 if (w := wildcards.get(parent_of(name))) and w.timed_out:
@@ -273,7 +278,8 @@ class Pipeline:
             total[0] += len(usable)
             self.reporter.phase("guessing", done[0], total[0], failed[0])
             answers = {}
-            jobs = {("guess", h): (lambda h=h: self.lookup(h)) for h in usable}
+            inv.guessed.update(usable)
+            jobs = {("guess", h): (lambda h=h: lookup(h)) for h in usable}
             for (_, host), res in self._fan_out(inv, jobs, on_done=tick):
                 if res.ips and not _wildcard_answer(res, wildcards.get(parent_of(host))):
                     answers[host] = res
@@ -288,6 +294,8 @@ class Pipeline:
             checked.update(usable)
             self._resolve(inv, skip=checked)  # in-scope CNAME targets the new names point at
             checked.update(inv.hosts)
+            if self.tenants:  # a found name's alias may be a tenant, whose words teach the next round
+                _cname_tenants(inv, {h: inv.hosts[h].cnames for h in answers})
             log.info("guessing: %d of %d candidates resolved", len(answers), len(usable))
             if not answers:
                 break
@@ -322,12 +330,14 @@ class Pipeline:
         hits = Counter(parent_of(h) for h in answers)
         return {p for p, n in hits.items() if per_parent[p] >= IMPLAUSIBLE_MIN and n / per_parent[p] > IMPLAUSIBLE_SHARE}
 
-    def _probe_wildcards(self, inv: Inventory, parents: Iterable[str], wildcards: dict[str, Resolution | None]) -> None:
+    def _probe_wildcards(
+        self, inv: Inventory, parents: Iterable[str], wildcards: dict[str, Resolution | None], lookup: Callable[[str], Resolution]
+    ) -> None:
         """Look up random names under each parent. If any resolves, everything there does: record what
         it answers. If a probe gets no answer either way, the parent is unknown and not guessed under."""
 
         def probe(parent: str) -> Resolution | None:
-            answers = [self.lookup(f"{secrets.token_hex(8)}.{parent}") for _ in range(WILDCARD_PROBES)]
+            answers = [lookup(f"{secrets.token_hex(8)}.{parent}") for _ in range(WILDCARD_PROBES)]
             ips = {ip for a in answers for ip in a.ips}
             if ips:
                 return Resolution(tuple(sorted(ips)), tuple(sorted({c for a in answers for c in a.cnames})))
@@ -369,6 +379,32 @@ def _record_resolution(inv: Inventory, host: str, res: Resolution) -> None:
         inv.add(Observation("dns", host, ip))
     for cname in res.cnames:
         inv.add(Observation("dns-cname", cname))
+
+
+def _paced(lookup: Callable[[str], Resolution], rate: float | None) -> Callable[[str], Resolution]:
+    """`lookup`, started at most `rate` times a second across all threads (None: as fast as workers go)."""
+    if not rate:
+        return lookup
+    pace, next_start = threading.Lock(), [0.0]
+
+    def paced(name: str) -> Resolution:
+        with pace:
+            delay = next_start[0] - time.monotonic()
+            if delay > 0:
+                runtime.sleep(delay)
+            next_start[0] = max(next_start[0], time.monotonic()) + 1 / rate
+        return lookup(name)
+
+    return paced
+
+
+def _cname_tenants(inv: Inventory, hosts: Mapping[str, Iterable[str]]) -> None:
+    """An alias to a name outside scope that carries the organisation's (example-files.vault.io) is a tenant."""
+    tokens = org_tokens(inv.domains)
+    for host, targets in sorted(hosts.items()):
+        for target in sorted(targets):
+            if not inv.scope_of(target) and (domain := named_after(target, tokens)):
+                _record_tenant(inv, target, registered(target), domain, "cname", f"CNAME of {host}", True, Resolution())
 
 
 def _record_tenant(inv: Inventory, name: str, vendor: str, domain: str, tie: str, evidence: str, verified: bool, res: Resolution) -> None:

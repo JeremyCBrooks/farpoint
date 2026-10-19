@@ -4,7 +4,7 @@ from easm.models import Observation
 from easm.output import write_outputs
 from easm.pipeline import Pipeline
 from easm.resolve import Resolution
-from easm.tenants import TenantConfig, Vendor, bundled_vendors, plan, registered, spf_includes
+from easm.tenants import TenantConfig, Vendor, bundled_vendors, named_after, plan, registered, spf_includes
 
 from test_pipeline import StaticSource
 
@@ -157,3 +157,33 @@ def test_a_txt_record_naming_a_tenant_outright_is_tried_as_is():
     txt = {"example.com": ["EXAMPLECO123.mail-cloud.net"]}
     inv = Pipeline(sources=[], lookup=lookup, txt=lambda d: txt.get(d, []), tenants=TenantConfig(vendors=vendors)).run(["example.com"])
     assert inv.tenants["exampleco123.mail-cloud.net"].verified
+
+
+def test_a_cname_to_a_name_carrying_the_organisations_is_a_tenant_and_links_back(tmp_path):
+    lookup, _ = platform_dns({"mft.example.com": Resolution(ips=("192.0.2.30",), cnames=("example-mft-traffic.vendor.co",))})
+    src = StaticSource("crtsh", [Observation("crtsh", "mft.example.com")])
+    inv = Pipeline(sources=[src], lookup=lookup, txt=lambda d: [], tenants=TenantConfig(vendors=VENDORS)).run(["example.com"])
+    tenant = inv.tenants["example-mft-traffic.vendor.co"]
+    assert (tenant.vendor, tenant.tie, tenant.verified, tenant.evidence) == ("vendor.co", "cname", True, {"CNAME of mft.example.com"})
+    [row] = write_outputs(inv, tmp_path)["tenants"]
+    assert row["hosts"] == ["mft.example.com"]
+
+
+def test_named_after_matches_whole_words_longest_name_first():
+    tokens = {"example": "example.com", "examplecorp": "examplecorp.org"}
+    assert named_after("uat-example-mft.vendor.co", tokens) == "example.com"
+    assert named_after("examplecorp-x.vendor.co", tokens) == "examplecorp.org"
+    assert named_after("examples-x.vendor.co", tokens) is None
+
+
+def test_cli_seeds_guessing_with_earlier_runs_tried_names_and_tenants():
+    from easm.cli import _guess_config
+
+    report = {
+        "hosts": [{"hostname": "www.example.com", "ips": ["192.0.2.1"]}],
+        "guessed": {"api-prod.example.com": "2026-01-01T00:00:00Z"},
+        "tenants": [{"tenant": "example-mft.vendor.co", "domain": "example.com", "verified": True}],
+    }
+    config = _guess_config(100, report, rate=5)
+    assert config.tried == {"api-prod.example.com"} and config.rate == 5
+    assert config.tenants == {"example-mft.vendor.co": "example.com"}

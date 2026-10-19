@@ -94,6 +94,16 @@ def org_tokens(domains: Iterable[str]) -> dict[str, str]:
     return tokens
 
 
+def named_after(hostname: str, tokens: Mapping[str, str]) -> str | None:
+    """The scan domain whose name a hostname's first label carries as a word (example-mft.vendor.co ->
+    example.com), longest name first, so examplecorp-x is not taken for example-x."""
+    parts = hostname.split(".")[0].split("-")
+    for token in sorted(tokens, key=len, reverse=True):
+        if token in parts:
+            return tokens[token]
+    return None
+
+
 def spf_includes(txt: Iterable[str]) -> list[str]:
     return [m.lower().rstrip(".") for s in txt if s.lower().startswith("v=spf1") for m in _SPF_RE.findall(s)]
 

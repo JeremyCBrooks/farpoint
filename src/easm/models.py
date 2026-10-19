@@ -84,6 +84,7 @@ class Inventory:
         self.ips: dict[str, IpRecord] = {}
         self.lookalikes: dict[str, LookalikeRecord] = {}
         self.tenants: dict[str, TenantRecord] = {}
+        self.guessed: set[str] = set()  # names --guess tested this run (whether or not they exist)
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial

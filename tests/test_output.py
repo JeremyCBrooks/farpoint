@@ -196,3 +196,17 @@ def test_new_counts_do_not_depend_on_timestamps():
 
     assert first["runs"][-1]["new"]["hosts"] == 1
     assert second["runs"][-1]["new"]["hosts"] == 1  # same-second runs: only b is new
+
+
+def test_tested_guesses_are_remembered_until_old_enough_to_try_again():
+    from easm.models import Inventory
+
+    inv = Inventory(["example.com"])
+    inv.guessed = {"api-prod.example.com"}
+    first = merge_reports(None, run_report(inv), "2026-01-01T00:00:00Z")
+    assert first["guessed"] == {"api-prod.example.com": "2026-01-01T00:00:00Z"}
+    inv.guessed = {"files.example.com"}
+    later = merge_reports(first, run_report(inv), "2026-03-01T00:00:00Z")
+    assert set(later["guessed"]) == {"api-prod.example.com", "files.example.com"}
+    much_later = merge_reports(later, run_report(Inventory(["example.com"])), "2026-05-01T00:00:00Z")
+    assert set(much_later["guessed"]) == {"files.example.com"}  # api-prod was tested 120 days ago
