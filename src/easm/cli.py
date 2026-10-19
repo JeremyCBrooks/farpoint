@@ -15,6 +15,7 @@ from rich.console import Console
 
 from easm import runtime
 from easm.enrich import InternetDb, Rdap
+from easm.guess import GuessConfig
 from easm.names import parse_domains
 from easm.pipeline import Pipeline
 from easm.output import Checkpointer, ReportError, load_report, now_stamp, recover_checkpoints, write_outputs
@@ -35,6 +36,13 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-resolve", action="store_true", help="skip DNS resolution of discovered names")
     p.add_argument("--no-enrich", action="store_true", help="skip InternetDB/RDAP lookups for discovered IPs")
     p.add_argument("--nameserver", action="append", help="DNS resolver to use (repeatable; default: system)")
+    p.add_argument(
+        "--guess",
+        action="store_true",
+        help="also predict unseen names from the naming patterns found and test them in DNS "
+        "(not passive: the domain's own nameservers see one query per guess)",
+    )
+    p.add_argument("--guess-budget", type=int, default=2000, metavar="N", help="DNS lookups per domain for --guess (default: 2000)")
     p.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout in seconds (default: 60)")
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--list-sources", action="store_true", help="show sources and whether each is usable here")
@@ -59,6 +67,13 @@ def load_dotenv(path: Path) -> None:
         value = value.split(" #", 1)[0].strip().strip("'\"")
         if value:
             os.environ.setdefault(key, value)
+
+
+def _guess_config(budget: int, report: dict | None) -> GuessConfig:
+    """Guessing also learns from the inventory earlier runs left in the output directory."""
+    hosts = report["hosts"] if report else []
+    known = {h["hostname"]: h.get("cnames", []) for h in hosts}
+    return GuessConfig(budget=budget, known=known, known_weak=frozenset(h["hostname"] for h in hosts if not h.get("ips")))
 
 
 def _on_interrupt(stop_scan: bool):
@@ -94,6 +109,10 @@ def main(argv: list[str] | None = None) -> int:
     domains = parse_domains(lines)
     if not domains:
         parser.error("no valid domains given")
+    if args.guess and args.no_resolve:
+        parser.error("--guess needs DNS resolution; drop --no-resolve")
+    if args.guess_budget < 1:
+        parser.error("--guess-budget must be at least 1")
     try:
         sources = select_sources(all_sources, only=_csv(args.only), exclude=_csv(args.exclude))
     except ValueError as exc:
@@ -102,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for run in recover_checkpoints(args.out):  # from runs that were killed before they could save
             print(f"recovered an interrupted run from {run['at']} ({', '.join(run['domains'])}: {run['hosts']} hosts)", file=sys.stderr)
-        load_report(args.out)  # fail before a long scan, not after it
+        prior_report = load_report(args.out)  # fail before a long scan, not after it
     except ReportError as exc:
         parser.error(str(exc))
 
@@ -119,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         workers=args.workers,
         reporter=reporter,
         checkpoint=checkpoint,
+        guess=_guess_config(args.guess_budget, prior_report) if args.guess else None,
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):

@@ -1,14 +1,17 @@
-"""Orchestration: sources -> scoped inventory -> DNS resolution -> IP enrichment."""
+"""Orchestration: sources -> scoped inventory -> DNS resolution -> (opt-in) guessing -> IP enrichment."""
 
 from __future__ import annotations
 
 import logging
+import secrets
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from easm import runtime
 from easm.enrich import Enricher
+from easm.guess import GuessConfig, Taxonomy, parent_of
 from easm.models import Inventory, Observation, SourceError
 from easm.names import is_public_ip
 from easm.progress import NullReporter, ProgressReporter
@@ -19,6 +22,9 @@ log = logging.getLogger(__name__)
 
 Key = tuple[str, str]
 
+WILDCARD_PROBES = 3  # random names looked up per parent before guessing under it
+IMPLAUSIBLE_MIN, IMPLAUSIBLE_SHARE = 10, 0.5  # this many guesses under a parent, more than this share resolving
+
 
 @dataclass
 class Pipeline:
@@ -28,6 +34,7 @@ class Pipeline:
     workers: int = 16
     reporter: ProgressReporter = field(default_factory=NullReporter)
     checkpoint: Callable[[Inventory, Mapping[Key, list[Observation]]], None] | None = None  # after each job: (inv, in-progress pages)
+    guess: GuessConfig | None = None  # predict unseen names and test them in DNS (needs `lookup`)
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -41,6 +48,8 @@ class Pipeline:
             self._collect(inv)
             if self.lookup:
                 self._resolve(inv)
+                if self.guess:
+                    self._guess(inv)
             if self.enrichers:
                 self._enrich(inv)
         except KeyboardInterrupt:
@@ -146,8 +155,9 @@ class Pipeline:
         finally:
             partial.clear()
 
-    def _resolve(self, inv: Inventory) -> None:
-        pending, attempted = set(inv.hosts), set()
+    def _resolve(self, inv: Inventory, skip: Iterable[str] = ()) -> None:
+        attempted = set(skip)
+        pending = set(inv.hosts) - attempted
         done, failed = [0], [0]
 
         def tick(ok: bool) -> None:
@@ -160,14 +170,118 @@ class Pipeline:
             self.reporter.phase("resolving", done[0], len(attempted), failed[0])
             jobs = {("dns", h): (lambda h=h: self.lookup(h)) for h in pending}
             for (_, host), res in self._fan_out(inv, jobs, on_done=tick):
-                record = inv.hosts[host]
-                record.resolves = None if res.timed_out else bool(res.ips)
-                record.cnames.update(res.cnames)
-                for ip in res.ips:
-                    inv.add(Observation("dns", host, ip))
-                for cname in res.cnames:
-                    inv.add(Observation("dns-cname", cname))
+                _record_resolution(inv, host, res)
             pending = set(inv.hosts) - attempted
+
+    def _guess(self, inv: Inventory) -> None:
+        """Rounds of: learn the naming taxonomy from everything known, test the best untried candidates
+        per domain (probes included, within its budget), keep those that resolve and aren't a
+        wildcard's answer, then resolve whatever in-scope CNAME targets the new names point at."""
+        known = {h: cnames for h, cnames in self.guess.known.items() if inv.scope_of(h)}
+        tried = set(inv.hosts) | set(known)  # never offered again
+        checked = set(inv.hosts)  # resolution already attempted this run
+        budget = dict.fromkeys(inv.domains, self.guess.budget)
+        wildcards: dict[str, Resolution | None] = {}  # parent -> wildcard answer; timed_out: unknown, don't guess there
+        done, failed, total = [0], [0], [0]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("guessing", done[0], total[0], failed[0])
+
+        def has_address(host: str) -> bool:
+            record = inv.hosts.get(host)
+            return bool(record and record.ips) or (host in known and host not in self.guess.known_weak)
+
+        for _ in range(self.guess.rounds):
+            hosts = {h: set(c) for h, c in known.items()}
+            for h, r in inv.hosts.items():
+                hosts[h] = hosts.get(h, set()) | r.cnames
+            model = Taxonomy(hosts, inv.domains, self.guess.prior, weak={h for h in hosts if not has_address(h)})
+            batch, probing = self._pick(model, inv.domains, tried, budget, wildcards)
+            if not batch:
+                break
+            tried.update(batch)
+            self._probe_wildcards(inv, probing, wildcards)
+            usable = []
+            for name, domain in batch.items():
+                if (w := wildcards.get(parent_of(name))) and w.timed_out:
+                    budget[domain] += 1  # not looked up: spend it in a later round
+                else:
+                    usable.append(name)
+            total[0] += len(usable)
+            self.reporter.phase("guessing", done[0], total[0], failed[0])
+            answers = {}
+            jobs = {("guess", h): (lambda h=h: self.lookup(h)) for h in usable}
+            for (_, host), res in self._fan_out(inv, jobs, on_done=tick):
+                if res.ips and not _wildcard_answer(res, wildcards.get(parent_of(host))):
+                    answers[host] = res
+            for parent in self._implausible(usable, answers):
+                wildcards[parent] = Resolution(timed_out=True)
+                inv.errors.append(SourceError("guess", parent, "most guesses resolved: wildcard-like DNS, results discarded"))
+                log.warning("guessing: most guesses under %s resolved; treating it as wildcard DNS", parent)
+                answers = {h: res for h, res in answers.items() if parent_of(h) != parent}
+            for host, res in answers.items():
+                inv.add(Observation("guess", host))
+                _record_resolution(inv, host, res)
+            checked.update(usable)
+            self._resolve(inv, skip=checked)  # in-scope CNAME targets the new names point at
+            checked.update(inv.hosts)
+            log.info("guessing: %d of %d candidates resolved", len(answers), len(usable))
+            if not answers:
+                break
+
+    @staticmethod
+    def _pick(
+        model: Taxonomy, domains: Sequence[str], tried: set[str], budget: dict[str, int], wildcards: Mapping[str, object]
+    ) -> tuple[dict[str, str], set[str]]:
+        """The best untried candidates per domain ({name: domain}) and the parents still to probe for
+        wildcards, charging each domain's budget one lookup per candidate plus the probes it needs."""
+        batch: dict[str, str] = {}
+        probing: set[str] = set()
+        for domain in domains:
+            for name in model.candidates(domain):
+                if budget[domain] < 1:
+                    break
+                parent = parent_of(name)
+                cost = 1 + (WILDCARD_PROBES if parent not in wildcards and parent not in probing else 0)
+                if name in tried or cost > budget[domain]:
+                    continue
+                budget[domain] -= cost
+                if parent not in wildcards:
+                    probing.add(parent)
+                batch[name] = domain
+        return batch, probing
+
+    @staticmethod
+    def _implausible(tested: Iterable[str], answers: Mapping[str, Resolution]) -> set[str]:
+        """Parents where most guesses resolved: real naming never looks like that, a wildcard whose
+        addresses rotate past the probes does."""
+        per_parent = Counter(parent_of(h) for h in tested)
+        hits = Counter(parent_of(h) for h in answers)
+        return {p for p, n in hits.items() if per_parent[p] >= IMPLAUSIBLE_MIN and n / per_parent[p] > IMPLAUSIBLE_SHARE}
+
+    def _probe_wildcards(self, inv: Inventory, parents: Iterable[str], wildcards: dict[str, Resolution | None]) -> None:
+        """Look up random names under each parent. If any resolves, everything there does: record what
+        it answers. If a probe gets no answer either way, the parent is unknown and not guessed under."""
+
+        def probe(parent: str) -> Resolution | None:
+            answers = [self.lookup(f"{secrets.token_hex(8)}.{parent}") for _ in range(WILDCARD_PROBES)]
+            ips = {ip for a in answers for ip in a.ips}
+            if ips:
+                return Resolution(tuple(sorted(ips)), tuple(sorted({c for a in answers for c in a.cnames})))
+            return Resolution(timed_out=True) if any(a.timed_out for a in answers) else None
+
+        parents = set(parents)
+        jobs = {("wildcard", p): (lambda p=p: probe(p)) for p in parents}
+        for (_, parent), res in self._fan_out(inv, jobs):
+            wildcards[parent] = res
+            if res and not res.timed_out:
+                log.info("wildcard DNS under %s: guesses there must answer differently", parent)
+        for parent in parents - set(wildcards):  # the probe raised (recorded as an error)
+            wildcards[parent] = Resolution(timed_out=True)
+        for parent in sorted(p for p in parents if (w := wildcards[p]) and w.timed_out):
+            inv.errors.append(SourceError("guess", parent, "wildcard check got no answer; no guesses tested there"))
 
     def _enrich(self, inv: Inventory) -> None:
         public = [ip for ip in inv.ips if is_public_ip(ip)]
@@ -184,6 +298,24 @@ class Pipeline:
             inv.enrich(ip, details)
             for hostname in details.hostnames:
                 inv.add(Observation(name, hostname, ip))
+
+
+def _record_resolution(inv: Inventory, host: str, res: Resolution) -> None:
+    record = inv.hosts[host]
+    record.resolves = None if res.timed_out else bool(res.ips)
+    record.cnames.update(res.cnames)
+    for ip in res.ips:
+        inv.add(Observation("dns", host, ip))
+    for cname in res.cnames:
+        inv.add(Observation("dns-cname", cname))
+
+
+def _wildcard_answer(res: Resolution, wildcard: Resolution | None) -> bool:
+    """Whether `res` is what a wildcard returns for any name: its alias, or only its addresses. A name
+    with an address of its own counts as real, even if it shares a load balancer with the wildcard."""
+    if wildcard is None:
+        return False
+    return bool(set(res.cnames) & set(wildcard.cnames)) or set(res.ips) <= set(wildcard.ips)
 
 
 def _limits(workers: Iterable) -> dict[str, int]:

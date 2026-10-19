@@ -6,7 +6,8 @@ and CVE data. Registered **lookalike domains** are reported separately.
 
 **Discovery only.** Nothing here scans, probes or sends traffic to your hosts or the lookalike
 hosts. Every query goes to a third-party dataset (CT logs, passive DNS, archives) or to a recursive
-DNS resolver.
+DNS resolver. The one exception is opt-in: `--guess` (below) looks up predicted names, and those
+lookups reach the domain's own nameservers.
 
 ## Quick start
 
@@ -16,7 +17,38 @@ uv run easm -f domains.txt -o out/acme -v    # one domain (or URL) per line, '#'
 uv run easm --list-sources                   # what's usable on this machine
 uv run easm example.com --only crtsh,certspotter --no-enrich
 uv run easm example.com --exclude dnstwist   # dnstwist is the slowest source (several minutes)
+uv run easm example.com --guess              # also predict unseen names and test them in DNS (not passive)
 ```
+
+## Guessing unseen names (`--guess`)
+
+Public datasets miss names that never got their own certificate (a wildcard cert covers them) and
+that no passive-DNS sensor happened to see. `--guess` learns how the organisation names its hosts from
+everything known (this run, the inventory already in `--out`, and the CNAME targets, which often carry
+internal names like `portal-prod.azurewebsites.net`), then predicts and tests names it hasn't seen:
+
+- modifiers a base name lacks, ranked by how often they appear together on the organisation's other
+  names: `api-dev` → `api-prod`, `portal` + `portal-stage` → `kiosk-stage`
+- the other way of joining (`portaltest` → `portal-test`), dropping a modifier, nearby numbers
+- prefixes the organisation reuses (`www.`), names repeated across the input domains
+- popular standalone names (`files`, `sftp`, `vpn`), from a cross-organisation ranking
+
+Names found in one round teach the next (3 rounds). `--guess-budget N` caps the lookups per domain,
+wildcard probes included (default 2000, a minute or two). Before testing names under a parent, three
+random names there are looked up. If those resolve (wildcard DNS), a guess only counts if it has an
+address or alias of its own. If they get no answer, no guesses are tested there. If most guesses under
+a parent resolve anyway (a wildcard rotating addresses), they are all discarded. Skipped and discarded
+parents are listed in `assets.json` errors. Found names are listed with source `guess`.
+
+**Not passive:** the domain's authoritative nameservers see every guess, mostly for names that don't
+exist. Only use it where that is acceptable.
+
+Nothing in the model is specific to one organisation. Everything is learned from the names being
+scanned, except a weak prior: `src/easm/data/subdomains.txt`, a popularity ranking of subdomain labels
+from SecLists (MIT). Popular labels are tried as standalone names (`files`), and the most popular
+1000 are also candidate modifiers, weighted by rank (`dev` #18 far above `uat` #685). To measure it on an
+inventory without any DNS traffic, `uv run python -m easm.guess out` hides each known host in turn and
+reports how often a model learned from the rest ranks it within 100/500/2000 guesses.
 
 ## Progress and stopping a scan
 
@@ -76,6 +108,7 @@ corroborate each finding.
 | bbot | CLI, `-p subdomain-enum -rf passive` | binary on PATH (Linux/macOS/WSL) |
 | dnstwist | Lookalike domains, DNS only (no `--mxcheck/--banners/--lsh/--phash`) | bundled |
 | dnspython | A/AAAA/CNAME resolution of every discovered name | none |
+| guess (opt-in) | Names predicted from the organisation's naming patterns, kept if they resolve | none |
 | Shodan InternetDB | Ports/CVEs/hostnames per IP | none |
 | RDAP (IANA bootstrap → RIR) | IP owner and network | none |
 
@@ -95,11 +128,12 @@ Optional tools: `go install github.com/projectdiscovery/subfinder/v2/cmd/subfind
 ```bash
 uv run pytest               # offline suite
 uv run pytest -m network    # real-DNS smoke tests
+uv run python -m easm.guess out --rank api-prod.example.com   # offline guesser evaluation
 ```
 
 Layout: `names.py` (normalize/scope), `models.py` (Observation → Inventory), `sources/` (one class
 per source behind the `Source` protocol: `available()` + `collect(domain)`), `resolve.py`,
-`enrich.py`, `pipeline.py`, `output.py`, `cli.py`.
+`guess.py`, `enrich.py`, `pipeline.py`, `output.py`, `cli.py`.
 
 To add a source, subclass `HttpSource` (you get retries) or `CommandSource` (you get availability
 checks), yield `Observation`s, and register it in `sources/__init__.py`. Scoping, normalization and
@@ -109,7 +143,7 @@ de-duplication happen centrally in `Inventory`, so sources stay dumb.
 
 - Only names equal to or under an input domain are kept. Third-party CNAME targets (CDNs, SaaS)
   are recorded on the host but not expanded.
-- No wildcard-DNS detection or ASN/netblock expansion yet. Those are good next steps toward
+- No wildcard-DNS detection outside `--guess`, and no ASN/netblock expansion yet. Those are good next steps toward
   commercial ASM parity, along with reverse-whois/org-name pivoting to discover unknown root
   domains, and diffing runs over time.
 - Only use it on domains you own or are authorised to assess.
