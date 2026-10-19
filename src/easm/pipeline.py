@@ -18,7 +18,7 @@ from easm.guess import GuessConfig, Taxonomy, parent_of
 from easm.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord
 from easm.related import TIERS as RELATED_TIERS
 from easm.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
-from easm.related import registered as registered_domain
+from easm.suffixes import registered as registered_domain
 from easm.names import is_public_ip
 from easm.progress import NullReporter, ProgressReporter
 from easm.resolve import Resolution
@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 Key = tuple[str, str]
 
 WILDCARD_PROBES = 3  # random names looked up per parent before guessing under it
+RELATED_WORKERS = 8  # concurrent lookups for --related, whose ~1,800 per domain mostly go to registries
 MIN_SHARE = 1 + WILDCARD_PROBES  # a round's share always covers a guess under a parent not yet probed
 IMPLAUSIBLE_MIN, IMPLAUSIBLE_SHARE = 10, 0.5  # this many guesses under a parent, more than this share resolving
 
@@ -193,45 +194,52 @@ class Pipeline:
         other suffix, tied to the organisation by evidence (easm.related). Subdomains of the scan
         domains a tenant lists join the inventory; registered variants with no tie are lookalikes."""
         probes, suffixes = self.related, bundled_suffixes()
-        done, total = [0], [0]
+        done, failed, total = [0], [0], [0]
 
         def run(kind: str, jobs: dict[str, Callable]) -> dict[str, object]:
             total[0] += len(jobs)
 
             def tick(ok: bool) -> None:
                 done[0] += 1
-                self.reporter.phase("related", done[0], total[0])
+                failed[0] += not ok
+                self.reporter.phase("related", done[0], total[0], failed[0])
 
-            return {target: result for (_, target), result in self._fan_out(inv, {(kind, t): f for t, f in jobs.items()}, on_done=tick)}
+            keyed = {(kind, target): fn for target, fn in jobs.items()}
+            return {target: result for (_, target), result in self._fan_out(inv, keyed, {kind: RELATED_WORKERS}, on_done=tick)}
 
         tenants = run("related-m365", {d: (lambda d=d: probes.tenant_domains(d)) for d in inv.domains})
-        own, listed = set(inv.domains), set()
+        own = set(inv.domains)
         for domain, names in sorted(tenants.items()):
             for name in names:
-                listed.add(name)
                 if inv.scope_of(name):
                     inv.add(Observation("m365", name))  # a subdomain the tenant verified
-                elif registered_domain(name, suffixes) == name and not name.endswith(".onmicrosoft.com"):
+                elif registered_domain(name) == name and not name.endswith(".onmicrosoft.com"):
                     own.add(name)
+                    inv.related_checked.add(name)
                     _record_related(inv, name, domain, "strong", f"in the Microsoft 365 tenant of {domain}")
 
-        candidates = {v: d for d in inv.domains for v in variants(d, suffixes) if v not in own and not inv.scope_of(v)}
-        ns = {v: r for v, r in run("related-ns", {v: (lambda v=v: probes.records(v, "NS")) for v in candidates}).items() if r}
-        found_under = {split(v, suffixes)[1] for v in ns}
+        candidates: dict[str, list[str]] = {}  # variant -> the scan domains whose name it carries
+        for d in inv.domains:
+            for v in variants(d, suffixes):
+                if v not in own and not inv.scope_of(v):
+                    candidates.setdefault(v, []).append(d)
+        ns = run("related-ns", {v: (lambda v=v: probes.records(v, "NS")) for v in candidates})
+        inv.related_checked.update(ns)  # looked up (a timeout is an error, not "unregistered")
+        found_under = {split(v)[1] for v, r in ns.items() if r}
         wild = {s for s, r in run("related-wildcard", {s: (lambda s=s: probes.records(random_under(s), "NS")) for s in found_under}).items() if r}
-        found = {v: d for v, d in candidates.items() if v in ns and split(v, suffixes)[1] not in wild}
+        found = {v: ds for v, ds in candidates.items() if ns.get(v) and split(v)[1] not in wild}
 
         names = sorted(set(found) | set(inv.domains))
         profiles = run("related-dns", {n: (lambda n=n: Profile.of(probes, n, ns.get(n))) for n in names})
-        landings = run("related-http", {v: (lambda v=v: probes.landing(v)) for v in found})
-        shared = {ip for v, d in found.items() if v in profiles and d in profiles for ip in profiles[v].a & profiles[d].a}
+        redirects = run("related-http", {v: (lambda v=v: probes.redirects(v)) for v in found})
+        shared = {ip for v, ds in found.items() for d in ds if v in profiles and d in profiles for ip in profiles[v].a & profiles[d].a}
         owners = run("related-rdap", {ip: (lambda ip=ip: probes.network_owner(ip)) for ip in shared})
-        for variant, domain in sorted(found.items()):
-            if variant not in profiles or domain not in profiles:
-                continue
-            if linked := tie(variant, domain, profiles, own, listed, landings.get(variant), owners, suffixes):
-                _record_related(inv, variant, domain, *linked)
-            else:
+        for variant, domains in sorted(found.items()):
+            ties = [(t, d) for d in domains if variant in profiles and d in profiles and (t := tie(variant, d, profiles, own, redirects.get(variant, []), owners))]
+            if ties:
+                (tier, evidence), domain = max(ties, key=lambda td: RELATED_TIERS.index(td[0][0]))
+                _record_related(inv, variant, domain, tier, evidence)
+            elif variant in profiles:
                 for ip in sorted(profiles[variant].a) or [None]:
                     inv.add(Observation("tld-swap", variant, ip, lookalike=True))
         log.info("related: %d domains", len(inv.related))

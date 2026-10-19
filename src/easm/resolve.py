@@ -66,15 +66,16 @@ class DnsResolver:
 
     def records(self, hostname: str, rdtype: str) -> list[str] | None:
         """A name's records of one type, lowercased without the trailing dot (MX: just the host);
-        None if the name doesn't exist, [] if it has none of that type or there was no answer."""
+        None if the name doesn't exist, [] if it has none of that type. A timeout raises, so it is
+        never mistaken for either."""
         try:
             answer = self._resolve(hostname, rdtype)
         except dns.resolver.NXDOMAIN:
             return None
-        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.Timeout):
+        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers):
             return []
         values = (r.exchange.to_text() if rdtype == "MX" else r.to_text() for r in answer)
-        return sorted({v.rstrip(".").lower() for v in values})
+        return sorted({v.rstrip(".").lower() for v in values} - {""})  # "MX 0 ." means no mail, not a host
 
     def txt(self, hostname: str) -> list[str]:
         """The name's TXT strings (each record's parts joined); none if it has none or doesn't exist."""

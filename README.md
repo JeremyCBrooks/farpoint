@@ -122,12 +122,15 @@ looks for them, starting from nothing but the scan domains:
   organisation's. Subdomains of your scan domains it lists join the inventory (source `m365`).
 - **TLD swap:** each scan domain's name under every other suffix in `src/easm/data/suffixes.txt`
   (all IANA top-level domains plus common second levels such as `com.au`, generated, not picked).
-  Registered ones are tied to the organisation by evidence:
-  - `strong`: in its Microsoft 365 tenant; redirects to one of its domains; or the same nameservers
-    plus a shared mail host or address
-  - `medium`: served by the organisation's own nameservers (`ns1.example.com`)
-  - `weak`: the same nameservers at an outside DNS provider, or a shared address. Worth a look,
-    not proof: many unrelated customers share a provider's nameservers.
+  Registered ones are tied to the organisation by evidence. Any one signal can be faked or shared
+  (a DNS provider's nameservers, a parking address, a squatter redirecting to the real site), so
+  one signal alone is at most `medium`:
+  - `strong`: signals that agree, such as the organisation's own nameservers plus a shared mail host,
+    address or redirect home; or the same nameservers plus a redirect home or the organisation's own
+    mail host (`example-com.mail.protection.outlook.com`)
+  - `medium`: its own nameservers (`ns1.example.com`), a direct redirect home, or its own mail host
+  - `weak`: the same nameservers at an outside provider, a shared address or generic mail host, or a
+    redirect home through someone else's host. Worth a look, not proof.
 
   Registered variants with no tie go to lookalikes: someone else's, or a squatter's.
 
@@ -135,11 +138,13 @@ Results go to `related.csv` and the `related` section of `assets.json`, and the 
 the strong and medium ones. **They are never added to the scan**: owning a domain doesn't mean
 you're authorised to scan it, so add the ones you are to your domain list yourself.
 
-The rules were fixed before being measured on randomly sampled organisations, with controls (each
-organisation's rules applied to an unrelated organisation's domains). In 1,390 unrelated pairs
-nothing was tied. Domains only Microsoft 365 knows about are missed for organisations not on it.
+The rules were measured on randomly sampled organisations, with controls (each organisation's rules
+applied to an unrelated organisation's domains, where any tie is false). A domain that is looked at
+again and no longer tied (it lapsed, or changed hands) leaves `related`. Domains only Microsoft 365
+knows about are missed for organisations not on it.
 
-**Not passive:** about 1,800 lookups per scan domain go to the registries (not the organisation),
+**Not passive:** about 1,800 lookups per scan domain go to the registries (not the organisation;
+8 at a time, and one that times out is reported as an error rather than taken for "unregistered"),
 each registered variant gets a few lookups and one HTTP request (to see where it redirects), and
 Microsoft gets one request per scan domain.
 

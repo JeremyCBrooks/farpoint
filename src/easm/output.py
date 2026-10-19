@@ -209,11 +209,13 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     hosts, new_hosts = _merge_rows(prior.get("hosts", []), current["hosts"], "hostname", host, stamp, prior_stamp)
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
     lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), current["lookalikes"], "domain", lookalike, stamp, prior_stamp)
-    def related(old, new):
-        stronger = max(old, new, key=lambda row: _RELATED_TIERS.index(row.get("tie")) if row.get("tie") in _RELATED_TIERS else -1)
-        return {"related_to": stronger.get("related_to"), "tie": stronger.get("tie"), "evidence": _union(old.get("evidence", []), new["evidence"])}
+    def related(old, new):  # this run looked again: its verdict replaces the old one
+        return {"related_to": new["related_to"], "tie": new["tie"], "evidence": new["evidence"]}
 
-    related_rows, new_related = _merge_rows(prior.get("related", []), current.get("related", []), "domain", related, stamp, prior_stamp)
+    checked = set(current.get("related_checked", []))  # looked at again and no longer tied: dropped
+    found_now = {r["domain"] for r in current.get("related", [])}
+    prior_related = [r for r in prior.get("related", []) if r["domain"] not in checked or r["domain"] in found_now]
+    related_rows, new_related = _merge_rows(prior_related, current.get("related", []), "domain", related, stamp, prior_stamp)
     tenants, new_tenants = _merge_rows(prior.get("tenants", []), current.get("tenants", []), "tenant", tenant, stamp, prior_stamp)
     prior_guessed = prior.get("guessed", {})
     if isinstance(prior_guessed, list):
@@ -311,6 +313,7 @@ def run_report(inv: Inventory) -> dict:
         ],
         "tenants": _tenant_rows(inv),
         "related": _related_rows(inv),
+        "related_checked": sorted(inv.related_checked),
         "guessed": sorted(inv.guessed),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,

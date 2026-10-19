@@ -95,6 +95,7 @@ class Inventory:
         self.lookalikes: dict[str, LookalikeRecord] = {}
         self.tenants: dict[str, TenantRecord] = {}
         self.related: dict[str, RelatedRecord] = {}
+        self.related_checked: set[str] = set()  # domains --related looked at this run, tied or not
         self.guessed: set[str] = set()  # names --guess tested this run (whether or not they exist)
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []

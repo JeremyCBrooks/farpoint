@@ -28,6 +28,7 @@ from importlib import resources
 
 from easm.guess import BARE, Taxonomy, parent_of
 from easm.names import in_scope, normalize_hostname
+from easm.suffixes import registered as _registered
 
 TIES = ("name", "cname", "records")  # weakest first: what links a tenant to the organisation
 MODIFIERS = 8  # the organisation's most used modifiers, tried on platforms its records point to
@@ -109,11 +110,8 @@ def spf_includes(txt: Iterable[str]) -> list[str]:
 
 
 def registered(hostname: str) -> str:
-    """A hostname's registered domain, roughly: its last two labels, three under a ccTLD's second level
-    (mail.example.co.uk -> example.co.uk). Good enough to name a platform; never used for scope."""
-    labels = hostname.split(".")
-    keep = 3 if len(labels) > 2 and len(labels[-1]) == 2 and labels[-2] in {"co", "com", "net", "org", "ac", "gov", "edu"} else 2
-    return ".".join(labels[-keep:])
+    """A hostname's registered domain, or the name itself if it is a public suffix (naming a platform)."""
+    return _registered(hostname) or hostname
 
 
 def plan(
