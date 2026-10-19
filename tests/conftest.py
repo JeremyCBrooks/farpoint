@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from easm import runtime
 from easm.sources import base
 
 
@@ -11,10 +12,12 @@ def sleeps(monkeypatch):
     recorded: list[float] = []
 
     def sleep(seconds: float) -> None:
+        runtime.check()
         recorded.append(seconds)
         clock[0] += seconds
 
-    monkeypatch.setattr(base.time, "sleep", sleep)
+    runtime.reset()
+    monkeypatch.setattr(runtime, "sleep", sleep)
     monkeypatch.setattr(base.time, "monotonic", lambda: clock[0])
     return recorded
 

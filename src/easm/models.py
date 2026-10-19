@@ -71,6 +71,7 @@ class Inventory:
         self.lookalikes: dict[str, LookalikeRecord] = {}
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
+        self.interrupted = False  # stopped early (Ctrl-C): what is here is partial
 
     def scope_of(self, hostname: str) -> str | None:
         return next((d for d in self.domains if in_scope(hostname, d)), None)

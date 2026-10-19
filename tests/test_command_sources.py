@@ -35,13 +35,13 @@ def _contains(argv: list[str], flags: list[str]) -> bool:
 )
 def test_external_tools_are_invoked_in_passive_mode(cls, flags):
     rec = Recorder()
-    cls(runner=rec).collect(D)
+    list(cls(runner=rec).collect(D))
     assert _contains(rec.argv, flags), rec.argv
 
 
 def test_dnstwist_never_enables_active_probes():
     rec = Recorder("[]")
-    Dnstwist(runner=rec).collect(D)
+    list(Dnstwist(runner=rec).collect(D))
     # --mxcheck talks SMTP, --banners/--lsh/--phash fetch web pages from the lookalike hosts
     dnstwist_args = rec.argv[rec.argv.index("dnstwist") + 1 :]
     assert not {"--mxcheck", "--banners", "--lsh", "--phash", "-m", "-b", "-p"} & set(dnstwist_args)

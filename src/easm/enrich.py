@@ -9,7 +9,7 @@ from typing import Protocol
 import httpx
 
 from easm.models import IpDetails
-from easm.sources.base import HttpSource
+from easm.sources.base import HttpSource, SourceFailure
 
 
 class Enricher(Protocol):
@@ -53,7 +53,7 @@ class Rdap(HttpSource):
             if version not in self._bootstrap:
                 try:
                     services = self.get(f"https://data.iana.org/rdap/ipv{version}.json").json()["services"]
-                except (httpx.HTTPError, ValueError, KeyError):
+                except (httpx.HTTPError, SourceFailure, ValueError, KeyError):  # fall back to rdap.org
                     services = []
                 self._bootstrap[version] = [
                     (ipaddress.ip_network(prefix), next((u for u in urls if u.startswith("https")), urls[0]))

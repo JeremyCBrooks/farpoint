@@ -7,13 +7,16 @@ into it, and every other file is regenerated from the merged result.
 from __future__ import annotations
 
 import contextlib
+import copy
 import csv
 import io
 import ipaddress
 import json
 import os
+import secrets
 import tempfile
-from collections.abc import Iterable, Iterator
+import time
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +25,7 @@ try:
 except ImportError:  # Windows: no advisory locking
     fcntl = None
 
-from easm.models import Inventory
+from easm.models import Inventory, Observation
 
 
 def _ip_key(ip: str) -> tuple[int, int]:
@@ -74,7 +77,7 @@ def _stamp(when: datetime) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _now() -> str:
+def now_stamp() -> str:
     return _stamp(datetime.now(timezone.utc))
 
 
@@ -132,7 +135,8 @@ def _merge_rows(prior: list[dict], current: list[dict], key: str, merge, stamp: 
             new += 1
             merged[row[key]] = {**row, "first_seen": stamp, "last_seen": stamp}
         else:
-            merged[row[key]] = {**old, **row, **merge(old, row), "first_seen": old["first_seen"], "last_seen": stamp}
+            seen = {"first_seen": min(old["first_seen"], stamp), "last_seen": max(old["last_seen"], stamp)}
+            merged[row[key]] = {**old, **row, **merge(old, row), **seen}
     return list(merged.values()), new
 
 
@@ -165,19 +169,20 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     run = {
         "at": stamp,
         "domains": current["domains"],
+        "interrupted": bool(current.get("interrupted")),
         "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes},
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
     }
     return {
-        "updated_at": stamp,
+        "updated_at": max(prior.get("updated_at", stamp), stamp),
         "domains": list(dict.fromkeys([*prior.get("domains", []), *current["domains"]])),
         "hosts": sorted(hosts, key=lambda h: h["hostname"]),
         "ips": sorted(ips, key=lambda r: _ip_key(r["ip"])),
         "lookalikes": sorted(lookalikes, key=lambda r: r["domain"]),
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
-        "runs": [*prior.get("runs", []), run],
+        "runs": sorted([*prior.get("runs", []), run], key=lambda r: r["at"]),
     }
 
 
@@ -190,11 +195,15 @@ def _locked(out_dir: Path) -> Iterator[None]:
         yield
 
 
-def _default_mode() -> int:
-    """What open() would give a new file: 0o666 minus the umask (mkstemp alone would give 0o600)."""
-    umask = os.umask(0)
+def _read_umask() -> int:
+    """os.umask() can only be read by setting it, which would briefly hand any subprocess started
+    meanwhile a umask of 0, so it is read once, at import, before any worker thread exists."""
+    umask = os.umask(0o077)
     os.umask(umask)
-    return 0o666 & ~umask
+    return umask
+
+
+_FILE_MODE = 0o666 & ~_read_umask()  # what open() gives a new file (mkstemp alone would give 0o600)
 
 
 def _write_atomic(path: Path, text: str, mode: int) -> None:
@@ -236,10 +245,22 @@ def run_report(inv: Inventory) -> dict:
         ],
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
+        "interrupted": inv.interrupted,
     }
 
 
-def write_outputs(inv: Inventory, out_dir: Path) -> dict:
+def _write_all(out_dir: Path, report: dict, mode: int) -> None:
+    seen = ["first_seen", "last_seen"]
+    write = lambda name, text: _write_atomic(out_dir / name, text, mode)
+    write("assets.json", json.dumps(report, indent=2))
+    write("hosts.txt", "".join(f"{h['hostname']}\n" for h in report["hosts"]))
+    write("ips.txt", "".join(f"{r['ip']}\n" for r in report["ips"]))
+    write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
+    write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "vulns", "hostnames", "sources", *seen]))
+    write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
+
+
+def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None) -> dict:
     """Merge this run into out_dir's inventory and rewrite every output file. Returns the merged report.
 
     If the existing inventory can't be merged, this run is saved alongside it (never over it) and
@@ -247,8 +268,7 @@ def write_outputs(inv: Inventory, out_dir: Path) -> dict:
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     current = run_report(inv)
-    stamp, mode = _now(), _default_mode()
-    seen = ["first_seen", "last_seen"]
+    stamp, mode = stamp or now_stamp(), _FILE_MODE
     with _locked(out_dir):
         try:
             report = merge_reports(load_report(out_dir), current, stamp)
@@ -256,11 +276,93 @@ def write_outputs(inv: Inventory, out_dir: Path) -> dict:
             unmerged = out_dir / f"assets.unmerged-{stamp.replace(':', '')}.json"
             _write_atomic(unmerged, json.dumps(current, indent=2), mode)
             raise ReportError(f"{exc} This run was saved to {unmerged}.") from exc
-        write = lambda name, text: _write_atomic(out_dir / name, text, mode)
-        write("assets.json", json.dumps(report, indent=2))
-        write("hosts.txt", "".join(f"{h['hostname']}\n" for h in report["hosts"]))
-        write("ips.txt", "".join(f"{r['ip']}\n" for r in report["ips"]))
-        write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
-        write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "vulns", "hostnames", "sources", *seen]))
-        write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
+        _write_all(out_dir, report, mode)
     return report
+
+
+class Checkpointer:
+    """Saves the run in progress (at most every `interval` seconds) so a hard kill loses little.
+
+    Each run writes its own .checkpoint-<pid>-<random>.json and holds an exclusive lock on the
+    matching .lock file while alive; the next run into the directory merges any checkpoint whose lock
+    is free (see recover_checkpoints). Locks, not PIDs, decide liveness, since PIDs get reused (a
+    container's easm is always PID 1). A finished run calls clear().
+    """
+
+    def __init__(self, out_dir: Path, interval: float = 5.0) -> None:
+        token = f"{os.getpid()}-{secrets.token_hex(4)}"
+        self.path = out_dir / f".checkpoint-{token}.json"
+        self.lock_path = out_dir / f".checkpoint-{token}.lock"
+        self.started = now_stamp()
+        self.interval = interval
+        self._last: float | None = None
+        self._lock_fh = None
+
+    def __call__(self, inv: Inventory, pending: Mapping[tuple[str, str], list[Observation]] | None = None) -> None:
+        """Save `inv` plus `pending` (pages from jobs still running), unless saved within `interval`."""
+        if self._last is not None and time.monotonic() - self._last < self.interval:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self._lock_fh is None:
+            self._lock_fh = open(self.lock_path, "w")
+            if fcntl:
+                fcntl.flock(self._lock_fh, fcntl.LOCK_EX)
+        extra = [obs for observations in list((pending or {}).values()) for obs in list(observations)]
+        if extra:
+            inv = copy.deepcopy(inv)
+            for obs in extra:
+                inv.add(obs)
+        _write_atomic(self.path, json.dumps({**run_report(inv), "at": self.started, "interrupted": True}), _FILE_MODE)
+        self._last = time.monotonic()
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
+        if self._lock_fh is not None:
+            self.lock_path.unlink(missing_ok=True)
+            self._lock_fh.close()
+            self._lock_fh = None
+
+
+def _owner_alive(checkpoint: Path) -> bool:
+    """Whether the run that wrote `checkpoint` is still running: it holds the lock on its .lock file."""
+    lock_path = checkpoint.with_suffix(".lock")
+    if not fcntl:  # no flock (Windows): fall back to the PID in the name
+        pid = checkpoint.stem.removeprefix(".checkpoint-").split("-")[0]
+        try:
+            os.kill(int(pid), 0)
+        except (ValueError, ProcessLookupError):
+            return False
+        except PermissionError:
+            return True
+        return True
+    try:
+        with open(lock_path, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    except BlockingIOError:
+        return True
+    return False
+
+
+def recover_checkpoints(out_dir: Path) -> list[dict]:
+    """Merge checkpoints left by runs that were killed before they could save.
+
+    Returns a summary (at, domains, hosts) of each recovered run."""
+    recovered = []
+    if not out_dir.is_dir():
+        return recovered
+    with _locked(out_dir):
+        for path in sorted(out_dir.glob(".checkpoint-*.json")):
+            if _owner_alive(path):
+                continue
+            try:
+                checkpoint = json.loads(path.read_text(encoding="utf-8"))
+                _validate(checkpoint)
+            except (OSError, ValueError) as exc:
+                raise ReportError(f"can't recover {path}: {exc}. Move or delete it to continue.") from exc
+            stamp = checkpoint.get("at") or now_stamp()
+            _write_all(out_dir, merge_reports(load_report(out_dir), checkpoint, stamp), _FILE_MODE)
+            path.unlink()
+            path.with_suffix(".lock").unlink(missing_ok=True)
+            recovered.append({"at": stamp, "domains": checkpoint.get("domains", []), "hosts": len(checkpoint.get("hosts", []))})
+    return recovered

@@ -11,7 +11,7 @@ from test_pipeline import StaticSource
 from easm.models import Observation
 from easm.pipeline import Pipeline
 from easm.resolve import DnsResolver, Resolution
-from easm.sources.base import MAX_WAIT, retry_after_seconds
+from easm.sources.base import MAX_WAIT, SourceFailure, retry_after_seconds
 from easm.sources.web import CrtSh, VirusTotal
 
 D = "example.com"
@@ -21,7 +21,7 @@ OK = httpx.Response(200, json=[{"name_value": "a.example.com"}])
 def test_backoff_is_exponential_with_jitter(sleeps):
     http = fake_http({"crt.sh/": [httpx.Response(503)] * 5})
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(SourceFailure):
         list(CrtSh(http).collect(D))
 
     assert len(sleeps) == 4

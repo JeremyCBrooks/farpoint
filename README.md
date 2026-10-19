@@ -18,6 +18,20 @@ uv run easm example.com --only crtsh,certspotter --no-enrich
 uv run easm example.com --exclude dnstwist   # dnstwist is the slowest source (several minutes)
 ```
 
+## Progress and stopping a scan
+
+In a terminal, easm shows one live line per source and domain: a spinner while it runs, what it is
+doing (requesting, waiting on a rate limit, `HTTP 502, retrying in 7s (2/5)`, names found so far
+for subfinder/bbot), then `✓ N results` or `✗ failed: …`, followed by DNS/enrichment counters.
+`-v` logs the same events as plain lines instead (also used when output is not a terminal);
+`--no-progress` turns the display off.
+
+**Ctrl-C (or SIGTERM) stops the scan and saves what it has**, including pages already fetched by
+sources still running, and marks the run `interrupted` in the history; press Ctrl-C again to quit
+without saving. While scanning, results are also checkpointed (every few seconds, as sources
+finish) to `.checkpoint-<pid>.json`, so even a hard kill or closed terminal loses little: the next
+run into the same `--out` merges it automatically. Re-running fills in whatever was missed.
+
 ## Output (`--out`, default `./out`)
 
 Runs **accumulate**: each run is merged into the inventory already in the output directory, so you

@@ -16,6 +16,8 @@ class Subfinder(CommandSource):
     """ProjectDiscovery subfinder: passive-only by design."""
 
     name = binary = "subfinder"
+    progress_unit = "names"
+    progress_waiting = "running (subfinder prints its results only when it finishes)"
 
     def argv(self, domain: str) -> list[str]:
         return [self.binary, "-d", domain, "-silent", "-all"]
@@ -28,6 +30,7 @@ class Bbot(CommandSource):
     """BBOT subdomain-enum preset restricted to modules flagged passive."""
 
     name = binary = "bbot"
+    progress_unit = "events"
 
     def argv(self, domain: str) -> list[str]:
         return [self.binary, "-t", domain, "-p", "subdomain-enum", "-rf", "passive", "-y", "--silent", "--json"]
@@ -49,6 +52,7 @@ class Dnstwist(CommandSource):
     """Registered typosquat/lookalike domains (DNS lookups only, no web/SMTP probing)."""
 
     name = "dnstwist"
+    progress_waiting = "running (dnstwist prints its results only when it finishes; often minutes)"
 
     def available(self) -> bool:
         return importlib.util.find_spec("dnstwist") is not None

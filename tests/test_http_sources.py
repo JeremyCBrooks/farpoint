@@ -45,7 +45,7 @@ def test_http_source_retries_after_rate_limit():
 def test_http_source_gives_up_after_retries_with_failure():
     http = fake_http({"crt.sh/": [httpx.Response(503)] * 5})
 
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises(SourceFailure, match="HTTP 503 Service Unavailable after 5 attempts"):
         list(CrtSh(http, backoff=0).collect(D))
 
 
