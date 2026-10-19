@@ -64,7 +64,8 @@ _WORD_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 @dataclass(frozen=True)
 class GuessConfig:
     budget: int = 2000  # DNS lookups per input domain, over all rounds
-    rounds: int = 3  # names found in one round teach the next
+    rounds: int = 3  # names found in one round teach the next; 0: no guessing
+    follow_up: float = 0.1  # share of the budget kept for one more round, on what the last regular round found
     prior: Prior | None = None  # None: the bundled one
     known: Mapping[str, Sequence[str]] = field(default_factory=dict)  # earlier runs' hosts -> CNAMEs: learned from, never re-tested
     known_weak: frozenset[str] = frozenset()  # those of them never seen with an address

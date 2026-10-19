@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 Key = tuple[str, str]
 
 WILDCARD_PROBES = 3  # random names looked up per parent before guessing under it
+MIN_SHARE = 1 + WILDCARD_PROBES  # a round's share always covers a guess under a parent not yet probed
 IMPLAUSIBLE_MIN, IMPLAUSIBLE_SHARE = 10, 0.5  # this many guesses under a parent, more than this share resolving
 
 
@@ -240,12 +241,18 @@ class Pipeline:
     def _guess(self, inv: Inventory) -> None:
         """Rounds of: learn the naming taxonomy from everything known, test the best untried candidates
         per domain (probes included, within its budget), keep those that resolve and aren't a
-        wildcard's answer, then resolve whatever in-scope CNAME targets the new names point at."""
-        known = {h: cnames for h, cnames in self.guess.known.items() if inv.scope_of(h)}
-        tried = set(inv.hosts) | set(known) | set(self.guess.tried)  # never offered again
-        lookup = _paced(self.lookup, self.guess.rate)
+        wildcard's answer, then resolve whatever in-scope CNAME targets the new names point at.
+
+        The budget is shared out so that later rounds have something to spend: each of the `rounds`
+        gets an equal part of what is left, minus a `follow_up` share kept for one more round, so what
+        the last regular round finds still has its variants tried in this run. A round that finds
+        nothing just goes on down the list. `rounds=0` means no guessing."""
+        config = self.guess
+        known = {h: cnames for h, cnames in config.known.items() if inv.scope_of(h)}
+        tried = set(inv.hosts) | set(known) | set(config.tried)  # never offered again
+        lookup = _paced(self.lookup, config.rate)
         checked = set(inv.hosts)  # resolution already attempted this run
-        budget = dict.fromkeys(inv.domains, self.guess.budget)
+        budget = dict.fromkeys(inv.domains, config.budget)
         wildcards: dict[str, Resolution | None] = {}  # parent -> wildcard answer; timed_out: unknown, don't guess there
         done, failed, total = [0], [0], [0]
 
@@ -256,17 +263,26 @@ class Pipeline:
 
         def has_address(host: str) -> bool:
             record = inv.hosts.get(host)
-            return bool(record and record.ips) or (host in known and host not in self.guess.known_weak)
+            return bool(record and record.ips) or (host in known and host not in config.known_weak)
 
-        for _ in range(self.guess.rounds):
-            hosts = {h: set(c) for h, c in known.items()}
-            for h, r in inv.hosts.items():
-                hosts[h] = hosts.get(h, set()) | r.cnames
-            tenants = {**self.guess.tenants, **{t.hostname: t.domain for t in inv.tenants.values() if t.verified}}
-            model = Taxonomy(hosts, inv.domains, self.guess.prior, weak={h for h in hosts if not has_address(h)}, tenants=tenants)
-            batch, probing = self._pick(model, inv.domains, tried, budget, wildcards)
+        reserve = min(config.budget, max(int(config.budget * config.follow_up), MIN_SHARE)) if config.follow_up else 0
+        model = None
+        for i in range(config.rounds + 1 if config.rounds else 0):
+            last = i == config.rounds
+            caps = {d: budget[d] if last else min(budget[d], max((budget[d] - reserve) // (config.rounds - i), MIN_SHARE)) for d in inv.domains}
+            if model is None:  # rebuilt only when the last round found something
+                hosts = {h: set(c) for h, c in known.items()}
+                for h, r in inv.hosts.items():
+                    hosts[h] = hosts.get(h, set()) | r.cnames
+                tenants = {**config.tenants, **{t.hostname: t.domain for t in inv.tenants.values() if t.verified}}
+                model = Taxonomy(hosts, inv.domains, config.prior, weak={h for h in hosts if not has_address(h)}, tenants=tenants)
+            batch, probing, spent = self._pick(model, inv.domains, tried, caps, wildcards)
+            for d, n in spent.items():
+                budget[d] -= n
             if not batch:
-                break
+                if last or not any(budget.values()):
+                    break
+                continue  # nothing fit this round's share: the next round's is larger
             tried.update(batch)
             self._probe_wildcards(inv, probing, wildcards, lookup)
             usable = []
@@ -297,30 +313,33 @@ class Pipeline:
             if self.tenants:  # a found name's alias may be a tenant, whose words teach the next round
                 _cname_tenants(inv, {h: inv.hosts[h].cnames for h in answers})
             log.info("guessing: %d of %d candidates resolved", len(answers), len(usable))
-            if not answers:
-                break
+            if answers:
+                model = None
 
     @staticmethod
     def _pick(
-        model: Taxonomy, domains: Sequence[str], tried: set[str], budget: dict[str, int], wildcards: Mapping[str, object]
-    ) -> tuple[dict[str, str], set[str]]:
-        """The best untried candidates per domain ({name: domain}) and the parents still to probe for
-        wildcards, charging each domain's budget one lookup per candidate plus the probes it needs."""
+        model: Taxonomy, domains: Sequence[str], tried: set[str], caps: Mapping[str, int], wildcards: Mapping[str, object]
+    ) -> tuple[dict[str, str], set[str], dict[str, int]]:
+        """The best untried candidates per domain ({name: domain}), the parents still to probe for
+        wildcards, and the lookups that costs per domain (one per candidate plus the probes it needs),
+        at most `caps`."""
         batch: dict[str, str] = {}
         probing: set[str] = set()
+        spent = dict.fromkeys(domains, 0)
         for domain in domains:
             for name in model.candidates(domain):
-                if budget[domain] < 1:
+                left = caps[domain] - spent[domain]
+                if left < 1:
                     break
                 parent = parent_of(name)
                 cost = 1 + (WILDCARD_PROBES if parent not in wildcards and parent not in probing else 0)
-                if name in tried or cost > budget[domain]:
+                if name in tried or cost > left:
                     continue
-                budget[domain] -= cost
+                spent[domain] += cost
                 if parent not in wildcards:
                     probing.add(parent)
                 batch[name] = domain
-        return batch, probing
+        return batch, probing, spent
 
     @staticmethod
     def _implausible(tested: Iterable[str], answers: Mapping[str, Resolution]) -> set[str]:

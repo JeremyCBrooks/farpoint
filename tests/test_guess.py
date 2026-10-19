@@ -350,3 +350,63 @@ def test_a_found_guesss_alias_to_a_tenant_teaches_the_next_round():
     ).run(["example.com"])
     assert inv.tenants["example-mft-traffic.vendor.co"].tie == "cname"
     assert "guess" in inv.hosts["traffic.example.com"].sources  # 'traffic' came only from the tenant
+
+
+FILLER = [f"filler{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(200)]
+
+
+def _tenant_follow_up_run(position=None, budget=60, follow_up=0.1):
+    """Popular names, with 'mft' at `position`; it resolves to a tenant whose other word is 'traffic'.
+    Returns the inventory and the names guessed, in order."""
+    from easm.tenants import TenantConfig
+
+    words = list(FILLER)
+    if position is not None:
+        words.insert(position, "mft")
+    table = {
+        "mft.example.com": Resolution(ips=("192.0.2.50",), cnames=("example-mft-traffic.vendor.co",)),
+        "traffic.example.com": Resolution(ips=("192.0.2.51",)),
+    }
+    src = StaticSource("crtsh", [Observation("crtsh", "www.example.com")])
+    lookups = []
+    lookup = lambda h: lookups.append(h) or table.get(h, Resolution())
+    inv = Pipeline(
+        sources=[src],
+        lookup=lookup,
+        txt=lambda d: [],
+        tenants=TenantConfig(vendors=[]),
+        guess=GuessConfig(budget=budget, rounds=3, follow_up=follow_up, prior=Prior.from_lines(words)),
+    ).run(["example.com"])
+    guessed = [h for h in lookups if h in inv.guessed]
+    assert len([h for h in lookups if h.endswith(".example.com") and h != "www.example.com"]) <= budget
+    return inv, guessed
+
+
+def test_a_find_is_followed_up_in_the_same_run():
+    inv, guesses = _tenant_follow_up_run(position=0)
+    assert "guess" in inv.hosts["traffic.example.com"].sources  # only the tenant suggests it
+    assert guesses.index("traffic.example.com") > guesses.index("mft.example.com")
+
+
+def test_what_the_last_regular_round_finds_is_followed_up_by_the_reserve():
+    _, plain = _tenant_follow_up_run(follow_up=0)  # how far the regular rounds get on their own
+    last_regular = len(plain) - 1
+    without, _ = _tenant_follow_up_run(position=last_regular, follow_up=0)
+    assert "mft.example.com" in without.hosts and "traffic.example.com" not in without.guessed
+    with_reserve, _ = _tenant_follow_up_run(position=last_regular - 10)  # the reserve takes the last few lookups
+    assert "guess" in with_reserve.hosts["traffic.example.com"].sources
+
+
+def test_no_rounds_means_no_guessing():
+    src = StaticSource("crtsh", [Observation("crtsh", "api-dev.example.com")])
+    inv = Pipeline(sources=[src], lookup=dns_table({}), guess=GuessConfig(budget=50, rounds=0, prior=PRIOR)).run(["example.com"])
+    assert inv.guessed == set()
+
+
+def test_a_small_budget_still_guesses_in_the_first_round():
+    src = StaticSource("crtsh", [Observation("crtsh", "api-dev.example.com")])
+    calls = []
+    lookup = lambda h: calls.append(h) or Resolution()
+    inv = Pipeline(sources=[src], lookup=lookup, guess=GuessConfig(budget=10, prior=PRIOR)).run(["example.com"])
+    guessing = [c for c in calls if c not in ("example.com", "api-dev.example.com")]  # the rest is plain resolution
+    assert inv.guessed and len(guessing) <= 10

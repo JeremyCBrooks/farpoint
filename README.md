@@ -36,13 +36,15 @@ internal names like `portal-prod.azurewebsites.net`), then predicts and tests na
 - with `--tenants`, the words of the organisation's verified tenants besides its own name, tried first
   (`example-mft-traffic.vendor.co` → `mft-traffic`, `mft`, `traffic`), unless its names already use them
 
-Names found in one round teach the next (3 rounds). `--guess-budget N` caps the lookups per domain,
-wildcard probes included (default 2000, a minute or two). Every name tested is remembered in
-`assets.json` (`guessed`), and later runs into the same `--out` skip it, so each run goes further
-down the list: names ranked deep (around #15,000) are reached after about 8 runs at the default
-budget. A name is tried again 90 days after it was last tested. `--guess-rate N` spreads lookups out to at
-most N a second (2000 at 5/s takes about 7 minutes), so the domain's nameservers see a trickle, not a
-burst. Before testing names under a parent, three
+Names found in one round teach the next. `--guess-budget N` caps the lookups per domain, wildcard
+probes included (default 2000, a minute or two). It is shared over 3 rounds plus a small last
+round (10%), so what any round finds has its variants tried in the same run (find `mft`, then
+try `mft-dev`, `mft-uat`). Every name tested is remembered in `assets.json` (`guessed`), and later
+runs into the same `--out` skip it, so each run goes further down the list: names ranked deep
+(around #15,000) are reached after 8 or 9 runs at the default budget. A name is tried again 90
+days after it was last tested. `--guess-budget` and `--guess-rate` are the controls on how much the
+domain's nameservers see: `--guess-rate N` spreads lookups out to at most N a second (2000 at 5/s
+takes about 7 minutes), a trickle rather than a burst. Before testing names under a parent, three
 random names there are looked up. If those resolve (wildcard DNS), a guess only counts if it has an
 address or alias of its own. If they get no answer, no guesses are tested there. If most guesses under
 a parent resolve anyway (a wildcard rotating addresses), they are all discarded. Skipped and discarded
@@ -54,9 +56,10 @@ exist. Only use it where that is acceptable.
 Nothing in the model is specific to one organisation. Everything is learned from the names being
 scanned, except a weak prior: `src/easm/data/subdomains.txt`, a popularity ranking of subdomain labels
 from SecLists (MIT). Popular labels are tried as standalone names (`files`) and split run-together
-labels (`athenauat` = `athena` + `uat`); modifiers come only from the organisation's own names. To measure it on an
-inventory without any DNS traffic, `uv run python -m easm.guess out` hides each known host in turn and
-reports how often a model learned from the rest ranks it within 100/500/2000 guesses.
+labels (`athenauat` = `athena` + `uat`); modifiers come only from the organisation's own names. To
+measure it on an inventory without any DNS traffic, `uv run python -m easm.guess out` hides each
+known host in turn and reports how often a model learned from the rest ranks it within
+100/500/2000 guesses.
 
 ### Cross-organisation corpus (optional)
 
@@ -64,8 +67,9 @@ What one organisation's names can't teach (that `dev` usually comes with `prod`,
 exist) comes from how many other organisations name their hosts. `easm.corpus` builds those statistics:
 it samples organisations from organisation-validated certificates in public CT logs (one domain per
 certificate subject), fetches each one's names from crt.sh's public database (one query at a time;
-organisations too large for its query limit are skipped), and counts each organisation once per modifier, modifier pair and standalone name. When
-`src/easm/data/corpus.json` exists, `--guess` uses it automatically.
+organisations too large for its query limit are skipped), and counts each organisation once per
+modifier, modifier pair and standalone name. When `src/easm/data/corpus.json` exists, `--guess` uses
+it automatically.
 
 ```bash
 uv sync --group corpus
