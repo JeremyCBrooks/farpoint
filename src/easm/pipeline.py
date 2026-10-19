@@ -1,4 +1,5 @@
-"""Orchestration: sources -> scoped inventory -> DNS resolution -> (opt-in) tenants and guessing -> IP enrichment."""
+"""Orchestration: sources -> (opt-in) related domains -> scoped inventory -> DNS resolution -> (opt-in)
+tenants and guessing -> IP enrichment."""
 
 from __future__ import annotations
 
@@ -14,7 +15,10 @@ from dataclasses import dataclass, field
 from easm import runtime
 from easm.enrich import Enricher
 from easm.guess import GuessConfig, Taxonomy, parent_of
-from easm.models import Inventory, Observation, SourceError, TenantRecord
+from easm.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord
+from easm.related import TIERS as RELATED_TIERS
+from easm.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
+from easm.related import registered as registered_domain
 from easm.names import is_public_ip
 from easm.progress import NullReporter, ProgressReporter
 from easm.resolve import Resolution
@@ -41,6 +45,7 @@ class Pipeline:
     guess: GuessConfig | None = None  # predict unseen names and test them in DNS (needs `lookup`)
     tenants: TenantConfig | None = None  # look for the organisation's tenants on SaaS platforms (needs `lookup`, `txt`)
     txt: Callable[[str], list[str]] | None = None  # a name's TXT strings
+    related: Probes | None = None  # look for other domains the organisation owns (see easm.related)
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -52,6 +57,8 @@ class Pipeline:
             inv.add(Observation("input", domain))
         try:
             self._collect(inv)
+            if self.related:
+                self._related(inv)
             if self.lookup:
                 self._resolve(inv)
                 if self.tenants and self.txt:
@@ -180,6 +187,54 @@ class Pipeline:
             for (_, host), res in self._fan_out(inv, jobs, on_done=tick):
                 _record_resolution(inv, host, res)
             pending = set(inv.hosts) - attempted
+
+    def _related(self, inv: Inventory) -> None:
+        """Domains in the scan domains' Microsoft 365 tenants, then the scan domains' names under every
+        other suffix, tied to the organisation by evidence (easm.related). Subdomains of the scan
+        domains a tenant lists join the inventory; registered variants with no tie are lookalikes."""
+        probes, suffixes = self.related, bundled_suffixes()
+        done, total = [0], [0]
+
+        def run(kind: str, jobs: dict[str, Callable]) -> dict[str, object]:
+            total[0] += len(jobs)
+
+            def tick(ok: bool) -> None:
+                done[0] += 1
+                self.reporter.phase("related", done[0], total[0])
+
+            return {target: result for (_, target), result in self._fan_out(inv, {(kind, t): f for t, f in jobs.items()}, on_done=tick)}
+
+        tenants = run("related-m365", {d: (lambda d=d: probes.tenant_domains(d)) for d in inv.domains})
+        own, listed = set(inv.domains), set()
+        for domain, names in sorted(tenants.items()):
+            for name in names:
+                listed.add(name)
+                if inv.scope_of(name):
+                    inv.add(Observation("m365", name))  # a subdomain the tenant verified
+                elif registered_domain(name, suffixes) == name and not name.endswith(".onmicrosoft.com"):
+                    own.add(name)
+                    _record_related(inv, name, domain, "strong", f"in the Microsoft 365 tenant of {domain}")
+
+        candidates = {v: d for d in inv.domains for v in variants(d, suffixes) if v not in own and not inv.scope_of(v)}
+        ns = {v: r for v, r in run("related-ns", {v: (lambda v=v: probes.records(v, "NS")) for v in candidates}).items() if r}
+        found_under = {split(v, suffixes)[1] for v in ns}
+        wild = {s for s, r in run("related-wildcard", {s: (lambda s=s: probes.records(random_under(s), "NS")) for s in found_under}).items() if r}
+        found = {v: d for v, d in candidates.items() if v in ns and split(v, suffixes)[1] not in wild}
+
+        names = sorted(set(found) | set(inv.domains))
+        profiles = run("related-dns", {n: (lambda n=n: Profile.of(probes, n, ns.get(n))) for n in names})
+        landings = run("related-http", {v: (lambda v=v: probes.landing(v)) for v in found})
+        shared = {ip for v, d in found.items() if v in profiles and d in profiles for ip in profiles[v].a & profiles[d].a}
+        owners = run("related-rdap", {ip: (lambda ip=ip: probes.network_owner(ip)) for ip in shared})
+        for variant, domain in sorted(found.items()):
+            if variant not in profiles or domain not in profiles:
+                continue
+            if linked := tie(variant, domain, profiles, own, listed, landings.get(variant), owners, suffixes):
+                _record_related(inv, variant, domain, *linked)
+            else:
+                for ip in sorted(profiles[variant].a) or [None]:
+                    inv.add(Observation("tld-swap", variant, ip, lookalike=True))
+        log.info("related: %d domains", len(inv.related))
 
     def _tenants(self, inv: Inventory) -> None:
         """Tenant patterns from the domains' own TXT/SPF records, their CNAMEs and the bundled table,
@@ -398,6 +453,15 @@ def _record_resolution(inv: Inventory, host: str, res: Resolution) -> None:
         inv.add(Observation("dns", host, ip))
     for cname in res.cnames:
         inv.add(Observation("dns-cname", cname))
+
+
+def _record_related(inv: Inventory, domain: str, related_to: str, tier: str, evidence: str) -> None:
+    record = inv.related.get(domain)
+    if record is None:
+        record = inv.related[domain] = RelatedRecord(domain, related_to, tier)
+    elif RELATED_TIERS.index(tier) > RELATED_TIERS.index(record.tie):
+        record.tie, record.related_to = tier, related_to
+    record.evidence.add(evidence)
 
 
 def _paced(lookup: Callable[[str], Resolution], rate: float | None) -> Callable[[str], Resolution]:

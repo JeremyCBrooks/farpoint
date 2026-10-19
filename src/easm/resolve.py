@@ -64,6 +64,18 @@ class DnsResolver:
         unchecked = timed_out and not ips and not nxdomain
         return Resolution(tuple(dict.fromkeys(ips)), tuple(dict.fromkeys(cnames)), timed_out=unchecked, exists=nodata and not nxdomain)
 
+    def records(self, hostname: str, rdtype: str) -> list[str] | None:
+        """A name's records of one type, lowercased without the trailing dot (MX: just the host);
+        None if the name doesn't exist, [] if it has none of that type or there was no answer."""
+        try:
+            answer = self._resolve(hostname, rdtype)
+        except dns.resolver.NXDOMAIN:
+            return None
+        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers, dns.exception.Timeout):
+            return []
+        values = (r.exchange.to_text() if rdtype == "MX" else r.to_text() for r in answer)
+        return sorted({v.rstrip(".").lower() for v in values})
+
     def txt(self, hostname: str) -> list[str]:
         """The name's TXT strings (each record's parts joined); none if it has none or doesn't exist."""
         try:

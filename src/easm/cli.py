@@ -22,6 +22,7 @@ from easm.output import Checkpointer, ReportError, load_report, now_stamp, recov
 from easm.progress import LiveReporter, NullReporter
 from easm.resolve import DnsResolver
 from easm.sources import build_sources, select_sources
+from easm.related import NetworkProbes
 from easm.tenants import TenantConfig
 
 USER_AGENT = "easm/0.1 (passive OSINT discovery)"
@@ -53,6 +54,13 @@ def _parser() -> argparse.ArgumentParser:
         help="also look for the organisation's tenants on SaaS and cloud platforms (example.sharepoint.com), "
         "chosen from the domains' TXT/SPF records, their CNAMEs and generic name patterns "
         "(not passive: the platforms' nameservers see the lookups)",
+    )
+    p.add_argument(
+        "--related",
+        action="store_true",
+        help="also look for other domains the organisation owns: its Microsoft 365 tenant's, and its name under "
+        "other suffixes (example.de) tied to it by evidence; reported, never scanned "
+        "(not passive: registries, the variants and Microsoft see requests)",
     )
     p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
     p.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout in seconds (default: 60)")
@@ -137,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     domains = parse_domains(lines)
     if not domains:
         parser.error("no valid domains given")
-    for flag in ("guess", "tenants"):
+    for flag in ("guess", "tenants", "related"):
         if getattr(args, flag) and args.no_resolve:
             parser.error(f"--{flag} needs DNS resolution; drop --no-resolve")
     if args.guess_budget < 1:
@@ -165,16 +173,18 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint = Checkpointer(args.out)
     reporter = LiveReporter(console) if live else NullReporter()
     resolver = DnsResolver(args.nameserver)
+    rdap = Rdap(http, retries=2)
     pipeline = Pipeline(
         sources=sources,
         lookup=None if args.no_resolve else resolver.lookup,
-        enrichers=[] if args.no_enrich else [InternetDb(http, retries=2), Rdap(http, retries=2)],  # one per IP: fail fast
+        enrichers=[] if args.no_enrich else [InternetDb(http, retries=2), rdap],  # one per IP: fail fast
         workers=args.workers,
         reporter=reporter,
         checkpoint=checkpoint,
         guess=_guess_config(args.guess_budget, prior_report, args.guess_rate) if args.guess else None,
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
+        related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -220,6 +230,13 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer) -> int:
     print(f"hostnames:  {len(report['hosts'])} ({live} resolving, {new['hosts']} new)")
     print(f"ips:        {len(report['ips'])} ({new['ips']} new)")
     print(f"lookalikes: {len(report['lookalikes'])} ({new['lookalikes']} new)")
+    if report["related"]:
+        ties = {t: [r["domain"] for r in report["related"] if r["tie"] == t] for t in ("strong", "medium", "weak")}
+        print(f"related:    {len(report['related'])} domains ({len(ties['strong'])} strong, {len(ties['medium'])} medium, {len(ties['weak'])} weak; see related.csv)")
+        likely = ties["strong"] + ties["medium"]
+        if likely:
+            shown = ", ".join(likely[:8]) + (f" and {len(likely) - 8} more" if len(likely) > 8 else "")
+            print(f"            likely the organisation's, not scanned: {shown}")
     if report["tenants"]:
         verified = sum(1 for t in report["tenants"] if t["verified"])
         print(f"tenants:    {len(report['tenants'])} ({verified} verified in DNS, {new['tenants']} new)")

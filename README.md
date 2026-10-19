@@ -19,6 +19,7 @@ uv run easm example.com --only crtsh,certspotter --no-enrich
 uv run easm example.com --exclude dnstwist   # dnstwist is the slowest source (several minutes)
 uv run easm example.com --guess              # also predict unseen names and test them in DNS (not passive)
 uv run easm example.com --tenants            # also look for its tenants on SaaS platforms (not passive)
+uv run easm example.com --related            # also look for other domains it owns (reported, never scanned)
 ```
 
 ## Guessing unseen names (`--guess`)
@@ -110,6 +111,38 @@ that point at it (`hosts`).
 **Not passive:** the platforms' nameservers see the lookups (the organisation's own nameservers see
 one TXT query per domain). Results go to `tenants.csv` and the `tenants` section of `assets.json`.
 
+## Related domains (`--related`)
+
+Organisations own more registered domains than the ones you scan: brands (`examplebrand.com`),
+countries (`example.com.au`), defensive registrations (`example.net` redirecting home). `--related`
+looks for them, starting from nothing but the scan domains:
+
+- **Microsoft 365:** the domains verified in the tenant each scan domain belongs to (Exchange
+  autodiscover's federation information). Only an owner can verify a domain, so these are the
+  organisation's. Subdomains of your scan domains it lists join the inventory (source `m365`).
+- **TLD swap:** each scan domain's name under every other suffix in `src/easm/data/suffixes.txt`
+  (all IANA top-level domains plus common second levels such as `com.au`, generated, not picked).
+  Registered ones are tied to the organisation by evidence:
+  - `strong`: in its Microsoft 365 tenant; redirects to one of its domains; or the same nameservers
+    plus a shared mail host or address
+  - `medium`: served by the organisation's own nameservers (`ns1.example.com`)
+  - `weak`: the same nameservers at an outside DNS provider, or a shared address. Worth a look,
+    not proof: many unrelated customers share a provider's nameservers.
+
+  Registered variants with no tie go to lookalikes: someone else's, or a squatter's.
+
+Results go to `related.csv` and the `related` section of `assets.json`, and the run summary lists
+the strong and medium ones. **They are never added to the scan**: owning a domain doesn't mean
+you're authorised to scan it, so add the ones you are to your domain list yourself.
+
+The rules were fixed before being measured on randomly sampled organisations, with controls (each
+organisation's rules applied to an unrelated organisation's domains). In 1,390 unrelated pairs
+nothing was tied. Domains only Microsoft 365 knows about are missed for organisations not on it.
+
+**Not passive:** about 1,800 lookups per scan domain go to the registries (not the organisation),
+each registered variant gets a few lookups and one HTTP request (to see where it redirects), and
+Microsoft gets one request per scan domain.
+
 ## Progress and stopping a scan
 
 In a terminal, easm shows one live line per source and domain: a spinner while it runs, what it is
@@ -139,6 +172,7 @@ To start fresh, use a new `--out` or delete the directory.
 | `hosts.csv` | hostname, resolves (yes/no/blank = unchecked), ips, cnames, sources, first/last seen |
 | `ips.csv` | ip, org, network, ports, vulns, hostnames, sources, first/last seen |
 | `lookalikes.csv` | Registered typosquat/homoglyph domains and their IPs |
+| `related.csv` | With `--related`: domain, related_to (the scan domain), tie (strong/medium/weak), evidence, first/last seen |
 | `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames, first/last seen |
 | `assets.json` | The inventory itself: everything above, plus `runs` (per-run domains, errors, skipped sources) |
 

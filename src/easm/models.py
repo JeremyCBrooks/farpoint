@@ -70,6 +70,16 @@ class TenantRecord:
     cnames: set[str] = field(default_factory=set)
 
 
+@dataclass
+class RelatedRecord:
+    """Another registered domain the organisation appears to own (see easm.related)."""
+
+    domain: str
+    related_to: str  # the scan domain it was found from
+    tie: str  # "strong", "medium" or "weak"
+    evidence: set[str] = field(default_factory=set)
+
+
 @dataclass(frozen=True)
 class SourceError:
     source: str
@@ -84,6 +94,7 @@ class Inventory:
         self.ips: dict[str, IpRecord] = {}
         self.lookalikes: dict[str, LookalikeRecord] = {}
         self.tenants: dict[str, TenantRecord] = {}
+        self.related: dict[str, RelatedRecord] = {}
         self.guessed: set[str] = set()  # names --guess tested this run (whether or not they exist)
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []

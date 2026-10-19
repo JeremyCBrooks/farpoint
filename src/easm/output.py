@@ -27,6 +27,7 @@ except ImportError:  # Windows: no advisory locking
 
 from easm.guess import RETRY_DAYS
 from easm.models import Inventory, Observation
+from easm.related import TIERS as _RELATED_TIERS
 from easm.tenants import TIES as _TIES
 
 
@@ -87,6 +88,13 @@ def _tenant_rows(inv: Inventory) -> list[dict]:
     ]
 
 
+def _related_rows(inv: Inventory) -> list[dict]:
+    return [
+        {"domain": r.domain, "related_to": r.related_to, "tie": r.tie, "evidence": sorted(r.evidence)}
+        for r in sorted(inv.related.values(), key=lambda r: r.domain)
+    ]
+
+
 class ReportError(Exception):
     """The existing assets.json can't be read, so merging into it would lose history."""
 
@@ -104,6 +112,7 @@ _ROW_LISTS = {
     "ips": ("ip", ("ports", "vulns", "hostnames", "sources")),
     "lookalikes": ("domain", ("ips", "sources")),
     "tenants": ("tenant", ("evidence", "ips", "cnames", "hosts")),
+    "related": ("domain", ("evidence",)),
 }
 
 
@@ -200,6 +209,11 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     hosts, new_hosts = _merge_rows(prior.get("hosts", []), current["hosts"], "hostname", host, stamp, prior_stamp)
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
     lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), current["lookalikes"], "domain", lookalike, stamp, prior_stamp)
+    def related(old, new):
+        stronger = max(old, new, key=lambda row: _RELATED_TIERS.index(row.get("tie")) if row.get("tie") in _RELATED_TIERS else -1)
+        return {"related_to": stronger.get("related_to"), "tie": stronger.get("tie"), "evidence": _union(old.get("evidence", []), new["evidence"])}
+
+    related_rows, new_related = _merge_rows(prior.get("related", []), current.get("related", []), "domain", related, stamp, prior_stamp)
     tenants, new_tenants = _merge_rows(prior.get("tenants", []), current.get("tenants", []), "tenant", tenant, stamp, prior_stamp)
     prior_guessed = prior.get("guessed", {})
     if isinstance(prior_guessed, list):
@@ -219,7 +233,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "at": stamp,
         "domains": current["domains"],
         "interrupted": bool(current.get("interrupted")),
-        "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes, "tenants": new_tenants},
+        "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes, "tenants": new_tenants, "related": new_related},
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
     }
@@ -230,6 +244,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "ips": sorted(ips, key=lambda r: _ip_key(r["ip"])),
         "lookalikes": sorted(lookalikes, key=lambda r: r["domain"]),
         "tenants": sorted(tenants, key=lambda r: r["tenant"]),
+        "related": sorted(related_rows, key=lambda r: (-_RELATED_TIERS.index(r["tie"]) if r.get("tie") in _RELATED_TIERS else 1, r["domain"])),
         "guessed": dict(sorted(guessed.items())),
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
@@ -271,8 +286,8 @@ def _write_atomic(path: Path, text: str, mode: int) -> None:
 
 def _csv_text(rows: list[dict], fields: list[str]) -> str:
     def flat(value) -> str:
-        if isinstance(value, list):
-            return " ".join(map(str, value))
+        if isinstance(value, list):  # phrases (evidence) are separated so they stay readable
+            return ("; " if any(" " in str(v) for v in value) else " ").join(map(str, value))
         if isinstance(value, bool) or value is None:
             return _resolves(value)
         return str(value)
@@ -295,6 +310,7 @@ def run_report(inv: Inventory) -> dict:
             for r in sorted(inv.lookalikes.values(), key=lambda r: r.domain)
         ],
         "tenants": _tenant_rows(inv),
+        "related": _related_rows(inv),
         "guessed": sorted(inv.guessed),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
@@ -311,6 +327,8 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
     write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "vulns", "hostnames", "sources", *seen]))
     write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
+    if report.get("related"):  # only once --related has found some
+        write("related.csv", _csv_text(report["related"], ["domain", "related_to", "tie", "evidence", *seen]))
     if report.get("tenants"):  # only once --tenants has found some
         write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
 
