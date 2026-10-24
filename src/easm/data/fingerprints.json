@@ -1,0 +1,1602 @@
+{
+ "_comment": "Technology rules for easm.fingerprint. Each rule matches if any matcher does; a regex's first group, if any, is the version. Matchers: header+regex, cookie (cookie names), title, body, location, banner, cname, generator (<meta name=generator>), cert (certificate subject/issuer). Regexes are case-insensitive.",
+ "rules": [
+  {
+   "name": "FortiGate SSL-VPN",
+   "category": "edge",
+   "match": [
+    {
+     "location": "/remote/login"
+    },
+    {
+     "body": "/remote/login\\?lang=|fgt_lang|/sslvpn/portal\\.html"
+    },
+    {
+     "cookie": "^SVPNCOOKIE$|^SVPNNETWORKCOOKIE$"
+    },
+    {
+     "title": "^FortiGate|SSL VPN Portal"
+    }
+   ]
+  },
+  {
+   "name": "Fortinet FortiWeb/FortiMail/FortiManager",
+   "category": "edge",
+   "match": [
+    {
+     "title": "^(FortiWeb|FortiMail|FortiManager|FortiAnalyzer|FortiADC|FortiProxy|FortiSIEM)"
+    },
+    {
+     "cert": "\\bFortinet\\b|\\bFortiGate\\b"
+    }
+   ]
+  },
+  {
+   "name": "Palo Alto GlobalProtect",
+   "category": "edge",
+   "match": [
+    {
+     "location": "/global-protect/login\\.esp"
+    },
+    {
+     "body": "global-protect/login\\.esp|GlobalProtect Portal"
+    },
+    {
+     "title": "GlobalProtect"
+    }
+   ]
+  },
+  {
+   "name": "Palo Alto PAN-OS management",
+   "category": "edge",
+   "match": [
+    {
+     "body": "Pan\\.base\\.|/js/Pan\\.js"
+    }
+   ]
+  },
+  {
+   "name": "Citrix NetScaler Gateway",
+   "category": "edge",
+   "match": [
+    {
+     "location": "/vpn/index\\.html|/logon/LogonPoint/"
+    },
+    {
+     "body": "/vpn/index\\.html|/logon/LogonPoint/|ctxs\\.core\\.min\\.js"
+    },
+    {
+     "title": "Citrix Gateway|NetScaler Gateway|NetScaler AAA"
+    }
+   ]
+  },
+  {
+   "name": "Citrix NetScaler ADC",
+   "category": "edge",
+   "match": [
+    {
+     "cookie": "^NSC_"
+    },
+    {
+     "header": "via",
+     "regex": "NS-CACHE"
+    },
+    {
+     "header": "cneonction",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "F5 BIG-IP",
+   "category": "edge",
+   "match": [
+    {
+     "cookie": "^BIGipServer|^F5_ST$|^MRHSession$|^LastMRH_Session$|^TS[0-9a-f]{6,8}$"
+    },
+    {
+     "header": "server",
+     "regex": "^BigIP|^BIG-IP"
+    },
+    {
+     "body": "/my\\.policy|/tmui/login\\.jsp|F5 Networks"
+    }
+   ]
+  },
+  {
+   "name": "F5 BIG-IP APM",
+   "category": "edge",
+   "match": [
+    {
+     "cookie": "^MRHSession$|^LastMRH_Session$|^F5_ST$"
+    },
+    {
+     "location": "/my\\.policy"
+    },
+    {
+     "body": "/my\\.policy"
+    }
+   ]
+  },
+  {
+   "name": "Cisco ASA / AnyConnect",
+   "category": "edge",
+   "match": [
+    {
+     "location": "/\\+CSCOE\\+/"
+    },
+    {
+     "body": "/\\+CSCOE\\+/|/\\+CSCOT\\+/"
+    },
+    {
+     "cookie": "^webvpn"
+    }
+   ]
+  },
+  {
+   "name": "Ivanti Connect Secure",
+   "category": "edge",
+   "match": [
+    {
+     "location": "/dana-na/"
+    },
+    {
+     "body": "/dana-na/|/dana/home/"
+    },
+    {
+     "cookie": "^DSSignInURL$|^DSID$|^DSLaunchURL$"
+    }
+   ]
+  },
+  {
+   "name": "SonicWall",
+   "category": "edge",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^SonicWALL"
+    },
+    {
+     "location": "/cgi-bin/welcome|/__api__/v1/logon|/sslvpnLogin\\.html"
+    },
+    {
+     "body": "sonicui|/__api__/v1/logon"
+    },
+    {
+     "title": "^(SonicWall|SonicOS)"
+    }
+   ]
+  },
+  {
+   "name": "Check Point",
+   "category": "edge",
+   "match": [
+    {
+     "header": "server",
+     "regex": "Check Point"
+    },
+    {
+     "location": "/sslvpn/Login/"
+    },
+    {
+     "body": "/sslvpn/Login/Login|Check Point Mobile"
+    }
+   ]
+  },
+  {
+   "name": "WatchGuard",
+   "category": "edge",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^WatchGuard"
+    },
+    {
+     "title": "^(WatchGuard|Fireware XTM)"
+    },
+    {
+     "body": "/sslvpn\\.html"
+    }
+   ]
+  },
+  {
+   "name": "Sophos Firewall",
+   "category": "edge",
+   "match": [
+    {
+     "title": "^Sophos"
+    },
+    {
+     "body": "/userportal/webpages/myaccount/login\\.jsp"
+    },
+    {
+     "cert": "\\bSophos\\b"
+    }
+   ]
+  },
+  {
+   "name": "Juniper SRX/J-Web",
+   "category": "edge",
+   "match": [
+    {
+     "body": "Juniper Web Device Manager"
+    },
+    {
+     "title": "^J-Web|Juniper Web Device Manager"
+    }
+   ]
+  },
+  {
+   "name": "Barracuda",
+   "category": "edge",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^BarracudaHTTP"
+    },
+    {
+     "title": "^Barracuda (Web Application Firewall|SSL VPN|Email Security|CloudGen|Load Balancer)"
+    },
+    {
+     "cookie": "^BNI_"
+    }
+   ]
+  },
+  {
+   "name": "Zyxel",
+   "category": "edge",
+   "match": [
+    {
+     "title": "^ZyWALL|Zyxel|USG FLEX"
+    },
+    {
+     "body": "/ext-js/app/common/zld_product_spec\\.js"
+    }
+   ]
+  },
+  {
+   "name": "MikroTik RouterOS",
+   "category": "edge",
+   "match": [
+    {
+     "title": "RouterOS|mikrotik"
+    },
+    {
+     "body": "RouterOS router configuration page"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft RD Web Access",
+   "category": "remote-access",
+   "match": [
+    {
+     "location": "/RDWeb/"
+    },
+    {
+     "title": "RD Web Access|RDWeb"
+    },
+    {
+     "body": "/RDWeb/Pages/"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft AD FS",
+   "category": "remote-access",
+   "match": [
+    {
+     "location": "/adfs/ls"
+    },
+    {
+     "body": "/adfs/portal/|/adfs/ls/"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft Entra Application Proxy",
+   "category": "remote-access",
+   "match": [
+    {
+     "cname": "\\.msappproxy\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Citrix StoreFront",
+   "category": "remote-access",
+   "match": [
+    {
+     "location": "/Citrix/\\w+Web/"
+    },
+    {
+     "body": "/Citrix/\\w+Web/"
+    }
+   ]
+  },
+  {
+   "name": "VMware Horizon",
+   "category": "remote-access",
+   "match": [
+    {
+     "title": "VMware Horizon"
+    },
+    {
+     "body": "/portal/webclient/"
+    }
+   ]
+  },
+  {
+   "name": "VMware vCenter / ESXi",
+   "category": "remote-access",
+   "match": [
+    {
+     "title": "VMware ESXi|vSphere|ID_VC_Welcome"
+    },
+    {
+     "body": "vSphere Client|/sdk/vimService"
+    }
+   ]
+  },
+  {
+   "name": "Guacamole",
+   "category": "remote-access",
+   "match": [
+    {
+     "title": "^Guacamole"
+    },
+    {
+     "body": "guac-"
+    }
+   ]
+  },
+  {
+   "name": "OpenSSH",
+   "category": "remote-access",
+   "cpe": "a:openbsd:openssh",
+   "match": [
+    {
+     "banner": "^SSH-[\\d.]+-OpenSSH_([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Dropbear SSH",
+   "category": "remote-access",
+   "cpe": "a:dropbear_ssh_project:dropbear_ssh",
+   "match": [
+    {
+     "banner": "^SSH-[\\d.]+-dropbear_([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Cisco SSH",
+   "category": "remote-access",
+   "match": [
+    {
+     "banner": "^SSH-[\\d.]+-Cisco-([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "SSH server",
+   "category": "remote-access",
+   "match": [
+    {
+     "banner": "^SSH-[\\d.]+-(?!OpenSSH|dropbear|Cisco)"
+    }
+   ]
+  },
+  {
+   "name": "vsftpd",
+   "category": "remote-access",
+   "cpe": "a:beasts:vsftpd",
+   "match": [
+    {
+     "banner": "vsFTPd ([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "ProFTPD",
+   "category": "remote-access",
+   "cpe": "a:proftpd:proftpd",
+   "match": [
+    {
+     "banner": "ProFTPD ([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Pure-FTPd",
+   "category": "remote-access",
+   "cpe": "a:pureftpd:pure-ftpd",
+   "match": [
+    {
+     "banner": "Pure-FTPd"
+    }
+   ]
+  },
+  {
+   "name": "FileZilla Server",
+   "category": "remote-access",
+   "cpe": "a:filezilla-project:filezilla_server",
+   "match": [
+    {
+     "banner": "FileZilla Server(?: version)? ([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft FTP Service",
+   "category": "remote-access",
+   "match": [
+    {
+     "banner": "Microsoft FTP Service"
+    }
+   ]
+  },
+  {
+   "name": "VNC",
+   "category": "remote-access",
+   "match": [
+    {
+     "banner": "^RFB \\d{3}\\.\\d{3}"
+    }
+   ]
+  },
+  {
+   "name": "Telnet",
+   "category": "remote-access",
+   "match": [
+    {
+     "banner": "^\\xff[\\xfb-\\xfe]"
+    }
+   ]
+  },
+  {
+   "name": "MySQL",
+   "category": "database",
+   "cpe": "a:oracle:mysql",
+   "match": [
+    {
+     "banner": "^.{4}\\n(\\d+\\.\\d+\\.\\d+)(?!-[\\d.]+-MariaDB)"
+    }
+   ]
+  },
+  {
+   "name": "MariaDB",
+   "category": "database",
+   "cpe": "a:mariadb:mariadb",
+   "match": [
+    {
+     "banner": "-(\\d+\\.\\d+\\.\\d+)-MariaDB"
+    }
+   ]
+  },
+  {
+   "name": "Elasticsearch",
+   "category": "database",
+   "cpe": "a:elastic:elasticsearch",
+   "match": [
+    {
+     "body": "\"cluster_name\"\\s*:.*\"number\"\\s*:\\s*\"([\\d.]+)\""
+    },
+    {
+     "body": "You Know, for Search"
+    }
+   ]
+  },
+  {
+   "name": "Docker API",
+   "category": "database",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Docker/([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "docker-experimental",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Kubernetes API",
+   "category": "platform",
+   "match": [
+    {
+     "body": "\"kind\"\\s*:\\s*\"Status\".*\"apiVersion\"\\s*:\\s*\"v1\""
+    }
+   ]
+  },
+  {
+   "name": "Postfix",
+   "category": "mail",
+   "cpe": "a:postfix:postfix",
+   "match": [
+    {
+     "banner": "ESMTP Postfix"
+    }
+   ]
+  },
+  {
+   "name": "Exim",
+   "category": "mail",
+   "cpe": "a:exim:exim",
+   "match": [
+    {
+     "banner": "ESMTP Exim ([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft Exchange SMTP",
+   "category": "mail",
+   "match": [
+    {
+     "banner": "Microsoft ESMTP MAIL Service"
+    }
+   ]
+  },
+  {
+   "name": "Sendmail",
+   "category": "mail",
+   "cpe": "a:sendmail:sendmail",
+   "match": [
+    {
+     "banner": "Sendmail ([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Dovecot",
+   "category": "mail",
+   "cpe": "a:dovecot:dovecot",
+   "match": [
+    {
+     "banner": "Dovecot"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft Exchange OWA",
+   "category": "mail",
+   "match": [
+    {
+     "header": "x-owa-version",
+     "regex": "([\\d][\\w.\\-]*)"
+    },
+    {
+     "body": "/owa/auth/(\\d+\\.\\d+\\.\\d+\\.\\d+)/"
+    },
+    {
+     "location": "/owa/"
+    },
+    {
+     "cookie": "^X-OWA-CANARY$"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft Exchange ECP",
+   "category": "mail",
+   "match": [
+    {
+     "location": "/ecp/"
+    }
+   ]
+  },
+  {
+   "name": "Zimbra",
+   "category": "mail",
+   "cpe": "a:synacor:zimbra_collaboration_suite",
+   "match": [
+    {
+     "title": "^Zimbra"
+    },
+    {
+     "body": "zimbraMail|ZmSkin"
+    }
+   ]
+  },
+  {
+   "name": "Roundcube",
+   "category": "mail",
+   "cpe": "a:roundcube:webmail",
+   "match": [
+    {
+     "title": "Roundcube"
+    },
+    {
+     "body": "rcmloginuser|roundcube_sessid"
+    }
+   ]
+  },
+  {
+   "name": "SmarterMail",
+   "category": "mail",
+   "match": [
+    {
+     "title": "SmarterMail"
+    },
+    {
+     "body": "SmarterMail"
+    }
+   ]
+  },
+  {
+   "name": "Cloudflare",
+   "category": "cdn",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^cloudflare"
+    },
+    {
+     "header": "cf-ray",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Amazon CloudFront",
+   "category": "cdn",
+   "match": [
+    {
+     "header": "x-amz-cf-id",
+     "regex": "."
+    },
+    {
+     "header": "via",
+     "regex": "CloudFront"
+    },
+    {
+     "cname": "\\.cloudfront\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Akamai",
+   "category": "cdn",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^AkamaiGHost|^AkamaiNetStorage"
+    },
+    {
+     "header": "akamai-grn",
+     "regex": "."
+    },
+    {
+     "cname": "\\.(akamaiedge|edgekey|edgesuite|akamaized|akamaihd)\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Fastly",
+   "category": "cdn",
+   "match": [
+    {
+     "header": "x-fastly-request-id",
+     "regex": "."
+    },
+    {
+     "header": "fastly-debug-digest",
+     "regex": "."
+    },
+    {
+     "cname": "\\.fastly(lb)?\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Azure Front Door",
+   "category": "cdn",
+   "match": [
+    {
+     "header": "x-azure-ref",
+     "regex": "."
+    },
+    {
+     "cname": "\\.azurefd\\.net$|\\.azureedge\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Imperva",
+   "category": "waf",
+   "match": [
+    {
+     "header": "x-iinfo",
+     "regex": "."
+    },
+    {
+     "cookie": "^incap_ses|^visid_incap"
+    },
+    {
+     "header": "x-cdn",
+     "regex": "Incapsula|Imperva"
+    }
+   ]
+  },
+  {
+   "name": "Sucuri",
+   "category": "waf",
+   "match": [
+    {
+     "header": "x-sucuri-id",
+     "regex": "."
+    },
+    {
+     "header": "server",
+     "regex": "^Sucuri"
+    }
+   ]
+  },
+  {
+   "name": "Azure Application Gateway",
+   "category": "waf",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Microsoft-Azure-Application-Gateway"
+    }
+   ]
+  },
+  {
+   "name": "AWS Elastic Load Balancing",
+   "category": "platform",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^awselb"
+    },
+    {
+     "cookie": "^AWSALB|^AWSELB"
+    },
+    {
+     "cname": "\\.elb\\.amazonaws\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "AWS WAF",
+   "category": "waf",
+   "match": [
+    {
+     "cookie": "^aws-waf-token$"
+    },
+    {
+     "header": "x-amzn-waf-action",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Varnish",
+   "category": "cdn",
+   "match": [
+    {
+     "header": "x-varnish",
+     "regex": "."
+    },
+    {
+     "header": "via",
+     "regex": "varnish"
+    }
+   ]
+  },
+  {
+   "name": "nginx",
+   "category": "server",
+   "cpe": "a:f5:nginx",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^nginx(?:/([\\d][\\w.\\-]*))?"
+    }
+   ]
+  },
+  {
+   "name": "OpenResty",
+   "category": "server",
+   "cpe": "a:openresty:openresty",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^openresty(?:/([\\d][\\w.\\-]*))?"
+    }
+   ]
+  },
+  {
+   "name": "Apache HTTP Server",
+   "category": "server",
+   "cpe": "a:apache:http_server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Apache(?:/(\\d[\\d.]*))?(?!-Coyote)"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft IIS",
+   "category": "server",
+   "cpe": "a:microsoft:internet_information_services",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Microsoft-IIS(?:/([\\d][\\w.\\-]*))?"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft HTTPAPI",
+   "category": "server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Microsoft-HTTPAPI"
+    }
+   ]
+  },
+  {
+   "name": "LiteSpeed",
+   "category": "server",
+   "cpe": "a:litespeedtech:litespeed_web_server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^LiteSpeed"
+    },
+    {
+     "header": "x-litespeed-cache",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Caddy",
+   "category": "server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Caddy"
+    }
+   ]
+  },
+  {
+   "name": "Envoy",
+   "category": "server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^envoy"
+    },
+    {
+     "header": "x-envoy-upstream-service-time",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Kestrel",
+   "category": "server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Kestrel"
+    }
+   ]
+  },
+  {
+   "name": "Apache Tomcat",
+   "category": "server",
+   "cpe": "a:apache:tomcat",
+   "match": [
+    {
+     "body": "Apache Tomcat/([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "server",
+     "regex": "^Apache-Coyote"
+    }
+   ]
+  },
+  {
+   "name": "Jetty",
+   "category": "server",
+   "cpe": "a:eclipse:jetty",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Jetty\\(([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Gunicorn",
+   "category": "server",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^gunicorn"
+    }
+   ]
+  },
+  {
+   "name": "OpenSSL",
+   "category": "language",
+   "cpe": "a:openssl:openssl",
+   "match": [
+    {
+     "header": "server",
+     "regex": "OpenSSL/([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "PHP",
+   "category": "language",
+   "cpe": "a:php:php",
+   "match": [
+    {
+     "header": "x-powered-by",
+     "regex": "^PHP/([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "server",
+     "regex": "PHP/([\\d][\\w.\\-]*)"
+    },
+    {
+     "cookie": "^PHPSESSID$"
+    }
+   ]
+  },
+  {
+   "name": "ASP.NET",
+   "category": "framework",
+   "cpe": "a:microsoft:asp.net",
+   "match": [
+    {
+     "header": "x-aspnet-version",
+     "regex": "([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "x-powered-by",
+     "regex": "^ASP\\.NET"
+    },
+    {
+     "cookie": "^ASP\\.NET_SessionId$|^\\.ASPXAUTH$|^__RequestVerificationToken"
+    }
+   ]
+  },
+  {
+   "name": "Express",
+   "category": "framework",
+   "match": [
+    {
+     "header": "x-powered-by",
+     "regex": "^Express"
+    }
+   ]
+  },
+  {
+   "name": "Next.js",
+   "category": "framework",
+   "match": [
+    {
+     "header": "x-powered-by",
+     "regex": "^Next\\.js"
+    },
+    {
+     "body": "/_next/static/"
+    }
+   ]
+  },
+  {
+   "name": "Java servlet",
+   "category": "framework",
+   "match": [
+    {
+     "cookie": "^JSESSIONID$"
+    }
+   ]
+  },
+  {
+   "name": "Spring Boot",
+   "category": "framework",
+   "match": [
+    {
+     "body": "Whitelabel Error Page"
+    }
+   ]
+  },
+  {
+   "name": "Laravel",
+   "category": "framework",
+   "match": [
+    {
+     "cookie": "^laravel_session$"
+    }
+   ]
+  },
+  {
+   "name": "Django",
+   "category": "framework",
+   "match": [
+    {
+     "cookie": "^csrftoken$"
+    },
+    {
+     "body": "csrfmiddlewaretoken"
+    }
+   ]
+  },
+  {
+   "name": "Ruby on Rails",
+   "category": "framework",
+   "match": [
+    {
+     "cookie": "^_\\w+_session$"
+    },
+    {
+     "header": "x-runtime",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "WordPress",
+   "category": "cms",
+   "cpe": "a:wordpress:wordpress",
+   "match": [
+    {
+     "generator": "^WordPress\\s*([\\d][\\w.\\-]*)?"
+    },
+    {
+     "body": "/wp-content/|/wp-includes/"
+    },
+    {
+     "header": "link",
+     "regex": "rel=\\\"https://api\\.w\\.org/\\\""
+    },
+    {
+     "header": "x-redirect-by",
+     "regex": "^WordPress"
+    }
+   ]
+  },
+  {
+   "name": "Drupal",
+   "category": "cms",
+   "cpe": "a:drupal:drupal",
+   "match": [
+    {
+     "generator": "^Drupal\\s*(\\d+)?"
+    },
+    {
+     "header": "x-generator",
+     "regex": "^Drupal\\s*(\\d+)?"
+    },
+    {
+     "header": "x-drupal-cache",
+     "regex": "."
+    },
+    {
+     "header": "x-drupal-dynamic-cache",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Joomla",
+   "category": "cms",
+   "match": [
+    {
+     "generator": "^Joomla"
+    },
+    {
+     "body": "/media/jui/|/media/system/js/core\\.js"
+    }
+   ]
+  },
+  {
+   "name": "Sitecore",
+   "category": "cms",
+   "match": [
+    {
+     "cookie": "^SC_ANALYTICS_GLOBAL_COOKIE$|^sxa_site$"
+    },
+    {
+     "body": "/-/media/|/sitecore/"
+    }
+   ]
+  },
+  {
+   "name": "Adobe Experience Manager",
+   "category": "cms",
+   "match": [
+    {
+     "body": "/etc\\.clientlibs/|/content/dam/"
+    }
+   ]
+  },
+  {
+   "name": "Umbraco",
+   "category": "cms",
+   "match": [
+    {
+     "body": "/umbraco/"
+    },
+    {
+     "header": "x-umbraco-version",
+     "regex": "([\\d][\\w.\\-]*)"
+    }
+   ]
+  },
+  {
+   "name": "Episerver / Optimizely",
+   "category": "cms",
+   "match": [
+    {
+     "cookie": "^EPi"
+    },
+    {
+     "body": "/EPiServer/"
+    }
+   ]
+  },
+  {
+   "name": "Ghost",
+   "category": "cms",
+   "match": [
+    {
+     "generator": "^Ghost\\s*([\\d][\\w.\\-]*)?"
+    }
+   ]
+  },
+  {
+   "name": "Microsoft SharePoint",
+   "category": "cms",
+   "match": [
+    {
+     "header": "microsoftsharepointteamservices",
+     "regex": "([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "sprequestguid",
+     "regex": "."
+    },
+    {
+     "body": "/_layouts/15/"
+    }
+   ]
+  },
+  {
+   "name": "Jenkins",
+   "category": "panel",
+   "cpe": "a:jenkins:jenkins",
+   "match": [
+    {
+     "header": "x-jenkins",
+     "regex": "([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "x-hudson",
+     "regex": "."
+    },
+    {
+     "title": "\\[Jenkins\\]$|^Jenkins$"
+    }
+   ]
+  },
+  {
+   "name": "GitLab",
+   "category": "panel",
+   "match": [
+    {
+     "cookie": "^_gitlab_session$"
+    },
+    {
+     "title": "\u00b7 GitLab$|^GitLab$"
+    },
+    {
+     "body": "gon\\.gitlab_url"
+    }
+   ]
+  },
+  {
+   "name": "Grafana",
+   "category": "panel",
+   "cpe": "a:grafana:grafana",
+   "match": [
+    {
+     "title": "^Grafana"
+    },
+    {
+     "body": "\"buildInfo\":\\{[^}]*\"version\":\"([\\d.]+)\""
+    },
+    {
+     "cookie": "^grafana_session"
+    }
+   ]
+  },
+  {
+   "name": "Kibana",
+   "category": "panel",
+   "cpe": "a:elastic:kibana",
+   "match": [
+    {
+     "header": "kbn-version",
+     "regex": "([\\d][\\w.\\-]*)"
+    },
+    {
+     "header": "kbn-name",
+     "regex": "."
+    },
+    {
+     "body": "kbn-injected-metadata"
+    }
+   ]
+  },
+  {
+   "name": "phpMyAdmin",
+   "category": "panel",
+   "cpe": "a:phpmyadmin:phpmyadmin",
+   "match": [
+    {
+     "title": "phpMyAdmin"
+    },
+    {
+     "cookie": "^pma_lang$|^phpMyAdmin$"
+    }
+   ]
+  },
+  {
+   "name": "Atlassian Jira",
+   "category": "panel",
+   "cpe": "a:atlassian:jira",
+   "match": [
+    {
+     "body": "data-name=\"jira\" data-version=\"([\\d.]+)\""
+    },
+    {
+     "header": "x-arequestid",
+     "regex": "."
+    },
+    {
+     "cookie": "^atlassian\\.xsrf\\.token$"
+    }
+   ]
+  },
+  {
+   "name": "Atlassian Confluence",
+   "category": "panel",
+   "cpe": "a:atlassian:confluence_server",
+   "match": [
+    {
+     "header": "x-confluence-request-time",
+     "regex": "."
+    },
+    {
+     "body": "name=\"ajs-version-number\" content=\"([\\d.]+)\""
+    }
+   ]
+  },
+  {
+   "name": "SonarQube",
+   "category": "panel",
+   "cpe": "a:sonarsource:sonarqube",
+   "match": [
+    {
+     "title": "SonarQube"
+    }
+   ]
+  },
+  {
+   "name": "Portainer",
+   "category": "panel",
+   "match": [
+    {
+     "title": "Portainer"
+    }
+   ]
+  },
+  {
+   "name": "Webmin",
+   "category": "panel",
+   "cpe": "a:webmin:webmin",
+   "match": [
+    {
+     "header": "server",
+     "regex": "MiniServ/([\\d][\\w.\\-]*)"
+    },
+    {
+     "title": "^Login to Webmin|^Webmin"
+    }
+   ]
+  },
+  {
+   "name": "cPanel / WHM",
+   "category": "panel",
+   "match": [
+    {
+     "title": "^(cPanel Login|WHM Login)$"
+    },
+    {
+     "cookie": "^cprelogin$|^whostmgrsession$"
+    }
+   ]
+  },
+  {
+   "name": "Plesk",
+   "category": "panel",
+   "match": [
+    {
+     "title": "^Plesk"
+    },
+    {
+     "header": "x-powered-by",
+     "regex": "PleskLin|PleskWin"
+    }
+   ]
+  },
+  {
+   "name": "Swagger UI",
+   "category": "panel",
+   "match": [
+    {
+     "title": "Swagger UI"
+    },
+    {
+     "body": "swagger-ui"
+    }
+   ]
+  },
+  {
+   "name": "Azure App Service",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.azurewebsites\\.net$"
+    },
+    {
+     "cookie": "^ARRAffinity"
+    }
+   ]
+  },
+  {
+   "name": "Azure Traffic Manager",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.trafficmanager\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Azure Virtual Machine",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.cloudapp\\.(azure\\.com|net)$"
+    }
+   ]
+  },
+  {
+   "name": "Azure Blob Storage",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.blob\\.core\\.windows\\.net$|\\.web\\.core\\.windows\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Amazon S3",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.s3[.-]([\\w-]+\\.)?amazonaws\\.com$|s3-website"
+    },
+    {
+     "header": "server",
+     "regex": "^AmazonS3"
+    }
+   ]
+  },
+  {
+   "name": "Google Cloud",
+   "category": "platform",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Google Frontend|^gws$"
+    },
+    {
+     "header": "via",
+     "regex": "google"
+    },
+    {
+     "cname": "\\.(appspot|run\\.app|googlehosted)\\.com$|ghs\\.googlehosted\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "Heroku",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.herokuapp\\.com$|\\.herokudns\\.com$"
+    },
+    {
+     "header": "via",
+     "regex": "vegur"
+    }
+   ]
+  },
+  {
+   "name": "Netlify",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-nf-request-id",
+     "regex": "."
+    },
+    {
+     "header": "server",
+     "regex": "^Netlify"
+    },
+    {
+     "cname": "\\.netlify\\.(app|com)$"
+    }
+   ]
+  },
+  {
+   "name": "Vercel",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-vercel-id",
+     "regex": "."
+    },
+    {
+     "header": "server",
+     "regex": "^Vercel"
+    },
+    {
+     "cname": "vercel-dns\\.com$|\\.vercel\\.app$"
+    }
+   ]
+  },
+  {
+   "name": "GitHub Pages",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-github-request-id",
+     "regex": "."
+    },
+    {
+     "cname": "\\.github\\.io$"
+    }
+   ]
+  },
+  {
+   "name": "Shopify",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-shopify-stage",
+     "regex": "."
+    },
+    {
+     "header": "x-shopid",
+     "regex": "."
+    },
+    {
+     "cname": "shops\\.myshopify\\.com$|\\.myshopify\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "HubSpot",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-hs-hub-id",
+     "regex": "."
+    },
+    {
+     "cname": "\\.hubspot(\\.net|\\.com)$|\\.hs-sites\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "Wix",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-wix-request-id",
+     "regex": "."
+    },
+    {
+     "cname": "wixdns\\.net$"
+    }
+   ]
+  },
+  {
+   "name": "Squarespace",
+   "category": "platform",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Squarespace"
+    },
+    {
+     "cname": "squarespace\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "WP Engine",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-powered-by",
+     "regex": "WP Engine"
+    },
+    {
+     "cname": "wpengine\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "Salesforce",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.force\\.com$|\\.salesforce\\.com$|\\.my\\.site\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "Zendesk",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "\\.zendesk\\.com$"
+    }
+   ]
+  },
+  {
+   "name": "Pantheon",
+   "category": "platform",
+   "match": [
+    {
+     "cname": "pantheonsite\\.io$"
+    },
+    {
+     "header": "x-pantheon-styx-hostname",
+     "regex": "."
+    }
+   ]
+  },
+  {
+   "name": "Kinsta",
+   "category": "platform",
+   "match": [
+    {
+     "header": "x-kinsta-cache",
+     "regex": "."
+    },
+    {
+     "cname": "kinsta\\.cloud$"
+    }
+   ]
+  }
+ ]
+}

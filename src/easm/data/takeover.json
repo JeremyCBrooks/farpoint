@@ -1,0 +1,80 @@
+{
+ "_comment": "Hosts whose CNAME points at one of these platforms, and whose page says the platform has nothing there, may be claimable by anyone (subdomain takeover). A CNAME whose target does not exist at all is checked separately. Signatures from public takeover research; a match is a lead to verify, not proof.",
+ "platforms": [
+  {
+   "service": "GitHub Pages",
+   "cname": "\\.github\\.io$",
+   "body": "There isn't a GitHub Pages site here"
+  },
+  {
+   "service": "Heroku",
+   "cname": "\\.herokuapp\\.com$|\\.herokudns\\.com$",
+   "body": "<title>No such app</title>|herokucdn\\.com/error-pages/no-such-app"
+  },
+  {
+   "service": "Amazon S3",
+   "cname": "\\.s3[.-]([\\w-]+\\.)?amazonaws\\.com$|s3-website",
+   "body": "<Code>NoSuchBucket</Code>|The specified bucket does not exist"
+  },
+  {
+   "service": "Shopify",
+   "cname": "\\.myshopify\\.com$",
+   "body": "Sorry, this shop is currently unavailable"
+  },
+  {
+   "service": "Fastly",
+   "cname": "\\.fastly\\.net$",
+   "body": "Fastly error: unknown domain"
+  },
+  {
+   "service": "Pantheon",
+   "cname": "pantheonsite\\.io$",
+   "body": "The gods are wise, but do not know of the site which you seek"
+  },
+  {
+   "service": "Zendesk",
+   "cname": "\\.zendesk\\.com$",
+   "body": "Help Center Closed"
+  },
+  {
+   "service": "Ghost",
+   "cname": "\\.ghost\\.io$",
+   "body": "The thing you were looking for is no longer here"
+  },
+  {
+   "service": "Tumblr",
+   "cname": "domains\\.tumblr\\.com$",
+   "body": "Whatever you were looking for doesn't currently exist at this address"
+  },
+  {
+   "service": "Surge.sh",
+   "cname": "\\.surge\\.sh$",
+   "body": "project not found"
+  },
+  {
+   "service": "Bitbucket",
+   "cname": "\\.bitbucket\\.io$",
+   "body": "Repository not found"
+  },
+  {
+   "service": "WordPress.com",
+   "cname": "\\.wordpress\\.com$",
+   "body": "Do you want to register"
+  },
+  {
+   "service": "Help Scout",
+   "cname": "\\.helpscoutdocs\\.com$",
+   "body": "No settings were found for this company"
+  },
+  {
+   "service": "Azure",
+   "cname": "\\.(azurewebsites\\.net|cloudapp\\.net|cloudapp\\.azure\\.com|trafficmanager\\.net|blob\\.core\\.windows\\.net|azureedge\\.net|azure-api\\.net|azurecontainer\\.io|azurefd\\.net)$",
+   "body": null
+  },
+  {
+   "service": "AWS Elastic Beanstalk",
+   "cname": "\\.elasticbeanstalk\\.com$",
+   "body": null
+  }
+ ]
+}

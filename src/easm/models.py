@@ -25,6 +25,7 @@ class HostRecord:
     cnames: set[str] = field(default_factory=set)
     sources: set[str] = field(default_factory=set)
     resolves: bool | None = None  # None = not checked
+    resolved_ips: set[str] = field(default_factory=set)  # what DNS answered this run (`ips` also holds history)
 
 
 @dataclass
@@ -36,6 +37,9 @@ class IpRecord:
     network: str | None = None
     ports: set[int] = field(default_factory=set)
     vulns: set[str] = field(default_factory=set)
+    tags: set[str] = field(default_factory=set)  # Shodan's labels for the address (cdn, cloud, vpn, ...)
+    open_ports: set[int] = field(default_factory=set)  # seen open by --fingerprint this run (`ports` is Shodan's history)
+    probed_ports: set[int] = field(default_factory=set)  # every port --fingerprint tried this run
 
 
 @dataclass
@@ -47,6 +51,7 @@ class IpDetails:
     ports: set[int] = field(default_factory=set)
     vulns: set[str] = field(default_factory=set)
     hostnames: set[str] = field(default_factory=set)
+    tags: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -80,6 +85,48 @@ class RelatedRecord:
     evidence: set[str] = field(default_factory=set)
 
 
+@dataclass
+class Tech:
+    """A technology a service appears to run (see easm.fingerprint)."""
+
+    name: str  # "FortiGate SSL-VPN"
+    category: str  # edge, cdn, waf, server, cms, framework, mail, panel, platform, database, remote-access, language
+    vendor: str | None = None
+    product: str | None = None
+    version: str | None = None
+    cpe: str | None = None  # cpe:2.3:a:vendor:product:version, only when the version is known
+    evidence: str = ""
+
+    def row(self) -> dict:
+        return {k: v for k, v in vars(self).items() if v not in (None, "")}
+
+
+@dataclass
+class ServiceRecord:
+    """What one open port on one host answered (--fingerprint). Key: hostname:port."""
+
+    hostname: str
+    ip: str
+    port: int
+    service: str = "tcp"  # http, https, ssh, smtp, ftp, ... or tcp when nothing identified it
+    banner: str | None = None
+    status: int | None = None
+    title: str | None = None
+    server: str | None = None
+    location: str | None = None  # where it redirects, when off-host or past the redirect limit
+    headers: dict[str, str] = field(default_factory=dict)  # the identifying ones only
+    cookies: list[str] = field(default_factory=list)  # names only
+    tls: dict | None = None  # see easm.probe.cert_summary
+    favicon: int | None = None  # Shodan-style mmh3 hash
+    paths: dict[str, dict] = field(default_factory=dict)  # well-known path -> {status, note}
+    tech: list[Tech] = field(default_factory=list)
+    signals: list[str] = field(default_factory=list)  # e.g. "directory-listing", "basic-auth", "git-exposed"
+
+    @property
+    def key(self) -> str:
+        return f"{self.hostname}:{self.port}"
+
+
 @dataclass(frozen=True)
 class SourceError:
     source: str
@@ -97,6 +144,11 @@ class Inventory:
         self.related: dict[str, RelatedRecord] = {}
         self.related_checked: set[str] = set()  # domains --related looked at this run, tied or not
         self.guessed: set[str] = set()  # names --guess tested this run (whether or not they exist)
+        self.services: dict[str, ServiceRecord] = {}  # hostname:port -> what --fingerprint found there
+        self.closed: set[str] = set()  # hostname:port pairs --fingerprint found closed this run (their old rows go)
+        self.posture: dict[str, dict] = {}  # scan domain -> mail/DNS/registration facts (easm.posture)
+        self.dangling: dict[str, dict] = {}  # hostname -> {"reason", "claimable"}: a CNAME into nothing
+        self.dangling_checked: set[str] = set()  # hostnames checked for that this run
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial
@@ -131,3 +183,4 @@ class Inventory:
         rec.network = rec.network or details.network
         rec.ports |= details.ports
         rec.vulns |= details.vulns
+        rec.tags |= details.tags

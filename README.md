@@ -1,249 +1,418 @@
-# easm: passive external attack surface mapping
+# easm: external attack surface mapping
 
-Give it your root domains and it returns the **hostnames** and **IP addresses** that public OSINT
-sources associate with them. Each IP gets an owner/network (RDAP) and Shodan's pre-collected port
-and CVE data. Registered **lookalike domains** are reported separately.
+easm maps what an organisation exposes to the internet, starting from nothing but its root domains.
+It finds the organisation's **hostnames** and **IP addresses** in public data sources, resolves them,
+and records who owns each address. Two optional stages go further. `--fingerprint` identifies what
+each live host runs, and `--assess` ranks the weaknesses an attacker would look at first.
 
-**Discovery only.** Nothing here scans, probes or sends traffic to your hosts or the lookalike
-hosts. Every query goes to a third-party dataset (CT logs, passive DNS, archives) or to a recursive
-DNS resolver. The one exception is opt-in: `--guess` (below) looks up predicted names, and those
-lookups reach the domain's own nameservers.
+By default a scan is **passive**: every query goes to a third-party dataset or a DNS resolver, and
+nothing is sent to the organisation's hosts. The options that send traffic elsewhere are opt-in and
+are marked **not passive** below. Only use easm on domains you own or are authorised to assess.
 
 ## Quick start
 
-```bash
-uv run easm example.com example.org          # results in ./out/
-uv run easm -f domains.txt -o out/acme -v    # one domain (or URL) per line, '#' comments ok
-uv run easm --list-sources                   # what's usable on this machine
-uv run easm example.com --only crtsh,certspotter --no-enrich
-uv run easm example.com --exclude dnstwist   # dnstwist is the slowest source (several minutes)
-uv run easm example.com --guess              # also predict unseen names and test them in DNS (not passive)
-uv run easm example.com --tenants            # also look for its tenants on SaaS platforms (not passive)
-uv run easm example.com --related            # also look for other domains it owns (reported, never scanned)
-```
-
-## Guessing unseen names (`--guess`)
-
-Public datasets miss names that never got their own certificate (a wildcard cert covers them) and
-that no passive-DNS sensor happened to see. `--guess` learns how the organisation names its hosts from
-everything known (this run, the inventory already in `--out`, and the CNAME targets, which often carry
-internal names like `portal-prod.azurewebsites.net`), then predicts and tests names it hasn't seen:
-
-- modifiers a base name lacks, ranked by how often they appear together on the organisation's other
-  names: `api-dev` → `api-prod`, `portal` + `portal-stage` → `kiosk-stage`
-- the other way of joining (`portaltest` → `portal-test`), dropping a modifier, nearby numbers
-- prefixes the organisation reuses (`www.`), names repeated across the input domains
-- popular standalone names (`files`, `sftp`, `vpn`), from a cross-organisation ranking
-- with `--tenants`, the words of the organisation's verified tenants besides its own name, tried first
-  (`example-mft-traffic.vendor.co` → `mft-traffic`, `mft`, `traffic`), unless its names already use them
-
-Names found in one round teach the next. `--guess-budget N` caps the lookups per domain, wildcard
-probes included (default 2000, a minute or two). It is shared over 3 rounds plus a small last
-round (10%), so what any round finds has its variants tried in the same run (find `mft`, then
-try `mft-dev`, `mft-uat`). Every name tested is remembered in `assets.json` (`guessed`), and later
-runs into the same `--out` skip it, so each run goes further down the list: names ranked deep
-(around #15,000) are reached after 8 or 9 runs at the default budget. A name is tried again 90
-days after it was last tested. `--guess-budget` and `--guess-rate` are the controls on how much the
-domain's nameservers see: `--guess-rate N` spreads lookups out to at most N a second (2000 at 5/s
-takes about 7 minutes), a trickle rather than a burst. Before testing names under a parent, three
-random names there are looked up. If those resolve (wildcard DNS), a guess only counts if it has an
-address or alias of its own. If they get no answer, no guesses are tested there. If most guesses under
-a parent resolve anyway (a wildcard rotating addresses), they are all discarded. Skipped and discarded
-parents are listed in `assets.json` errors. Found names are listed with source `guess`.
-
-**Not passive:** the domain's authoritative nameservers see every guess, mostly for names that don't
-exist. Only use it where that is acceptable.
-
-Nothing in the model is specific to one organisation. Everything is learned from the names being
-scanned, except a weak prior: `src/easm/data/subdomains.txt`, a popularity ranking of subdomain labels
-from SecLists (MIT). Popular labels are tried as standalone names (`files`) and split run-together
-labels (`athenauat` = `athena` + `uat`); modifiers come only from the organisation's own names. To
-measure it on an inventory without any DNS traffic, `uv run python -m easm.guess out` hides each
-known host in turn and reports how often a model learned from the rest ranks it within
-100/500/2000 guesses.
-
-### Cross-organisation corpus (optional)
-
-What one organisation's names can't teach (that `dev` usually comes with `prod`, that `-apim` names
-exist) comes from how many other organisations name their hosts. `easm.corpus` builds those statistics:
-it samples organisations from organisation-validated certificates in public CT logs (one domain per
-certificate subject), fetches each one's names from crt.sh's public database (one query at a time;
-organisations too large for its query limit are skipped), and counts each organisation once per
-modifier, modifier pair and standalone name. When `src/easm/data/corpus.json` exists, `--guess` uses
-it automatically.
+You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync --group corpus
-uv run python -m easm.corpus orgs  -d corpus --count 2000     # minutes
-uv run python -m easm.corpus fetch -d corpus                  # hours (resumable; re-run after a stop)
-uv run python -m easm.corpus evaluate -d corpus               # cross-validated: with vs without corpus
-uv run python -m easm.corpus stats -d corpus --exclude example.com --out src/easm/data/corpus.json
+uv sync                                     # install
+uv run easm example.com                     # passive scan; results in ./out/
 ```
 
-Use `--exclude` for any organisation you will evaluate on, so its own names can't leak into the priors.
-On a 42-organisation pilot the corpus was neutral (cross-validated recall unchanged), so none is bundled.
+Open `out/hosts.csv` for the hostnames found and `out/ips.csv` for their addresses. Running again
+into the same folder adds to the inventory instead of replacing it.
 
-## Third-party tenants (`--tenants`)
+Common next steps:
 
-Organisations also exist on other companies' platforms, under names no scan of their own domains
-sees: `example.sharepoint.com`, `example-dev.appiancloud.com`, `example.my.salesforce.com`.
-`--tenants` looks for them, choosing platforms in this order:
+```bash
+uv run easm -f domains.txt -o out/acme      # several domains, one per line, into their own folder
+uv run easm example.com --guess --tenants --related   # find more names, tenants and domains (not passive)
+uv run easm example.com --fingerprint --assess        # what each host runs, ranked findings (not passive)
+uv run easm --assess -o out/acme            # re-assess an existing inventory without scanning
+uv run easm --list-sources                  # which data sources are usable on this machine
+```
 
-1. tenant names a scan domain's TXT records give outright (`EXAMPLE123.onmicrosoft.com`)
-2. platforms the domain's own records say it uses: verification TXT strings
-   (`atlassian-domain-verification`, `MS=`) and SPF includes (`include:spf.appiancloud.com`).
-   Here the organisation's most used modifiers are tried too (`example-dev`, `example-test`)
-3. zones the organisation's CNAMEs point into (this run and earlier ones in `--out`)
-4. every platform in `src/easm/data/tenants.json`, a table of generic tenant name patterns
+The ranked list is in `findings.csv`, and `technologies.csv` groups hosts by what they run.
 
-Tenants are named after each scan domain's first label. Each pattern is first checked with three
-random names: on a platform that answers any name, a tenant counts only if it answers differently.
-Where DNS can't tell (Atlassian, Slack and others answer every name the same way), the bare name is
-kept as **unverified**, and only when the domain's own records name the platform. Each tenant's
-`tie` says what links it to the organisation: `records` (its own TXT/SPF), `cname`, or `name` (a name
-match only, which could be another organisation with the same name). `--tenant-budget N` caps the
-lookups (default 800, a few seconds).
+API keys make several sources return much more. Put them in a `.env` file in the directory you run
+from (see [Sources](#sources) for the names):
 
-A CNAME target outside the scan domains whose name carries the organisation's (`files.example.com` →
-`example-files.vault.io`) is recorded as a tenant too, and each tenant lists the organisation's hosts
-that point at it (`hosts`).
+```bash
+SHODAN_API_KEY=...
+VIRUSTOTAL_API_KEY=...
+OTX_API_KEY=...
+```
 
-**Not passive:** the platforms' nameservers see the lookups (the organisation's own nameservers see
-one TXT query per domain). Results go to `tenants.csv` and the `tenants` section of `assets.json`.
+## Approach
 
-## Related domains (`--related`)
+- **Start from root domains and widen.** Hostnames come from many independent datasets: certificate
+  logs, passive DNS, web archives and search engines of past scans. Optional phases widen further,
+  to sister domains, SaaS tenants and names predicted from the organisation's naming habits.
+- **Verify, and keep the evidence.** Every name is checked in DNS, and each records which sources
+  reported it, so names several sources agree on stand out from one-off sightings.
+- **Keep to scope.** Only names under the scan domains are kept and probed. Related domains, tenants
+  and lookalikes are reported for you to review, never scanned.
+- **Escalate contact one step at a time.** Passive datasets come first, then DNS lookups, then light
+  probing of the organisation's own hosts. Each step beyond passive is a separate opt-in.
+- **Use the lightest touch that answers the question.** Fingerprinting asks each service who it is
+  the way any client would. It never logs in, guesses passwords or sends exploits.
+- **Separate facts from judgments.** Discovery, enrichment and fingerprinting add facts to an
+  inventory that builds up across scans. Assessment derives findings from those facts afresh each
+  time, so findings always reflect the latest look.
+- **Rank like an attacker.** Findings are ordered by what an attacker choosing a soft target would
+  try first, such as exposed VPN appliances, admin panels and spoofable mail, not by CVSS score.
+- **Never report unknown as absent.** When a check fails, its answer is recorded as unknown, never as
+  a missing control.
 
-Organisations own more registered domains than the ones you scan: brands (`examplebrand.com`),
-countries (`example.com.au`), defensive registrations (`example.net` redirecting home). `--related`
-looks for them, starting from nothing but the scan domains:
+## How a scan works
 
-- **Microsoft 365:** the domains verified in the tenant each scan domain belongs to (Exchange
-  autodiscover's federation information). Only an owner can verify a domain, so these are the
-  organisation's. Subdomains of your scan domains it lists join the inventory (source `m365`).
-- **TLD swap:** each scan domain's name under every other suffix in `src/easm/data/suffixes.txt`
-  (all IANA top-level domains plus common second levels such as `com.au`, generated, not picked).
-  Registered ones are tied to the organisation by evidence. Any one signal can be faked or shared
-  (a DNS provider's nameservers, a parking address, a squatter redirecting to the real site), so
-  one signal alone is at most `medium`:
-  - `strong`: signals that agree, such as the organisation's own nameservers plus a shared mail host,
-    address or redirect home; or the same nameservers plus a redirect home or the organisation's own
-    mail host (`example-com.mail.protection.outlook.com`)
-  - `medium`: its own nameservers (`ns1.example.com`), a direct redirect home, or its own mail host
-  - `weak`: the same nameservers at an outside provider, a shared address or generic mail host, or a
-    redirect home through someone else's host. Worth a look, not proof.
+A scan runs these phases in order. Each phase works on what the earlier ones found.
 
-  Registered variants with no tie go to lookalikes: someone else's, or a squatter's.
+| Phase | What it does | Who sees traffic | Enabled by |
+|---|---|---|---|
+| Discovery | Collects hostnames from certificate logs, passive DNS, archives and other datasets | The data sources | always |
+| Related domains | Finds other registered domains the organisation owns | Registries, the domains found, Microsoft | `--related` |
+| Resolution | Looks up every name's addresses and CNAMEs | Your DNS resolver | always (`--no-resolve` skips) |
+| Tenants | Finds the organisation's accounts on SaaS and cloud platforms | The platforms' nameservers | `--tenants` |
+| Guessing | Predicts unseen names from the naming patterns found and tests them in DNS | The domain's nameservers | `--guess` |
+| Enrichment | Adds each address's owner, network, and Shodan's port and CVE history | RDAP registries, Shodan | always (`--no-enrich` skips) |
+| Fingerprinting | Identifies what each live host runs, and each domain's mail and DNS posture | **The organisation's hosts** | `--fingerprint` |
+| Assessment | Turns the inventory into ranked findings and matches versions to CVEs | NVD, CISA | `--assess` |
 
-Results go to `related.csv` and the `related` section of `assets.json`, and the run summary lists
-the strong and medium ones. **They are never added to the scan**: owning a domain doesn't mean
-you're authorised to scan it, so add the ones you are to your domain list yourself.
+Results are then merged into the inventory in the output folder, and every output file is rewritten.
 
-The rules were measured on randomly sampled organisations, with controls (each organisation's rules
-applied to an unrelated organisation's domains, where any tie is false). A domain that is looked at
-again and no longer tied (it lapsed, or changed hands) leaves `related`. Domains only Microsoft 365
-knows about are missed for organisations not on it.
+## Options
 
-**Not passive:** about 1,800 lookups per scan domain go to the registries (not the organisation;
-8 at a time, and one that times out is reported as an error rather than taken for "unregistered"),
-each registered variant gets a few lookups and one HTTP request (to see where it redirects), and
-Microsoft gets one request per scan domain.
-
-## Progress and stopping a scan
-
-In a terminal, easm shows one live line per source and domain: a spinner while it runs, what it is
-doing (requesting, waiting on a rate limit, `HTTP 502, retrying in 7s (2/5)`, names found so far
-for subfinder/bbot), then `✓ N results` or `✗ failed: …`, followed by DNS/enrichment counters.
-`-v` logs the same events as plain lines instead (also used when output is not a terminal);
-`--no-progress` turns the display off.
-
-**Ctrl-C (or SIGTERM) stops the scan and saves what it has**, including pages already fetched by
-sources still running, and marks the run `interrupted` in the history; press Ctrl-C again to quit
-without saving. While scanning, results are also checkpointed (every few seconds, as sources
-finish) to `.checkpoint-<pid>.json`, so even a hard kill or closed terminal loses little: the next
-run into the same `--out` merges it automatically. Re-running fills in whatever was missed.
-
-## Output (`--out`, default `./out`)
-
-Runs **accumulate**: each run is merged into the inventory already in the output directory, so you
-can scan domains one at a time, re-run a source that failed, or re-scan weekly into the same folder.
-Hosts, IPs and lookalikes are de-duplicated across runs and their IPs/CNAMEs/sources/ports/CVEs
-unioned; `resolves` and IP owner take the latest run's answer when it has one. Every row carries
-`first_seen`/`last_seen` (UTC), so `first_seen` = the latest `updated_at` means "new this run".
-To start fresh, use a new `--out` or delete the directory.
-
-| File | Contents |
+| Option | Meaning |
 |---|---|
-| `hosts.txt` / `ips.txt` | Plain sorted lists, good for piping into other tools |
-| `hosts.csv` | hostname, resolves (yes/no/blank = unchecked), ips, cnames, sources, first/last seen |
-| `ips.csv` | ip, org, network, ports, vulns, hostnames, sources, first/last seen |
-| `lookalikes.csv` | Registered typosquat/homoglyph domains and their IPs |
-| `related.csv` | With `--related`: domain, related_to (the scan domain), tie (strong/medium/weak), evidence, first/last seen |
-| `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames, first/last seen |
-| `assets.json` | The inventory itself: everything above, plus `runs` (per-run domains, errors, skipped sources) |
+| `domains` | Root domains to map. A URL is accepted and reduced to its hostname. |
+| `-f, --file FILE` | Read domains from a file, one per line. Lines starting with `#` are ignored. |
+| `-o, --out DIR` | Output folder and inventory (default `./out`). |
+| `--only LIST` | Run only these discovery sources, comma-separated. |
+| `--exclude LIST` | Skip these discovery sources. `dnstwist` is the slowest (several minutes). |
+| `--list-sources` | Show every source and whether it is usable here (key or binary present). |
+| `--no-resolve` | Skip DNS resolution. Cannot be combined with `--guess`, `--tenants`, `--related` or `--fingerprint`. |
+| `--no-enrich` | Skip the RDAP and Shodan InternetDB lookups for addresses. |
+| `--nameserver IP` | DNS resolver to use instead of the system's. Repeat for several. |
+| `--related` | Look for other domains the organisation owns. **Not passive.** |
+| `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms. **Not passive.** |
+| `--tenant-budget N` | DNS lookups `--tenants` may make in total (default 800). |
+| `--guess` | Predict unseen hostnames and test them in DNS. **Not passive.** |
+| `--guess-budget N` | DNS lookups `--guess` may make per domain (default 2000). |
+| `--guess-rate N` | At most N `--guess` lookups a second (default: no limit). |
+| `--fingerprint` | Probe live hosts and check each domain's mail and DNS posture. **Not passive.** |
+| `--ports LIST` | Ports `--fingerprint` checks. `22,443,8000-8010` replaces the defaults, `+8081` adds to them, `none` checks only 80 and 443. |
+| `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt,/.git/HEAD`). |
+| `--probe-rate N` | At most N `--fingerprint` connections a second across the scan (default 20). |
+| `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
+| `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
+| `--no-cve` | Assess without the NVD and CISA lookups. |
+| `--timeout SECONDS` | HTTP timeout for data sources (default 60). |
+| `--workers N` | Jobs run at once per source or phase (default 16). |
+| `--no-progress` | No live progress display. |
+| `-v, --verbose` | Log each result and retry as plain lines instead of the live display. |
 
-`assets.json` is the source of truth; the other files are regenerated from it on every run. Writes
-are atomic, and on Linux/macOS locked so concurrent runs into one folder don't lose results (on
-Windows, don't run two scans into the same folder at once). A run refuses to start if the existing
-`assets.json` can't be read; if it becomes unreadable mid-scan, the run is saved beside it as
-`assets.unmerged-<time>.json` instead.
+## Discovery
 
-`resolves=no` with IPs listed means a **historical** record: the name was in CT/passive DNS but no
-longer resolves. These are worth checking for dangling DNS. `sources` shows which datasets
-corroborate each finding.
+Each source is queried once per domain. Only names equal to or under a scan domain are kept, and
+each host records which sources reported it.
 
-## Sources
-
-| Source | Kind | Key (env var) |
+| Source | Kind | Key (environment variable) |
 |---|---|---|
 | crt.sh | Certificate transparency | none |
 | CertSpotter | Certificate transparency | optional `CERTSPOTTER_API_KEY` |
-| HackerTarget | Passive DNS (host, ip) | optional `HACKERTARGET_API_KEY` |
+| HackerTarget | Passive DNS | optional `HACKERTARGET_API_KEY` |
 | Wayback Machine | Archived URLs | none |
-| AlienVault OTX | Passive DNS | optional `OTX_API_KEY` (strongly recommended: anonymous use is rate-limited hard) |
-| urlscan.io | Existing scan search (never submits) | optional `URLSCAN_API_KEY` |
-| RapidDNS | Subdomain/IP table | none |
-| Shodan DNS | Subdomains + records | **required** `SHODAN_API_KEY` |
-| VirusTotal | Subdomain relations | **required** `VIRUSTOTAL_API_KEY` (free tier) |
-| subfinder | CLI, passive by design | binary on PATH |
-| bbot | CLI, `-p subdomain-enum -rf passive` | binary on PATH (Linux/macOS/WSL) |
-| dnstwist | Lookalike domains, DNS only (no `--mxcheck/--banners/--lsh/--phash`) | bundled |
-| dnspython | A/AAAA/CNAME resolution of every discovered name | none |
-| guess (opt-in) | Names predicted from the organisation's naming patterns, kept if they resolve | none |
-| Shodan InternetDB | Ports/CVEs/hostnames per IP | none |
-| RDAP (IANA bootstrap → RIR) | IP owner and network | none |
+| AlienVault OTX | Passive DNS | optional `OTX_API_KEY` (recommended: anonymous use is heavily rate-limited) |
+| urlscan.io | Existing scans (never submits one) | optional `URLSCAN_API_KEY` |
+| RapidDNS | Subdomain table | none |
+| Shodan | Subdomains and records | required `SHODAN_API_KEY` |
+| VirusTotal | Subdomain relations | required `VIRUSTOTAL_API_KEY` (free tier works) |
+| subfinder | Passive subdomain tool | `subfinder` on PATH |
+| bbot | Passive subdomain-enum preset | `bbot` on PATH (Linux, macOS, WSL) |
+| dnstwist | Registered lookalike domains, DNS only | bundled |
 
-Keys are read from the environment or from a `.env` file in the current directory (shell wins).
-Sources with no key or binary are skipped and listed in the summary. A source that errors or hits
-a rate limit is recorded in `assets.json` (with any pages it returned first kept) and the rest of the run
-continues. HTTP calls are throttled per service (VirusTotal is paced to the free tier's 4 requests/minute,
-Shodan to 1/second) and retry transport errors, 5xx and 429 with exponential backoff and jitter
-(honouring `Retry-After`). DNS timeouts are retried once; a name that still times out is left
-blank in `resolves` rather than reported as `no`.
+Install the optional tools with `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`
+and `uv tool install bbot`. Keys are read from the environment or from `.env` in the current
+directory; the environment wins. Sources without their key or binary are skipped and listed in the
+summary.
 
-Optional tools: `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`,
-`uv tool install bbot`.
+Requests are throttled per service: VirusTotal to its free tier's 4 a minute, Shodan to 1 a second.
+Transport errors, 5xx and 429 responses are retried with exponential backoff, honouring
+`Retry-After`. A source that fails is recorded in `assets.json` with any pages it returned first,
+and the scan continues.
+
+Lookalike domains (typosquats and homoglyphs registered by anyone) go to `lookalikes.csv` and are
+never scanned.
+
+## Related domains (`--related`)
+
+Finds other registered domains the organisation owns: brands, country domains, defensive
+registrations. Two methods:
+
+- **Microsoft 365.** The domains verified in the Microsoft 365 tenant each scan domain belongs to.
+  Only an owner can verify a domain, so these are the organisation's. Subdomains of the scan domains
+  it lists join the inventory with source `m365`.
+- **Suffix swap.** Each scan domain's name under every other suffix in `src/easm/data/suffixes.txt`
+  (all top-level domains plus common second levels such as `com.au`). Registered ones are tied to the
+  organisation by evidence. One signal alone is at most `medium`, because nameservers, parking
+  addresses and redirects can each be shared or faked:
+  - `strong`: signals that agree, such as the organisation's own nameservers plus a shared mail host,
+    address or redirect home, or the same nameservers plus a redirect home or the organisation's own
+    mail host
+  - `medium`: its own nameservers, a direct redirect home, or its own mail host
+  - `weak`: the same nameservers at an outside provider, a shared address or generic mail host, or a
+    redirect home through someone else's host
+
+  Registered variants with no tie go to lookalikes.
+
+Results go to `related.csv`, and the summary lists the strong and medium ones. **Related domains are
+never scanned**: owning a domain doesn't mean you're authorised to scan it, so add the ones you are
+to your domain list yourself. A domain looked at again and no longer tied leaves the list.
+
+**Not passive:** about 1,800 lookups per scan domain go to the registries, 8 at a time. Each
+registered variant gets a few DNS lookups and one HTTP request to see where it redirects, and
+Microsoft gets one request per scan domain.
+
+## Resolution
+
+Every discovered name is looked up for A, AAAA and CNAME records. In-scope CNAME targets join the
+inventory and are resolved too. `hosts.csv` shows `resolves` as yes, no, or blank when the lookup
+timed out after a retry. A name with `resolves=no` but addresses listed is a historical record: it
+was seen in passive DNS but no longer resolves.
+
+## Tenants (`--tenants`)
+
+Finds the organisation's accounts on other companies' platforms, such as `example.sharepoint.com` or
+`example.my.salesforce.com`. Platforms are tried in this order:
+
+1. tenant names the scan domains' TXT records give outright (`EXAMPLE123.onmicrosoft.com`)
+2. platforms the domains' records say they use: verification strings and SPF includes. Here the
+   organisation's common name modifiers are tried too (`example-dev`, `example-test`)
+3. zones the organisation's CNAMEs point into, from this scan and earlier ones in `--out`
+4. every platform in `src/easm/data/tenants.json`
+
+Tenant names are built from each scan domain's first label. Each pattern is first checked with
+three random names. On a platform that answers any name, a tenant counts only if it answers
+differently. Where DNS can't tell, the name is kept as **unverified**, and only when the domain's own
+records name the platform. A tenant's `tie` says what links it to the organisation: `records` (its
+own TXT or SPF), `cname`, or `name` (a name match only, which may be another organisation).
+
+A CNAME target outside the scan domains that carries the organisation's name is recorded as a
+tenant too, with the organisation's hosts that point at it.
+
+**Not passive:** the platforms' nameservers see the lookups, and the organisation's nameservers see
+one TXT query per domain. Results go to `tenants.csv`.
+
+## Guessing (`--guess`)
+
+Finds names that public datasets missed by learning how the organisation names its hosts from
+everything known: this scan, the inventory in `--out`, and CNAME targets such as
+`portal-prod.azurewebsites.net`. It then tests names it hasn't seen:
+
+- modifiers a name lacks, ranked by how often they appear together elsewhere (`api-dev` → `api-prod`)
+- the other way of joining (`portaltest` → `portal-test`), dropping a modifier, nearby numbers
+- prefixes the organisation reuses (`www.`), and names repeated across the scan domains
+- popular standalone names (`files`, `sftp`, `vpn`) from `src/easm/data/subdomains.txt`
+- with `--tenants`, the words in the organisation's verified tenant names (`example-mft.vendor.co` → `mft`)
+
+The budget is spread over three rounds plus a small final round, so names found in one round have
+their variants tried in the next. Every name tested is remembered in `assets.json`, and later scans
+into the same `--out` skip it until 90 days have passed, so each scan goes further down the list.
+
+Before guessing under a parent name, three random names there are looked up. If they resolve
+(wildcard DNS), a guess counts only if it has an address or alias of its own. If they time out, no
+guesses are made there. If most guesses under a parent resolve anyway, they are all discarded.
+Skipped parents are listed in the errors in `assets.json`. Found names have source `guess`.
+
+**Not passive:** the domain's authoritative nameservers see every guess, mostly for names that don't
+exist. `--guess-rate` spreads them out; 2000 lookups at 5 a second take about 7 minutes.
+
+To measure the guesser on an inventory without any DNS traffic:
+`uv run python -m easm.guess out` hides each known host in turn and reports how often the rest
+rank it within 100, 500 and 2000 guesses.
+
+### Cross-organisation corpus (optional)
+
+`easm.corpus` builds naming statistics from many organisations' certificates, to teach patterns one
+organisation's names can't. When `src/easm/data/corpus.json` exists, `--guess` uses it. None is
+bundled.
+
+```bash
+uv sync --group corpus
+uv run python -m easm.corpus orgs  -d corpus --count 2000     # sample organisations (minutes)
+uv run python -m easm.corpus fetch -d corpus                  # fetch their names (hours; resumable)
+uv run python -m easm.corpus evaluate -d corpus               # compare guessing with and without it
+uv run python -m easm.corpus stats -d corpus --exclude example.com --out src/easm/data/corpus.json
+```
+
+Use `--exclude` for any organisation you will evaluate on, so its own names don't leak into the
+statistics.
+
+## Enrichment
+
+Each public address is looked up in RDAP for its owner and network, and in Shodan's free
+InternetDB for the ports, CVEs, hostnames and tags (such as `cdn`) Shodan has seen. Neither contacts
+the address itself. In-scope hostnames InternetDB reports join the inventory.
+
+## Fingerprinting (`--fingerprint`)
+
+Identifies what each live host runs, with the lightest touch that answers the question. It only
+contacts in-scope hosts that resolve now to a public address. It never contacts lookalikes, related
+domains, tenants, private addresses, or addresses a name had in the past.
+
+- **Ports.** One TCP connect per port per address. The default 43 ports cover remote access
+  (22, 3389, 5900, 5985), databases (1433, 3306, 5432, 6379, 9200, 27017), mail, directory services,
+  container APIs, and web and appliance ports (80, 443, 8443, 10443...). Ports Shodan has seen open
+  on the address are added. Addresses that belong to a CDN or SaaS front end, such as Cloudflare,
+  CloudFront, Azure Front Door or Shopify, only get 80 and 443, because the machine is the provider's.
+- **Services.** Each open port is asked who it is in the ordinary way:
+  - servers that speak first (SSH, FTP, MySQL, VNC) have their greeting read
+  - mail ports get SMTP `EHLO` and `STARTTLS`, never `MAIL FROM`
+  - TLS ports get a handshake for the certificate and version, plus two handshakes to see whether
+    TLS 1.0 and 1.1 are still accepted
+  - web services get `GET /` (following redirects within the service), the favicon (hashed the way
+    Shodan does, to search for in Shodan) and the `--paths`
+  - database and RDP ports get nothing past the connect
+
+  Web ports are checked per hostname, since virtual hosts differ. Other services are checked once
+  per address and recorded for each hostname on it.
+- **Technologies.** The answers are matched against `src/easm/data/fingerprints.json`, which covers
+  VPN and firewall appliances (FortiGate, GlobalProtect, NetScaler, BIG-IP, Cisco ASA, Ivanti,
+  SonicWall, Check Point), remote access gateways, mail (Exchange with its build number), CDNs and
+  WAFs, web servers, languages, CMSs (WordPress with plugin and theme versions), admin panels and
+  hosting platforms. Each match carries a version and CPE where the answer gives one. Add a rule to
+  that file to recognise more.
+- **Domain posture**, for each scan domain:
+  - mail: provider, SPF (its `all`, DNS lookups against the limit of 10, includes that don't exist or
+    whose domain is unregistered), DMARC (`p`, `sp`, `pct`), DKIM keys under 32 common selectors with
+    their sizes, MTA-STS, TLS-RPT and BIMI
+  - mail servers under the organisation's own domains get one SMTP connection for their banner,
+    STARTTLS and certificate. Hosted providers such as Microsoft 365 or Google are left alone
+  - DNS: nameservers, a zone transfer (`AXFR`) request to each, DNSSEC, CAA and wildcard DNS
+  - registration: registrar, creation and expiry dates, and transfer lock, from RDAP
+- **Dangling DNS.** For each name that doesn't resolve, its CNAME and the CNAME's target are looked
+  up. A target that doesn't exist on a platform where names can be claimed (Azure, Elastic
+  Beanstalk), or under an unregistered domain, is a takeover risk. So is a live host serving a
+  platform's "nothing configured here" page (`src/easm/data/takeover.json`). A target that doesn't
+  exist anywhere else is reported as a broken record.
+
+Connections are paced by `--probe-rate`, with at most 2 at a time to one address, and identify
+themselves with the user agent `easm/0.1 (host fingerprinting)`. A scan of about 100 hosts makes a
+few thousand connections over a few minutes. Results go to `fingerprints.csv`, `technologies.csv`
+and `posture.csv`.
+
+**Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request
+may be logged as reconnaissance. Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then
+shows as unknown, with an error suggesting `--nameserver 1.1.1.1`.
+
+## Assessment (`--assess`)
+
+Turns the inventory into `findings.csv`, ranked by how interesting each finding is to an attacker
+choosing a soft target, not by CVSS. Assessment sends nothing to the organisation.
+
+| Level | Examples |
+|---|---|
+| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git`; expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days |
+| medium | self-signed or mismatched certificates, TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups |
+| low | missing HSTS, wildcard certificates, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
+
+For each product version fingerprinting identified, assessment asks NVD which CVEs affect it and
+checks them against CISA's Known Exploited Vulnerabilities catalogue. NVD answers are cached in
+`assets.json` for a week. Without a key NVD allows about one request every 6 seconds, so set
+`NVD_API_KEY` for large inventories.
+
+Some matches are discounted:
+- a version from a distribution package (`OpenSSH_8.9p1 Ubuntu`) is capped at medium unless the CVE
+  is known to be exploited, since distributions backport fixes
+- CVEs Shodan lists for a shared CDN or SaaS address are low, since they are the provider's to fix
+- a check that failed (a DNS error, a mail server that never answered) is reported as unknown, never
+  as a missing control
+
+Findings are derived from the whole inventory each time, so they reflect the latest look at each
+host. `first_seen` records when a finding was first reported. `technologies.csv` lists each product
+and version with how many hosts run it, its end-of-life date and its CVE counts, edge devices first.
+
+## Output (`--out`, default `./out`)
+
+Each scan is **merged** into the inventory already in the folder. Scan domains one at a time, re-run
+a source that failed, or re-scan regularly into the same folder. To start fresh, use a new folder.
+
+| File | Contents |
+|---|---|
+| `hosts.txt`, `ips.txt` | Sorted plain lists, for piping into other tools |
+| `hosts.csv` | hostname, resolves, ips, cnames, sources |
+| `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), tags, vulns, hostnames, sources |
+| `lookalikes.csv` | Registered lookalike domains and their addresses |
+| `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
+| `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames |
+| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: service, technologies, status, title, server, redirect, signals, certificate, TLS versions, banner, favicon hash, paths |
+| `technologies.csv` | With `--fingerprint`: each technology and version, host count, end-of-life date, CVE and known-exploited counts, hosts |
+| `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, mail server STARTTLS, nameservers, DNSSEC, CAA, AXFR, registration |
+| `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
+| `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |
+
+Every row has `first_seen` and `last_seen` (UTC). `assets.json` is the source of truth, and the other
+files are regenerated from it after every scan.
+
+How rows merge:
+- hosts, addresses and lookalikes are combined across scans. Their addresses, CNAMEs, sources,
+  ports and CVEs are unioned, and `resolves` and the address owner take the latest answer
+- fingerprints and posture describe the latest look. A host and port fingerprinted again replaces its
+  old row. One that now refuses connections is removed. One that timed out or wasn't checked keeps
+  its row and its old `last_seen`
+- findings are re-derived from the whole inventory by each assessment
+- if assessment fails, the scan is still saved and the error recorded
+
+Writes are atomic. On Linux and macOS they are also locked, so two scans into one folder don't lose
+each other's results; on Windows, don't run two at once. A scan refuses to start if the existing
+`assets.json` can't be read. If it becomes unreadable during a scan, the scan is saved beside it as
+`assets.unmerged-<time>.json`.
+
+## Progress and stopping
+
+In a terminal, easm shows a live line per source and domain with what it is doing (requesting,
+waiting on a rate limit, retrying), then its result count or error. Counters follow for each later
+phase. `-v` prints the same events as plain lines, which is also what happens when output isn't a
+terminal. `--no-progress` turns the display off.
+
+**Ctrl-C (or SIGTERM) stops the scan and saves what it has**, including pages already fetched by
+sources still running, and marks the scan as interrupted. Press Ctrl-C again to quit without saving.
+Progress is also saved every few seconds to a checkpoint file in the output folder, so after a hard
+kill the next scan into the same folder merges it automatically.
+
+## Scope and limits
+
+- Only names equal to or under a scan domain are kept. CNAME targets outside them are recorded on the
+  host but not followed.
+- Fingerprinting covers the hosts found live in the current scan, not hosts known only from earlier
+  scans in `--out`.
+- Technology rules match what services reveal. Products that hide their name or version are missed.
+  CVE matches are by version, so treat them as leads to confirm.
+- Favicon hashes are recorded but not matched against known products.
+- DKIM is checked under common selectors only, so "not found" can mean "uses another selector".
 
 ## Development
 
 ```bash
-uv run pytest               # offline suite
-uv run pytest -m network    # real-DNS smoke tests
-uv run python -m easm.guess out --rank api-prod.example.com   # offline guesser evaluation
+uv run pytest               # offline test suite
+uv run pytest -m network    # smoke tests against real DNS, example.com and NVD
 ```
 
-Layout: `names.py` (normalize/scope), `models.py` (Observation → Inventory), `sources/` (one class
-per source behind the `Source` protocol: `available()` + `collect(domain)`), `resolve.py`,
-`guess.py`, `enrich.py`, `pipeline.py`, `output.py`, `cli.py`.
+Code layout, in `src/easm/`:
 
-To add a source, subclass `HttpSource` (you get retries) or `CommandSource` (you get availability
-checks), yield `Observation`s, and register it in `sources/__init__.py`. Scoping, normalization and
-de-duplication happen centrally in `Inventory`, so sources stay dumb.
+| Module | Role |
+|---|---|
+| `cli.py` | Command line |
+| `pipeline.py` | Runs the phases in order |
+| `sources/` | One class per discovery source |
+| `names.py`, `models.py` | Normalising and scoping names; the inventory |
+| `resolve.py`, `enrich.py` | DNS resolution; RDAP and InternetDB |
+| `related.py`, `tenants.py`, `guess.py` | The discovery opt-ins |
+| `probe.py` | The only code that connects to the organisation's hosts |
+| `fingerprint.py`, `posture.py` | What fingerprinting asks, and what the answers mean |
+| `assess.py` | Findings, NVD and CISA lookups |
+| `output.py` | Merging and writing the output files |
 
-## Scope and limits
-
-- Only names equal to or under an input domain are kept. Third-party CNAME targets (CDNs, SaaS)
-  are recorded on the host but not expanded.
-- No wildcard-DNS detection outside `--guess`, and no ASN/netblock expansion yet. Those are good next steps toward
-  commercial ASM parity, along with reverse-whois/org-name pivoting to discover unknown root
-  domains, and diffing runs over time.
-- Only use it on domains you own or are authorised to assess.
+To add a discovery source, subclass `HttpSource` (retries included) or `CommandSource` (binary
+checks included), yield `Observation`s, and register it in `sources/__init__.py`. Scoping,
+normalisation and de-duplication happen centrally in the inventory.

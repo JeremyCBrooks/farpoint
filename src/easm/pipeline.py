@@ -1,5 +1,5 @@
 """Orchestration: sources -> (opt-in) related domains -> scoped inventory -> DNS resolution -> (opt-in)
-tenants and guessing -> IP enrichment."""
+tenants and guessing -> IP enrichment -> (opt-in) fingerprinting."""
 
 from __future__ import annotations
 
@@ -14,12 +14,15 @@ from dataclasses import dataclass, field
 
 from easm import runtime
 from easm.enrich import Enricher
+from easm.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, FingerprintConfig, fingerprint_service, for_host, shared_address, takeover_platform
+from easm.posture import Dns, assess_domain, check_mx, hosted
+from easm.probe import Prober
 from easm.guess import GuessConfig, Taxonomy, parent_of
 from easm.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord
 from easm.related import TIERS as RELATED_TIERS
 from easm.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
 from easm.suffixes import registered as registered_domain
-from easm.names import is_public_ip
+from easm.names import is_public_ip, normalize_ip
 from easm.progress import NullReporter, ProgressReporter
 from easm.resolve import Resolution
 from easm.sources.base import Source
@@ -47,6 +50,10 @@ class Pipeline:
     tenants: TenantConfig | None = None  # look for the organisation's tenants on SaaS platforms (needs `lookup`, `txt`)
     txt: Callable[[str], list[str]] | None = None  # a name's TXT strings
     related: Probes | None = None  # look for other domains the organisation owns (see easm.related)
+    fingerprint: FingerprintConfig | None = None  # probe live hosts and the domains' mail/DNS (needs `lookup`, `prober`, `dns`)
+    prober: Prober | None = None
+    dns: Dns | None = None  # records()/txt() for posture and dangling-CNAME checks
+    rdap_domain: Callable[[str], Mapping] | None = None  # a registered domain's RDAP record
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -68,6 +75,8 @@ class Pipeline:
                     self._guess(inv)
             if self.enrichers:
                 self._enrich(inv)
+            if self.fingerprint and self.prober and self.dns and self.lookup:
+                self._fingerprint(inv)
         except KeyboardInterrupt:
             pass
         if runtime.cancelled():  # also catches a deferred Ctrl-C whose only remaining jobs just got cancelled
@@ -452,10 +461,162 @@ class Pipeline:
             for hostname in details.hostnames:
                 inv.add(Observation(name, hostname, ip))
 
+    def _fingerprint(self, inv: Inventory) -> None:
+        """Sweep each live host's address for open ports, ask each open port who it is, check every
+        scan domain's mail/DNS posture and the mail servers it runs itself, and look for CNAMEs that
+        point at nothing. See easm.fingerprint and easm.posture."""
+        config, prober = self.fingerprint, self.prober
+        pace = _paced(lambda: None, config.rate)
+        targets: dict[str, str] = {}  # host -> the address it is probed at
+        for host, record in sorted(inv.hosts.items()):
+            # Only what DNS answers now: an address from passive-DNS history may belong to someone else today.
+            public = sorted((ip for ip in record.resolved_ips if ip in inv.ips and is_public_ip(ip)), key=_ip_key)
+            if record.resolves and public:
+                targets[host] = public[0]
+        hosts_at: dict[str, list[str]] = {}
+        for host, ip in targets.items():
+            hosts_at.setdefault(ip, []).append(host)
+        shared = {ip for ip, hosts in hosts_at.items() if _shared_address(inv, ip, hosts)}
+
+        def ports_for(ip: str) -> list[int]:
+            if ip in shared or not config.ports:
+                return list(WEB_ONLY)
+            return sorted(set(config.ports) | {p for p in inv.ips[ip].ports if 0 < p < 65536})
+
+        def sweep(ip: str) -> dict[int, str]:
+            ports, states = ports_for(ip), {}
+            for i, port in enumerate(ports):
+                pace()
+                runtime.status(f"port {port} ({i + 1}/{len(ports)})")
+                states[port] = prober.connect(ip, port)
+            return states
+
+        done, failed, total = [0], [0], [len(hosts_at)]
+
+        def tick(name: str) -> Callable[[bool], None]:
+            def on_done(ok: bool) -> None:
+                done[0] += 1
+                failed[0] += not ok
+                self.reporter.phase(name, done[0], total[0], failed[0])
+
+            return on_done
+
+        self.reporter.phase("ports", 0, total[0])
+        open_at: dict[str, list[int]] = {}
+        for (_, ip), states in self._fan_out(inv, {("ports", ip): (lambda ip=ip: sweep(ip)) for ip in hosts_at}, on_done=tick("ports")):
+            record = inv.ips[ip]
+            record.probed_ports.update(states)
+            record.open_ports = {p for p, state in states.items() if state == "open"}
+            open_at[ip] = sorted(record.open_ports)
+            for host in hosts_at[ip]:
+                # Only a refusal counts as closed: a timeout may be one dropped packet, so its old row stays.
+                inv.closed.update(f"{host}:{p}" for p, state in states.items() if state == "closed")
+
+        def identify_service(host: str, ip: str, port: int):
+            pace()
+            return fingerprint_service(prober, host, ip, port, inv.hosts[host].cnames, config)
+
+        # Web (and unknown) ports are asked per host, since each virtual host can serve something
+        # different; other services are the address's, asked once and recorded for each host there.
+        jobs, copies = {}, {}
+        for ip, ports in open_at.items():
+            for port in ports:
+                per_host = port in TLS_FIRST or port in HTTP_FIRST or port not in SERVICE_NAMES
+                for host in hosts_at[ip] if per_host else hosts_at[ip][:1]:
+                    jobs[("service", f"{host}:{port}")] = lambda h=host, ip=ip, p=port: identify_service(h, ip, p)
+                if not per_host:
+                    copies[f"{hosts_at[ip][0]}:{port}"] = hosts_at[ip][1:]
+        done[0] = failed[0] = 0
+        total[0] = len(jobs)
+        self.reporter.phase("fingerprinting", 0, total[0])
+        for (_, key), service in self._fan_out(inv, jobs, on_done=tick("fingerprinting")):
+            inv.services[key] = service
+            for other in copies.get(key, []):
+                inv.services[f"{other}:{service.port}"] = for_host(service, other)
+            for signal in service.signals:
+                if signal.startswith("takeover:"):
+                    inv.dangling[service.hostname] = {"reason": f"serves {signal.split(':', 1)[1]}'s page for an unclaimed name", "claimable": True}
+        # A name that resolves now has nothing dangling, unless its page just said otherwise (above).
+        inv.dangling_checked.update(h for h, r in inv.hosts.items() if r.resolves)
+        self._posture(inv)
+
+    def _posture(self, inv: Inventory) -> None:
+        dns, prober = self.dns, self.prober
+        own = lambda host: inv.scope_of(host) is not None or registered_domain(host) in inv.domains
+        jobs: dict[Key, Callable] = {("posture", d): (lambda d=d: assess_domain(dns, prober, d, own, self.rdap_domain)) for d in inv.domains}
+        quiet = [h for h, r in sorted(inv.hosts.items()) if r.resolves is False]
+        jobs.update({("dangling", h): (lambda h=h: _dangling(dns, inv, h)) for h in quiet})
+        done, failed, total = [0], [0], [len(jobs)]
+
+        def counter(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("posture", done[0], total[0], failed[0])
+
+        self.reporter.phase("posture", 0, total[0])
+        for (kind, target), result in self._fan_out(inv, jobs, on_done=counter):
+            if kind == "posture":
+                inv.posture[target] = result
+                for message in result.get("check_errors", []):
+                    inv.errors.append(SourceError("posture", target, message))
+                for rdtype, key in (("DS", "dnssec"), ("CAA", "caa")):
+                    if result.get(key) is None and result.get("ns"):
+                        inv.errors.append(SourceError("posture", target, f"the resolver failed {rdtype} queries, so {key} is unknown (try --nameserver 1.1.1.1)"))
+                continue
+            inv.dangling_checked.add(target)
+            if result:
+                inv.dangling[target] = result
+        # Only mail servers named under the organisation's own domains: a hosted provider's or an ISP's are theirs.
+        mx_hosts = sorted({m for p in inv.posture.values() for m in p.get("mx", []) if own(m) and not hosted(m)})
+        mx_jobs = {("mx", m): (lambda m=m: _mx(self.lookup, self.prober, m)) for m in mx_hosts}
+        total[0] += len(mx_jobs)
+        health = {m: r for (_, m), r in self._fan_out(inv, mx_jobs, on_done=counter) if r}
+        for row in inv.posture.values():
+            row["mx_health"] = [health[m] for m in row.get("mx", []) if m in health]
+
+
+def _ip_key(ip: str) -> tuple[int, int]:
+    import ipaddress
+
+    addr = ipaddress.ip_address(ip)
+    return addr.version, int(addr)
+
+
+def _shared_address(inv: Inventory, ip: str, hosts: Sequence[str]) -> bool:
+    """A CDN's or SaaS front end's address: the organisation's names answer there, but the machine (and
+    every other port on it) is the provider's, so only its web ports are asked. Addresses behind a
+    CNAME to a cloud VM or load balancer (cloudapp.azure.com, elb.amazonaws.com) are the organisation's."""
+    return shared_address(inv.ips[ip].org, [inv.hosts[h].cnames for h in hosts], inv.ips[ip].tags)
+
+
+def _dangling(dns: Dns, inv: Inventory, host: str) -> dict | None:
+    """A name that doesn't resolve because its CNAME points at a name that doesn't exist (outside the
+    organisation's domains): whoever registers that name, or claims it on the platform, gets the host."""
+    targets = dns.records(host, "CNAME")
+    if not targets:
+        return None
+    target = targets[0]
+    if inv.scope_of(target) or dns.records(target, "A") is not None:
+        return None
+    platform = takeover_platform(target)
+    reg = registered_domain(target)
+    if reg and dns.records(reg, "NS") is None:  # also when the target is itself the lapsed domain
+        return {"reason": f"CNAME to {target}, whose domain {reg} is not registered: anyone can register it", "claimable": True}
+    if platform:
+        return {"reason": f"CNAME to {target}, which does not exist ({platform}: the name may be claimable)", "claimable": True}
+    return {"reason": f"CNAME to {target}, which does not exist", "claimable": False}
+
+
+def _mx(lookup: Callable[[str], Resolution], prober: Prober, host: str) -> dict | None:
+    res = lookup(host)
+    ip = next((ip for ip in res.ips if is_public_ip(ip)), None)
+    return check_mx(prober, host, ip) if ip else None
+
 
 def _record_resolution(inv: Inventory, host: str, res: Resolution) -> None:
     record = inv.hosts[host]
     record.resolves = None if res.timed_out else bool(res.ips)
+    record.resolved_ips.update(normalize_ip(ip) or ip for ip in res.ips)
     record.cnames.update(res.cnames)
     for ip in res.ips:
         inv.add(Observation("dns", host, ip))
@@ -472,19 +633,19 @@ def _record_related(inv: Inventory, domain: str, related_to: str, tier: str, evi
     record.evidence.add(evidence)
 
 
-def _paced(lookup: Callable[[str], Resolution], rate: float | None) -> Callable[[str], Resolution]:
-    """`lookup`, started at most `rate` times a second across all threads (None: as fast as workers go)."""
+def _paced(fn: Callable, rate: float | None) -> Callable:
+    """`fn`, started at most `rate` times a second across all threads (None: as fast as workers go)."""
     if not rate:
-        return lookup
+        return fn
     pace, next_start = threading.Lock(), [0.0]
 
-    def paced(name: str) -> Resolution:
+    def paced(*args):
         with pace:
             delay = next_start[0] - time.monotonic()
             if delay > 0:
                 runtime.sleep(delay)
             next_start[0] = max(next_start[0], time.monotonic()) + 1 / rate
-        return lookup(name)
+        return fn(*args)
 
     return paced
 

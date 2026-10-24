@@ -64,15 +64,20 @@ class DnsResolver:
         unchecked = timed_out and not ips and not nxdomain
         return Resolution(tuple(dict.fromkeys(ips)), tuple(dict.fromkeys(cnames)), timed_out=unchecked, exists=nodata and not nxdomain)
 
-    def records(self, hostname: str, rdtype: str) -> list[str] | None:
+    def records(self, hostname: str, rdtype: str, strict: bool = False) -> list[str] | None:
         """A name's records of one type, lowercased without the trailing dot (MX: just the host);
         None if the name doesn't exist, [] if it has none of that type. A timeout raises, so it is
-        never mistaken for either."""
+        never mistaken for either; with `strict`, so does a server failure (some resolvers can't
+        answer DS queries, and "unknown" must not read as "none")."""
         try:
             answer = self._resolve(hostname, rdtype)
         except dns.resolver.NXDOMAIN:
             return None
-        except (dns.resolver.NoAnswer, dns.resolver.NoNameservers):
+        except dns.resolver.NoAnswer:
+            return []
+        except dns.resolver.NoNameservers:
+            if strict:
+                raise
             return []
         values = (r.exchange.to_text() if rdtype == "MX" else r.to_text() for r in answer)
         return sorted({v.rstrip(".").lower() for v in values} - {""})  # "MX 0 ." means no mail, not a host

@@ -14,11 +14,14 @@ import httpx
 from rich.console import Console
 
 from easm import runtime
+from easm.assess import Kev, Nvd, assessed, lookup_vulns
 from easm.enrich import InternetDb, Rdap
+from easm.fingerprint import DEFAULT_PATHS, FingerprintConfig, parse_paths, parse_ports
 from easm.guess import GuessConfig
 from easm.names import parse_domains
 from easm.pipeline import Pipeline
-from easm.output import Checkpointer, ReportError, load_report, now_stamp, recover_checkpoints, write_outputs
+from easm.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
+from easm.probe import NetworkProber
 from easm.progress import LiveReporter, NullReporter
 from easm.resolve import DnsResolver
 from easm.sources import build_sources, select_sources
@@ -29,7 +32,7 @@ USER_AGENT = "easm/0.1 (passive OSINT discovery)"
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="easm", description="Passive external attack surface mapping (discovery only).")
+    p = argparse.ArgumentParser(prog="easm", description="External attack surface mapping: passive discovery, plus opt-in light probing and assessment.")
     p.add_argument("domains", nargs="*", help="root domains to map")
     p.add_argument("-f", "--file", type=Path, help="file with one domain per line (# comments allowed)")
     p.add_argument("-o", "--out", type=Path, default=Path("out"), help="output directory (default: ./out)")
@@ -63,8 +66,26 @@ def _parser() -> argparse.ArgumentParser:
         "(not passive: registries, the variants and Microsoft see requests)",
     )
     p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
+    p.add_argument(
+        "--fingerprint",
+        action="store_true",
+        help="also fingerprint live hosts: TCP-connect a short list of ports, read banners, TLS certificates and "
+        "HTTP headers to name what each runs; check each domain's mail and DNS posture "
+        "(not passive: the organisation's hosts see a few connections each)",
+    )
+    p.add_argument("--ports", default=None, metavar="LIST", help="ports for --fingerprint: 22,443,8000-8010 replaces the defaults, +LIST adds to them, none sweeps only 80,443")
+    p.add_argument("--paths", default=",".join(DEFAULT_PATHS), metavar="LIST", help=f"well-known paths --fingerprint requests per web service, or none (default: {','.join(DEFAULT_PATHS)})")
+    p.add_argument("--probe-rate", type=float, default=20.0, metavar="N", help="at most N --fingerprint connections a second (default: 20)")
+    p.add_argument("--no-legacy-tls", action="store_true", help="skip --fingerprint's TLS 1.0/1.1 handshakes")
+    p.add_argument(
+        "--assess",
+        action="store_true",
+        help="judge the inventory: ranked findings (findings.csv), and the CVEs NVD and CISA's known-exploited list "
+        "give for each fingerprinted version; sends nothing to the organisation. With no domains, re-assesses --out's inventory",
+    )
+    p.add_argument("--no-cve", action="store_true", help="--assess without the NVD/CISA lookups")
     p.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout in seconds (default: 60)")
-    p.add_argument("--workers", type=int, default=16)
+    p.add_argument("--workers", type=int, default=16, help="jobs run at once per source or phase (default: 16)")
     p.add_argument("--list-sources", action="store_true", help="show sources and whether each is usable here")
     p.add_argument("--no-progress", action="store_true", help="no live progress display (implied by -v or when not a terminal)")
     p.add_argument("-v", "--verbose", action="store_true", help="log each result and retry instead of the live display")
@@ -143,9 +164,22 @@ def main(argv: list[str] | None = None) -> int:
 
     lines = list(args.domains) + (args.file.read_text(encoding="utf-8").splitlines() if args.file else [])
     domains = parse_domains(lines)
+    if not domains and args.assess and not lines:
+        return _assess_only(args, http)
     if not domains:
         parser.error("no valid domains given")
-    for flag in ("guess", "tenants", "related"):
+    try:
+        fingerprint = FingerprintConfig(
+            ports=parse_ports(args.ports) if args.ports is not None else FingerprintConfig().ports,
+            paths=parse_paths(args.paths),
+            rate=args.probe_rate,
+            legacy_tls=not args.no_legacy_tls,
+        )
+    except ValueError as exc:
+        parser.error(f"--ports/--paths: {exc}")
+    if args.probe_rate <= 0:
+        parser.error("--probe-rate must be positive")
+    for flag in ("guess", "tenants", "related", "fingerprint"):
         if getattr(args, flag) and args.no_resolve:
             parser.error(f"--{flag} needs DNS resolution; drop --no-resolve")
     if args.guess_budget < 1:
@@ -185,24 +219,39 @@ def main(argv: list[str] | None = None) -> int:
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
         related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
+        fingerprint=fingerprint if args.fingerprint else None,
+        prober=NetworkProber() if args.fingerprint else None,
+        dns=resolver,
+        rdap_domain=rdap.domain if args.fingerprint else None,
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, _on_interrupt(stop_scan=True))
+    stamp = now_stamp()
+
+    def scan():
+        inv = pipeline.run(domains)
+        judge = None
+        if args.assess and not inv.interrupted:
+            judge = _prepare_assessment(args, http, reporter, lambda: preview(inv, args.out, stamp), stamp)
+        return inv, judge
+
     if live:
         with reporter:
-            inv = pipeline.run(domains)
+            inv, judge = scan()
     else:
-        inv = pipeline.run(domains)
+        inv, judge = scan()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, _on_interrupt(stop_scan=False))  # never abandon a save half-way
+    if runtime.cancelled():
+        inv.interrupted = True
 
     if not inv.interrupted:
-        return _save_and_summarise(inv, args.out, checkpoint)
+        return _save_and_summarise(inv, args.out, checkpoint, stamp, judge)
     # Interrupted: worker threads may still be stuck in requests, and a normal return would wait for
     # them at interpreter exit. Whatever happens while saving, leave with os._exit.
     try:
-        code = _save_and_summarise(inv, args.out, checkpoint)
+        code = _save_and_summarise(inv, args.out, checkpoint, stamp, judge)
     except BaseException:
         traceback.print_exc()
         code = 1
@@ -211,10 +260,70 @@ def main(argv: list[str] | None = None) -> int:
     os._exit(code)
 
 
-def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer) -> int:
-    stamp = now_stamp()
+def _prepare_assessment(args, http: httpx.Client, reporter, report_now, stamp: str):
+    """Do --assess's third-party lookups (NVD, CISA KEV) for what the inventory will hold, and return
+    the function that judges the report when it is saved. None if the lookups were interrupted."""
+    nvd = None if args.no_cve else Nvd(http, os.environ.get("NVD_API_KEY"), retries=3)
+    kev = None if args.no_cve else Kev(http, retries=2)
     try:
-        report = write_outputs(inv, out, stamp)
+        current = report_now()
+    except ReportError:  # saving will report it, and keep this run's results beside the inventory
+        return None
+    try:
+        vulns, catalogue, errors = lookup_vulns(current, nvd, kev, progress=lambda d, t, f: reporter.phase("vulnerabilities", d, t, f))
+    except runtime.Cancelled:
+        return None
+    return lambda report: assessed(report, vulns, catalogue, stamp, errors)
+
+
+def _assess_only(args, http: httpx.Client) -> int:
+    """`easm --assess -o DIR`: re-judge an existing inventory without scanning anything."""
+    try:
+        report = load_report(args.out)
+    except ReportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if report is None:
+        print(f"error: no inventory in {args.out} to assess; give domains to scan", file=sys.stderr)
+        return 2
+    stamp = now_stamp()
+    runtime.reset()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, _on_interrupt(stop_scan=False))
+    judge = _prepare_assessment(args, http, NullReporter(), lambda: report, stamp)
+    if judge is None:
+        print("interrupted: nothing changed", file=sys.stderr)
+        return 130
+    report = rewrite(args.out, judge)
+    _summarise_assessment(report)
+    print(f"output:     {args.out.resolve()}")
+    return 0
+
+
+def _summarise_assessment(report: dict) -> None:
+    from collections import Counter
+
+    from easm.assess import technologies
+
+    if report.get("fingerprints"):
+        hosts = {r["hostname"] for r in report["fingerprints"]}
+        top = Counter()
+        for row in technologies(report):
+            if row["category"] not in ("cdn", "platform", "language", "framework", "cms-plugin"):
+                top[row["technology"]] += row["count"]
+        shown = ", ".join(f"{name} {n}" for name, n in top.most_common(6))
+        print(f"services:   {len(report['fingerprints'])} on {len(hosts)} hosts" + (f" (top: {shown}; see technologies.csv)" if shown else ""))
+    if "findings" in report:
+        levels = Counter(f["level"] for f in report["findings"])
+        print(f"findings:   {levels['high']} high, {levels['medium']} medium, {levels['low']} low (see findings.csv)")
+        for f in [f for f in report["findings"] if f["level"] == "high"][:8]:
+            print(f"            {f['target']}: {f['detail']}")
+
+
+def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | None = None, judge=None) -> int:
+    stamp = stamp or now_stamp()
+    try:
+        report = write_outputs(inv, out, stamp, assess=judge)
     except ReportError as exc:  # this run was saved to an assets.unmerged-*.json instead
         checkpoint.clear()
         print(f"error: {exc}", file=sys.stderr)
@@ -240,6 +349,8 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer) -> int:
     if report["tenants"]:
         verified = sum(1 for t in report["tenants"] if t["verified"])
         print(f"tenants:    {len(report['tenants'])} ({verified} verified in DNS, {new['tenants']} new)")
+    if inv.services or judge:
+        _summarise_assessment(report)
     if inv.skipped:
         print(f"skipped:    {', '.join(inv.skipped)} (no API key / not installed)")
     if inv.errors:

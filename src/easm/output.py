@@ -16,7 +16,7 @@ import os
 import secrets
 import tempfile
 import time
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -67,9 +67,35 @@ def _ip_rows(inv: Inventory) -> list[dict]:
             "vulns": sorted(r.vulns),
             "hostnames": sorted(r.hostnames),
             "sources": sorted(r.sources),
+            **({"tags": sorted(r.tags)} if r.tags else {}),
+            **({"open_ports": sorted(r.open_ports)} if r.probed_ports else {}),  # only once swept: else keep the last sweep's
         }
         for r in (inv.ips[ip] for ip in _ips(inv.ips))
     ]
+
+
+def _fingerprint_rows(inv: Inventory) -> list[dict]:
+    rows = []
+    for key, s in sorted(inv.services.items(), key=lambda kv: (kv[1].hostname, kv[1].port)):
+        row = {
+            "endpoint": key,
+            "hostname": s.hostname,
+            "ip": s.ip,
+            "port": s.port,
+            "service": s.service,
+            "tech": [t.row() for t in s.tech],
+            "signals": sorted(set(s.signals)),
+            "cookies": s.cookies,
+        }
+        for name in ("banner", "status", "title", "server", "location", "tls", "favicon"):
+            if getattr(s, name) is not None:
+                row[name] = getattr(s, name)
+        if s.headers:
+            row["headers"] = s.headers
+        if s.paths:
+            row["paths"] = s.paths
+        rows.append(row)
+    return rows
 
 
 def _tenant_rows(inv: Inventory) -> list[dict]:
@@ -109,10 +135,15 @@ def now_stamp() -> str:
 
 _ROW_LISTS = {
     "hosts": ("hostname", ("ips", "cnames", "sources")),
-    "ips": ("ip", ("ports", "vulns", "hostnames", "sources")),
+    "ips": ("ip", ("ports", "vulns", "hostnames", "sources", "tags", "open_ports")),
     "lookalikes": ("domain", ("ips", "sources")),
     "tenants": ("tenant", ("evidence", "ips", "cnames", "hosts")),
     "related": ("domain", ("evidence",)),
+    "fingerprints": ("endpoint", ("tech", "signals", "cookies")),
+    "posture": ("domain", ("mx", "ns")),
+    "dangling": ("hostname", ()),
+    "findings": ("id", ("evidence",)),
+    "vulns": ("cpe", ("cves",)),
 }
 
 
@@ -173,6 +204,19 @@ def _merge_rows(prior: list[dict], current: list[dict], key: str, merge, stamp: 
     return list(merged.values()), new
 
 
+def _snapshot_rows(prior: list[dict], current: list[dict], key: str, stamp: str, prior_stamp: str, gone: Iterable = ()) -> tuple[list[dict], int]:
+    """Rows that describe the latest look: this run's row replaces the old one whole (keeping when it
+    was first seen); rows in `gone` (looked at again, no longer there) are dropped."""
+    gone = set(gone)
+    rows = {r[key]: {"first_seen": prior_stamp, "last_seen": prior_stamp, **r} for r in prior if r[key] not in gone}
+    new = 0
+    for row in current:
+        before = rows.get(row[key])
+        new += before is None
+        rows[row[key]] = {**row, "first_seen": before["first_seen"] if before else stamp, "last_seen": stamp}
+    return list(rows.values()), new
+
+
 def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     """Fold this run's report into the running inventory. Lists are unioned; a host's `resolves` and an
     IP's org/network take this run's value when it has one. Rows gain first_seen/last_seen."""
@@ -191,6 +235,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
             "org": new["org"] or old.get("org"),
             "network": new["network"] or old.get("network"),
             **{f: _union(old.get(f, []), new[f]) for f in ("ports", "vulns", "hostnames", "sources")},
+            **({"tags": _union(old.get("tags", []), new.get("tags", []))} if old.get("tags") or new.get("tags") else {}),
         }
 
     def lookalike(old, new):
@@ -226,6 +271,15 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         cutoff = ""
     guessed = {n: at for n, at in prior_guessed.items() if at >= cutoff}  # older ones are tried again
     guessed.update(dict.fromkeys(current.get("guessed", []), stamp))
+    fingerprints, new_fingerprints = _snapshot_rows(  # a port found closed now drops its row; one that failed to answer keeps it
+        prior.get("fingerprints", []), current.get("fingerprints", []), "endpoint", stamp, prior_stamp, gone=current.get("closed", []),
+    )
+    posture, _ = _snapshot_rows(prior.get("posture", []), current.get("posture", []), "domain", stamp, prior_stamp)
+    dangling_now = {r["hostname"] for r in current.get("dangling", [])}
+    dangling, _ = _snapshot_rows(
+        prior.get("dangling", []), current.get("dangling", []), "hostname", stamp, prior_stamp,
+        gone=set(current.get("dangling_checked", [])) - dangling_now,
+    )
     pointing: dict[str, list[str]] = {}  # tenant -> the organisation's hosts whose CNAMEs reach it
     for h in hosts:
         for cname in h.get("cnames", []):
@@ -235,7 +289,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "at": stamp,
         "domains": current["domains"],
         "interrupted": bool(current.get("interrupted")),
-        "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes, "tenants": new_tenants, "related": new_related},
+        "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes, "tenants": new_tenants, "related": new_related, "fingerprints": new_fingerprints},
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
     }
@@ -248,6 +302,12 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "tenants": sorted(tenants, key=lambda r: r["tenant"]),
         "related": sorted(related_rows, key=lambda r: (-_RELATED_TIERS.index(r["tie"]) if r.get("tie") in _RELATED_TIERS else 1, r["domain"])),
         "guessed": dict(sorted(guessed.items())),
+        **({"fingerprints": sorted(fingerprints, key=lambda r: (r["hostname"], r.get("port", 0)))} if fingerprints else {}),
+        **({"posture": sorted(posture, key=lambda r: r["domain"])} if posture else {}),
+        **({"dangling": sorted(dangling, key=lambda r: r["hostname"])} if dangling else {}),
+        **({"findings": prior["findings"]} if prior.get("findings") else {}),  # re-derived by --assess, kept until then
+        **({"vulns": prior["vulns"]} if prior.get("vulns") else {}),
+        **({"assessed_at": prior["assessed_at"]} if prior.get("assessed_at") else {}),
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
         "runs": sorted([*prior.get("runs", []), run], key=lambda r: r["at"]),
@@ -315,10 +375,55 @@ def run_report(inv: Inventory) -> dict:
         "related": _related_rows(inv),
         "related_checked": sorted(inv.related_checked),
         "guessed": sorted(inv.guessed),
+        **({"fingerprints": _fingerprint_rows(inv)} if inv.services else {}),
+        **({"closed": sorted(inv.closed)} if inv.closed else {}),
+        **({"posture": [inv.posture[d] for d in sorted(inv.posture)]} if inv.posture else {}),
+        **({"dangling": [{"hostname": h, **d} for h, d in sorted(inv.dangling.items())]} if inv.dangling else {}),
+        **({"dangling_checked": sorted(inv.dangling_checked)} if inv.dangling_checked else {}),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
         "interrupted": inv.interrupted,
     }
+
+
+def _fingerprint_csv_rows(report: dict) -> list[dict]:
+    rows = []
+    for r in report.get("fingerprints", []):
+        tls = r.get("tls") or {}
+        rows.append({
+            **r,
+            "tech": [f"{t['name']} {t['version']}" if t.get("version") else t["name"] for t in r.get("tech", [])],
+            "cert_subject": tls.get("subject"),
+            "cert_issuer": tls.get("issuer"),
+            "cert_expires": (tls.get("not_after") or "")[:10] or None,
+            "tls_version": tls.get("version"),
+            "legacy_tls": sorted(v for v, ok in (tls.get("legacy") or {}).items() if ok),
+            "paths": [f"{p} {v['status']}" + (f" ({v['note']})" if v.get("note") else "") for p, v in (r.get("paths") or {}).items()],
+        })
+    return rows
+
+
+def _posture_csv_rows(report: dict) -> list[dict]:
+    from easm.assess import transfer_locked
+
+    rows = []
+    for p in report.get("posture", []):
+        mx_health = p.get("mx_health", [])
+        rows.append({
+            **p,
+            "dkim": [f"{sel}:{'revoked' if bits == 0 else bits}" if bits is not None else sel for sel, bits in sorted((p.get("dkim") or {}).items())],
+            "mx_starttls": [f"{m['host']}:{'yes' if m.get('starttls') else 'no'}" for m in mx_health],
+            "caa": None if p.get("caa") is None else bool(p["caa"]),
+            "transfer_lock": transfer_locked(p.get("status", [])),
+        })
+    return rows
+
+
+FINGERPRINT_FIELDS = ["endpoint", "hostname", "ip", "port", "service", "tech", "status", "title", "server", "location", "signals",
+                      "cert_subject", "cert_issuer", "cert_expires", "tls_version", "legacy_tls", "banner", "favicon", "paths", "cookies"]
+POSTURE_FIELDS = ["domain", "mail_provider", "mx", "spf_all", "spf_lookups", "spf_missing_includes", "dmarc_policy", "dmarc_subdomain_policy",
+                  "dmarc_pct", "dkim", "mta_sts", "tls_rpt", "mx_starttls", "ns_providers", "dnssec", "caa", "axfr", "wildcard",
+                  "registrar", "created", "expires", "transfer_lock", "spf", "dmarc"]
 
 
 def _write_all(out_dir: Path, report: dict, mode: int) -> None:
@@ -328,16 +433,26 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     write("hosts.txt", "".join(f"{h['hostname']}\n" for h in report["hosts"]))
     write("ips.txt", "".join(f"{r['ip']}\n" for r in report["ips"]))
     write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
-    write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "vulns", "hostnames", "sources", *seen]))
+    write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "open_ports", "tags", "vulns", "hostnames", "sources", *seen]))
     write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
     if report.get("related"):  # only once --related has found some
         write("related.csv", _csv_text(report["related"], ["domain", "related_to", "tie", "evidence", *seen]))
     if report.get("tenants"):  # only once --tenants has found some
         write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
+    if report.get("fingerprints"):  # only once --fingerprint has run
+        from easm.assess import technologies
+
+        write("fingerprints.csv", _csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
+        write("technologies.csv", _csv_text(technologies(report), ["category", "technology", "version", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
+    if report.get("posture"):
+        write("posture.csv", _csv_text(_posture_csv_rows(report), [*POSTURE_FIELDS, *seen]))
+    if "findings" in report:  # only once --assess has run
+        write("findings.csv", _csv_text(report["findings"], ["level", "kind", "target", "detail", "evidence", *seen]))
 
 
-def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None) -> dict:
+def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None, assess: Callable[[dict], dict] | None = None) -> dict:
     """Merge this run into out_dir's inventory and rewrite every output file. Returns the merged report.
+    `assess`, if given, judges the merged report (easm.assess) before it is written.
 
     If the existing inventory can't be merged, this run is saved alongside it (never over it) and
     ReportError says where.
@@ -352,7 +467,35 @@ def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None) -> di
             unmerged = out_dir / f"assets.unmerged-{stamp.replace(':', '')}.json"
             _write_atomic(unmerged, json.dumps(current, indent=2), mode)
             raise ReportError(f"{exc} This run was saved to {unmerged}.") from exc
+        if assess:
+            report = _judged(report, assess)
         _write_all(out_dir, report, mode)
+    return report
+
+
+def _judged(report: dict, assess: Callable[[dict], dict]) -> dict:
+    """`report` assessed; if assessing fails, the scan is still saved, unjudged, with the error recorded."""
+    try:
+        return assess(report)
+    except Exception as exc:  # noqa: BLE001 - never lose a scan to its assessment
+        error = {"source": "assess", "target": "inventory", "message": f"{type(exc).__name__}: {exc}; findings not updated"}
+        return {**report, "errors": [*report.get("errors", []), error]}
+
+
+def preview(inv: Inventory | None, out_dir: Path, stamp: str) -> dict:
+    """What the merged inventory will be once this run is saved, without saving it (for --assess's lookups)."""
+    prior = load_report(out_dir)
+    return merge_reports(prior, run_report(inv), stamp) if inv is not None else (prior or {})
+
+
+def rewrite(out_dir: Path, change: Callable[[dict], dict]) -> dict:
+    """Apply `change` to out_dir's inventory and rewrite every output file (no new run is recorded)."""
+    with _locked(out_dir):
+        report = load_report(out_dir)
+        if report is None:
+            raise ReportError(f"no inventory in {out_dir} to assess; run a scan into it first")
+        report = change(report)
+        _write_all(out_dir, report, _FILE_MODE)
     return report
 
 

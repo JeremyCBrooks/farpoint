@@ -5,6 +5,7 @@ description = "Passive external attack surface mapping from free/cheap OSINT sou
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "cryptography>=42",
     "dnspython>=2.6",
     "dnstwist>=20240812",
     "httpx>=0.27",
@@ -16,7 +17,7 @@ easm = "easm.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
-corpus = ["cryptography>=42", "psycopg[binary]>=3.1"]  # only for building the naming corpus (python -m easm.corpus)
+corpus = ["psycopg[binary]>=3.1"]  # only for building the naming corpus (python -m easm.corpus)
 
 [build-system]
 requires = ["hatchling"]

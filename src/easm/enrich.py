@@ -31,7 +31,9 @@ class InternetDb(HttpSource):
             if exc.response.status_code == 404:
                 return IpDetails()
             raise
-        return IpDetails(ports=set(body.get("ports", [])), vulns=set(body.get("vulns", [])), hostnames=set(body.get("hostnames", [])))
+        return IpDetails(
+            ports=set(body.get("ports", [])), vulns=set(body.get("vulns", [])), hostnames=set(body.get("hostnames", [])), tags=set(body.get("tags", []))
+        )
 
 
 class Rdap(HttpSource):
@@ -46,6 +48,7 @@ class Rdap(HttpSource):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._bootstrap: dict[int, list[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, str]]] = {}
+        self._tlds: dict[str, str] | None = None
         self._lock = threading.Lock()
 
     def _registries(self, version: int):
@@ -68,6 +71,22 @@ class Rdap(HttpSource):
             if addr in network:
                 return url.rstrip("/") + "/"
         return "https://rdap.org/"
+
+    def _tld_url(self, domain: str) -> str:
+        with self._lock:
+            if self._tlds is None:
+                try:
+                    services = self.get("https://data.iana.org/rdap/dns.json").json()["services"]
+                except (httpx.HTTPError, SourceFailure, ValueError, KeyError):
+                    services = []
+                self._tlds = {tld: next((u for u in urls if u.startswith("https")), urls[0]) for tlds, urls in services for tld in tlds}
+            tlds = self._tlds
+        tld = domain.rsplit(".", 1)[-1]
+        return tlds[tld].rstrip("/") + "/" if tld in tlds else "https://rdap.org/"
+
+    def domain(self, name: str) -> dict:
+        """The registry's RDAP record for a registered domain."""
+        return self.get(f"{self._tld_url(name)}domain/{name}", follow_redirects=True).json()
 
     def enrich(self, ip: str) -> IpDetails:
         body = self.get(f"{self._base_url(ip)}ip/{ip}", follow_redirects=True).json()

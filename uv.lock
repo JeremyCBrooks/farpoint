@@ -223,6 +223,7 @@ name = "easm"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "dnspython" },
     { name = "dnstwist" },
     { name = "httpx" },
@@ -231,7 +232,6 @@ dependencies = [
 
 [package.dev-dependencies]
 corpus = [
-    { name = "cryptography" },
     { name = "psycopg", extra = ["binary"] },
 ]
 dev = [
@@ -240,6 +240,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42" },
     { name = "dnspython", specifier = ">=2.6" },
     { name = "dnstwist", specifier = ">=20240812" },
     { name = "httpx", specifier = ">=0.27" },
@@ -247,10 +248,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-corpus = [
-    { name = "cryptography", specifier = ">=42" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.1" },
-]
+corpus = [{ name = "psycopg", extras = ["binary"], specifier = ">=3.1" }]
 dev = [{ name = "pytest", specifier = ">=8" }]
 
 [[package]]
