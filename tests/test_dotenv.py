@@ -1,4 +1,4 @@
-from easm.cli import load_dotenv
+from farpoint.cli import load_dotenv
 
 
 def test_load_dotenv(tmp_path, monkeypatch):

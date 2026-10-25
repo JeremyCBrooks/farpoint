@@ -26,9 +26,9 @@ from dataclasses import dataclass, field
 from functools import cache
 from importlib import resources
 
-from easm.guess import BARE, Taxonomy, parent_of
-from easm.names import in_scope, normalize_hostname
-from easm.suffixes import registered as _registered
+from farpoint.guess import BARE, Taxonomy, parent_of
+from farpoint.names import in_scope, normalize_hostname
+from farpoint.suffixes import registered as _registered
 
 TIES = ("name", "cname", "records")  # weakest first: what links a tenant to the organisation
 MODIFIERS = 8  # the organisation's most used modifiers, tried on platforms its records point to
@@ -80,7 +80,7 @@ class Probe:
 
 @cache
 def bundled_vendors() -> tuple[Vendor, ...]:
-    data = json.loads(resources.files("easm.data").joinpath("tenants.json").read_text(encoding="utf-8"))
+    data = json.loads(resources.files("farpoint.data").joinpath("tenants.json").read_text(encoding="utf-8"))
     return tuple(
         Vendor(v["name"], tuple(v["patterns"]), tuple(v.get("txt", ())), tuple(v.get("spf", ()))) for v in data["vendors"]
     )

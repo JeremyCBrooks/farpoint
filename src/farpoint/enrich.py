@@ -8,8 +8,8 @@ from typing import Protocol
 
 import httpx
 
-from easm.models import IpDetails
-from easm.sources.base import HttpSource, SourceFailure
+from farpoint.models import IpDetails
+from farpoint.sources.base import HttpSource, SourceFailure
 
 
 class Enricher(Protocol):

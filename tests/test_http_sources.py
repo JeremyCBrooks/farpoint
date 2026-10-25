@@ -2,8 +2,8 @@ import httpx
 import pytest
 
 from conftest import fake_http, pairs, when_params
-from easm.sources.base import SourceFailure
-from easm.sources.web import (
+from farpoint.sources.base import SourceFailure
+from farpoint.sources.web import (
     CertSpotter,
     CrtSh,
     HackerTarget,

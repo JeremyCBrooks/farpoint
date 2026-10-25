@@ -25,10 +25,10 @@ try:
 except ImportError:  # Windows: no advisory locking
     fcntl = None
 
-from easm.guess import RETRY_DAYS
-from easm.models import Inventory, Observation
-from easm.related import TIERS as _RELATED_TIERS
-from easm.tenants import TIES as _TIES
+from farpoint.guess import RETRY_DAYS
+from farpoint.models import Inventory, Observation
+from farpoint.related import TIERS as _RELATED_TIERS
+from farpoint.tenants import TIES as _TIES
 
 
 def _ip_key(ip: str) -> tuple[int, int]:
@@ -267,7 +267,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         prior_guessed = dict.fromkeys(prior_guessed, prior_stamp)
     try:
         cutoff = _stamp(datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) - timedelta(days=RETRY_DAYS))
-    except ValueError:  # not a timestamp easm wrote: keep everything
+    except ValueError:  # not a timestamp farpoint wrote: keep everything
         cutoff = ""
     guessed = {n: at for n, at in prior_guessed.items() if at >= cutoff}  # older ones are tried again
     guessed.update(dict.fromkeys(current.get("guessed", []), stamp))
@@ -404,7 +404,7 @@ def _fingerprint_csv_rows(report: dict) -> list[dict]:
 
 
 def _posture_csv_rows(report: dict) -> list[dict]:
-    from easm.assess import transfer_locked
+    from farpoint.assess import transfer_locked
 
     rows = []
     for p in report.get("posture", []):
@@ -440,7 +440,7 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     if report.get("tenants"):  # only once --tenants has found some
         write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
     if report.get("fingerprints"):  # only once --fingerprint has run
-        from easm.assess import technologies
+        from farpoint.assess import technologies
 
         write("fingerprints.csv", _csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
         write("technologies.csv", _csv_text(technologies(report), ["category", "technology", "version", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
@@ -452,7 +452,7 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
 
 def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None, assess: Callable[[dict], dict] | None = None) -> dict:
     """Merge this run into out_dir's inventory and rewrite every output file. Returns the merged report.
-    `assess`, if given, judges the merged report (easm.assess) before it is written.
+    `assess`, if given, judges the merged report (farpoint.assess) before it is written.
 
     If the existing inventory can't be merged, this run is saved alongside it (never over it) and
     ReportError says where.
@@ -505,7 +505,7 @@ class Checkpointer:
     Each run writes its own .checkpoint-<pid>-<random>.json and holds an exclusive lock on the
     matching .lock file while alive; the next run into the directory merges any checkpoint whose lock
     is free (see recover_checkpoints). Locks, not PIDs, decide liveness, since PIDs get reused (a
-    container's easm is always PID 1). A finished run calls clear().
+    container's farpoint is always PID 1). A finished run calls clear().
     """
 
     def __init__(self, out_dir: Path, interval: float = 5.0) -> None:

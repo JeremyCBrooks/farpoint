@@ -16,8 +16,8 @@ from typing import Protocol
 
 import httpx
 
-from easm import runtime
-from easm.models import Observation
+from farpoint import runtime
+from farpoint.models import Observation
 
 log = logging.getLogger(__name__)
 

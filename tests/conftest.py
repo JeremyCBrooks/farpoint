@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from easm import runtime
-from easm.sources import base
+from farpoint import runtime
+from farpoint.sources import base
 
 
 @pytest.fixture(autouse=True)

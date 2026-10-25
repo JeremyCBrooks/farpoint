@@ -6,9 +6,9 @@ from collections.abc import Mapping, Sequence
 
 import httpx
 
-from easm.sources.base import Source
-from easm.sources.tools import Bbot, Dnstwist, Subfinder
-from easm.sources.web import CertSpotter, CrtSh, HackerTarget, Otx, RapidDns, Shodan, UrlScan, VirusTotal, Wayback
+from farpoint.sources.base import Source
+from farpoint.sources.tools import Bbot, Dnstwist, Subfinder
+from farpoint.sources.web import CertSpotter, CrtSh, HackerTarget, Otx, RapidDns, Shodan, UrlScan, VirusTotal, Wayback
 
 
 def build_sources(http: httpx.Client, env: Mapping[str, str]) -> list[Source]:

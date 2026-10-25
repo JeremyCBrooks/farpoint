@@ -1,13 +1,13 @@
-# easm: external attack surface mapping
+# farpoint: external attack surface mapping
 
-easm maps what an organisation exposes to the internet, starting from nothing but its root domains.
+farpoint maps what an organisation exposes to the internet, starting from nothing but its root domains.
 It finds the organisation's **hostnames** and **IP addresses** in public data sources, resolves them,
 and records who owns each address. Two optional stages go further. `--fingerprint` identifies what
 each live host runs, and `--assess` ranks the weaknesses an attacker would look at first.
 
 By default a scan is **passive**: every query goes to a third-party dataset or a DNS resolver, and
 nothing is sent to the organisation's hosts. The options that send traffic elsewhere are opt-in and
-are marked **not passive** below. Only use easm on domains you own or are authorised to assess.
+are marked **not passive** below. Only use farpoint on domains you own or are authorised to assess.
 
 ## Quick start
 
@@ -15,7 +15,7 @@ You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync                                     # install
-uv run easm example.com                     # passive scan; results in ./out/
+uv run farpoint example.com                 # passive scan; results in ./out/
 ```
 
 Open `out/hosts.csv` for the hostnames found and `out/ips.csv` for their addresses. Running again
@@ -24,11 +24,11 @@ into the same folder adds to the inventory instead of replacing it.
 Common next steps:
 
 ```bash
-uv run easm -f domains.txt -o out/acme      # several domains, one per line, into their own folder
-uv run easm example.com --guess --tenants --related   # find more names, tenants and domains (not passive)
-uv run easm example.com --fingerprint --assess        # what each host runs, ranked findings (not passive)
-uv run easm --assess -o out/acme            # re-assess an existing inventory without scanning
-uv run easm --list-sources                  # which data sources are usable on this machine
+uv run farpoint -f domains.txt -o out/acme  # several domains, one per line, into their own folder
+uv run farpoint example.com --guess --tenants --related   # find more names, tenants and domains (not passive)
+uv run farpoint example.com --fingerprint --assess        # what each host runs, ranked findings (not passive)
+uv run farpoint --assess -o out/acme        # re-assess an existing inventory without scanning
+uv run farpoint --list-sources              # which data sources are usable on this machine
 ```
 
 The ranked list is in `findings.csv`, and `technologies.csv` groups hosts by what they run.
@@ -152,7 +152,7 @@ registrations. Two methods:
 - **Microsoft 365.** The domains verified in the Microsoft 365 tenant each scan domain belongs to.
   Only an owner can verify a domain, so these are the organisation's. Subdomains of the scan domains
   it lists join the inventory with source `m365`.
-- **Suffix swap.** Each scan domain's name under every other suffix in `src/easm/data/suffixes.txt`
+- **Suffix swap.** Each scan domain's name under every other suffix in `src/farpoint/data/suffixes.txt`
   (all top-level domains plus common second levels such as `com.au`). Registered ones are tied to the
   organisation by evidence. One signal alone is at most `medium`, because nameservers, parking
   addresses and redirects can each be shared or faked:
@@ -189,7 +189,7 @@ Finds the organisation's accounts on other companies' platforms, such as `exampl
 2. platforms the domains' records say they use: verification strings and SPF includes. Here the
    organisation's common name modifiers are tried too (`example-dev`, `example-test`)
 3. zones the organisation's CNAMEs point into, from this scan and earlier ones in `--out`
-4. every platform in `src/easm/data/tenants.json`
+4. every platform in `src/farpoint/data/tenants.json`
 
 Tenant names are built from each scan domain's first label. Each pattern is first checked with
 three random names. On a platform that answers any name, a tenant counts only if it answers
@@ -212,7 +212,7 @@ everything known: this scan, the inventory in `--out`, and CNAME targets such as
 - modifiers a name lacks, ranked by how often they appear together elsewhere (`api-dev` → `api-prod`)
 - the other way of joining (`portaltest` → `portal-test`), dropping a modifier, nearby numbers
 - prefixes the organisation reuses (`www.`), and names repeated across the scan domains
-- popular standalone names (`files`, `sftp`, `vpn`) from `src/easm/data/subdomains.txt`
+- popular standalone names (`files`, `sftp`, `vpn`) from `src/farpoint/data/subdomains.txt`
 - with `--tenants`, the words in the organisation's verified tenant names (`example-mft.vendor.co` → `mft`)
 
 The budget is spread over three rounds plus a small final round, so names found in one round have
@@ -228,21 +228,21 @@ Skipped parents are listed in the errors in `assets.json`. Found names have sour
 exist. `--guess-rate` spreads them out; 2000 lookups at 5 a second take about 7 minutes.
 
 To measure the guesser on an inventory without any DNS traffic:
-`uv run python -m easm.guess out` hides each known host in turn and reports how often the rest
+`uv run python -m farpoint.guess out` hides each known host in turn and reports how often the rest
 rank it within 100, 500 and 2000 guesses.
 
 ### Cross-organisation corpus (optional)
 
-`easm.corpus` builds naming statistics from many organisations' certificates, to teach patterns one
-organisation's names can't. When `src/easm/data/corpus.json` exists, `--guess` uses it. None is
+`farpoint.corpus` builds naming statistics from many organisations' certificates, to teach patterns one
+organisation's names can't. When `src/farpoint/data/corpus.json` exists, `--guess` uses it. None is
 bundled.
 
 ```bash
 uv sync --group corpus
-uv run python -m easm.corpus orgs  -d corpus --count 2000     # sample organisations (minutes)
-uv run python -m easm.corpus fetch -d corpus                  # fetch their names (hours; resumable)
-uv run python -m easm.corpus evaluate -d corpus               # compare guessing with and without it
-uv run python -m easm.corpus stats -d corpus --exclude example.com --out src/easm/data/corpus.json
+uv run python -m farpoint.corpus orgs  -d corpus --count 2000 # sample organisations (minutes)
+uv run python -m farpoint.corpus fetch -d corpus              # fetch their names (hours; resumable)
+uv run python -m farpoint.corpus evaluate -d corpus           # compare guessing with and without it
+uv run python -m farpoint.corpus stats -d corpus --exclude example.com --out src/farpoint/data/corpus.json
 ```
 
 Use `--exclude` for any organisation you will evaluate on, so its own names don't leak into the
@@ -276,7 +276,7 @@ domains, tenants, private addresses, or addresses a name had in the past.
 
   Web ports are checked per hostname, since virtual hosts differ. Other services are checked once
   per address and recorded for each hostname on it.
-- **Technologies.** The answers are matched against `src/easm/data/fingerprints.json`, which covers
+- **Technologies.** The answers are matched against `src/farpoint/data/fingerprints.json`, which covers
   VPN and firewall appliances (FortiGate, GlobalProtect, NetScaler, BIG-IP, Cisco ASA, Ivanti,
   SonicWall, Check Point), remote access gateways, mail (Exchange with its build number), CDNs and
   WAFs, web servers, languages, CMSs (WordPress with plugin and theme versions), admin panels and
@@ -293,11 +293,11 @@ domains, tenants, private addresses, or addresses a name had in the past.
 - **Dangling DNS.** For each name that doesn't resolve, its CNAME and the CNAME's target are looked
   up. A target that doesn't exist on a platform where names can be claimed (Azure, Elastic
   Beanstalk), or under an unregistered domain, is a takeover risk. So is a live host serving a
-  platform's "nothing configured here" page (`src/easm/data/takeover.json`). A target that doesn't
+  platform's "nothing configured here" page (`src/farpoint/data/takeover.json`). A target that doesn't
   exist anywhere else is reported as a broken record.
 
 Connections are paced by `--probe-rate`, with at most 2 at a time to one address, and identify
-themselves with the user agent `easm/0.1 (host fingerprinting)`. A scan of about 100 hosts makes a
+themselves with the user agent `farpoint/0.1 (host fingerprinting)`. A scan of about 100 hosts makes a
 few thousand connections over a few minutes. Results go to `fingerprints.csv`, `technologies.csv`
 and `posture.csv`.
 
@@ -370,7 +370,7 @@ each other's results; on Windows, don't run two at once. A scan refuses to start
 
 ## Progress and stopping
 
-In a terminal, easm shows a live line per source and domain with what it is doing (requesting,
+In a terminal, farpoint shows a live line per source and domain with what it is doing (requesting,
 waiting on a rate limit, retrying), then its result count or error. Counters follow for each later
 phase. `-v` prints the same events as plain lines, which is also what happens when output isn't a
 terminal. `--no-progress` turns the display off.
@@ -398,7 +398,7 @@ uv run pytest               # offline test suite
 uv run pytest -m network    # smoke tests against real DNS, example.com and NVD
 ```
 
-Code layout, in `src/easm/`:
+Code layout, in `src/farpoint/`:
 
 | Module | Role |
 |---|---|

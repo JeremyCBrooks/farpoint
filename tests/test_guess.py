@@ -1,11 +1,11 @@
 import json
 import re
 
-from easm import guess
-from easm.guess import GuessConfig, Prior, Taxonomy, bundled_prior, leave_one_out, main
-from easm.models import Observation
-from easm.pipeline import Pipeline
-from easm.resolve import Resolution
+from farpoint import guess
+from farpoint.guess import GuessConfig, Prior, Taxonomy, bundled_prior, leave_one_out, main
+from farpoint.models import Observation
+from farpoint.pipeline import Pipeline
+from farpoint.resolve import Resolution
 
 from test_pipeline import StaticSource, dns_table
 
@@ -283,7 +283,7 @@ def test_a_tenants_other_words_are_guessed_first_under_the_domain_it_is_named_af
 
 
 def test_verified_tenants_feed_guessing_in_the_same_run():
-    from easm.tenants import TenantConfig, Vendor
+    from farpoint.tenants import TenantConfig, Vendor
 
     table = {
         "example-files.vault-cloud.io": Resolution(ips=("192.0.2.40",)),
@@ -317,7 +317,7 @@ def test_guesses_earlier_runs_tested_are_skipped_so_each_run_goes_deeper():
 
 
 def test_guess_rate_spaces_lookups_out(monkeypatch):
-    from easm import pipeline, runtime
+    from farpoint import pipeline, runtime
 
     clock, slept = [0.0], []
     monkeypatch.setattr(pipeline.time, "monotonic", lambda: clock[0])
@@ -334,7 +334,7 @@ def test_guess_rate_spaces_lookups_out(monkeypatch):
 
 
 def test_a_found_guesss_alias_to_a_tenant_teaches_the_next_round():
-    from easm.tenants import TenantConfig
+    from farpoint.tenants import TenantConfig
 
     table = {
         "mft.example.com": Resolution(ips=("192.0.2.50",), cnames=("example-mft-traffic.vendor.co",)),
@@ -358,7 +358,7 @@ FILLER = [f"filler{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(200)]
 def _tenant_follow_up_run(position=None, budget=60, follow_up=0.1):
     """Popular names, with 'mft' at `position`; it resolves to a tenant whose other word is 'traffic'.
     Returns the inventory and the names guessed, in order."""
-    from easm.tenants import TenantConfig
+    from farpoint.tenants import TenantConfig
 
     words = list(FILLER)
     if position is not None:

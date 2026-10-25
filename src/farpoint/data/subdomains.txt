@@ -1,6 +1,6 @@
 # Most popular subdomain labels, most common first: the first 20000 lines of
 # SecLists Discovery/DNS/subdomains-top1million-110000.txt (MIT License, (c) 2018 Daniel Miessler),
-# https://github.com/danielmiessler/SecLists. Used by easm.guess as a naming prior across organisations.
+# https://github.com/danielmiessler/SecLists. Used by farpoint.guess as a naming prior across organisations.
 www
 mail
 ns2

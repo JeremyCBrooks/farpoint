@@ -7,9 +7,9 @@ import json
 import sys
 from collections.abc import Iterator
 
-from easm.models import Observation
-from easm.names import extract_hostnames
-from easm.sources.base import CommandSource
+from farpoint.models import Observation
+from farpoint.names import extract_hostnames
+from farpoint.sources.base import CommandSource
 
 
 class Subfinder(CommandSource):

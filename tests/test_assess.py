@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 import httpx
 
 from conftest import fake_http
-from easm.assess import Kev, Nvd, assessed, derive, lookup_vulns, technologies
+from farpoint.assess import Kev, Nvd, assessed, derive, lookup_vulns, technologies
 
 TODAY = date(2026, 10, 24)
 
@@ -221,8 +221,8 @@ def test_unknowns_and_real_suffixes_are_not_findings():
 
 
 def test_transfer_lock_reads_the_same_in_posture_and_findings():
-    from easm.assess import transfer_locked
-    from easm.output import _posture_csv_rows
+    from farpoint.assess import transfer_locked
+    from farpoint.output import _posture_csv_rows
 
     row = {"domain": "example.com", "status": ["pending transfer", "active"]}
     assert transfer_locked(row["status"]) is False

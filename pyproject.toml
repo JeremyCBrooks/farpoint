@@ -1,5 +1,5 @@
 [project]
-name = "easm"
+name = "farpoint"
 version = "0.1.0"
 description = "Passive external attack surface mapping from free/cheap OSINT sources"
 readme = "README.md"
@@ -13,11 +13,11 @@ dependencies = [
 ]
 
 [project.scripts]
-easm = "easm.cli:main"
+farpoint = "farpoint.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
-corpus = ["psycopg[binary]>=3.1"]  # only for building the naming corpus (python -m easm.corpus)
+corpus = ["psycopg[binary]>=3.1"]  # only for building the naming corpus (python -m farpoint.corpus)
 
 [build-system]
 requires = ["hatchling"]

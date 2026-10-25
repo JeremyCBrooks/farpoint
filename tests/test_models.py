@@ -1,4 +1,4 @@
-from easm.models import Inventory, IpDetails, Observation
+from farpoint.models import Inventory, IpDetails, Observation
 
 
 def test_same_host_from_different_sources_merges_into_one_record():

@@ -1,4 +1,4 @@
-"""Registered domains, by the Public Suffix List's ICANN rules (bundled in easm/data/public_suffixes.txt)."""
+"""Registered domains, by the Public Suffix List's ICANN rules (bundled in farpoint/data/public_suffixes.txt)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from importlib import resources
 @cache
 def _rules() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     """(exact suffixes, parents of *. wildcards, ! exceptions)."""
-    lines = resources.files("easm.data").joinpath("public_suffixes.txt").read_text(encoding="utf-8").splitlines()
+    lines = resources.files("farpoint.data").joinpath("public_suffixes.txt").read_text(encoding="utf-8").splitlines()
     rules = [line.strip() for line in lines if line.strip() and not line.startswith("#")]
     exact = frozenset(r for r in rules if r[0] not in "*!")
     wild = frozenset(r[2:] for r in rules if r.startswith("*."))

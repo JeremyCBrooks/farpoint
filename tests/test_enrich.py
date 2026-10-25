@@ -1,7 +1,7 @@
 import httpx
 
 from conftest import fake_http
-from easm.enrich import InternetDb, Rdap
+from farpoint.enrich import InternetDb, Rdap
 
 IP = "93.184.216.34"
 

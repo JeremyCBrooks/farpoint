@@ -1,7 +1,7 @@
 import json
 
-from easm.corpus import Suffixes, _records, build_stats, org_features
-from easm.guess import BARE, Corpus, Prior, Taxonomy
+from farpoint.corpus import Suffixes, _records, build_stats, org_features
+from farpoint.guess import BARE, Corpus, Prior, Taxonomy
 
 PSL = """// ===BEGIN ICANN DOMAINS===
 com

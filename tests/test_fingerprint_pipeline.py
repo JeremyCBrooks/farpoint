@@ -3,13 +3,13 @@ import json
 
 import pytest
 
-from easm import cli
-from easm.fingerprint import FingerprintConfig
-from easm.models import IpDetails, Observation
-from easm.output import write_outputs
-from easm.pipeline import Pipeline
-from easm.probe import HttpResult, SmtpResult
-from easm.resolve import Resolution
+from farpoint import cli
+from farpoint.fingerprint import FingerprintConfig
+from farpoint.models import IpDetails, Observation
+from farpoint.output import write_outputs
+from farpoint.pipeline import Pipeline
+from farpoint.probe import HttpResult, SmtpResult
+from farpoint.resolve import Resolution
 
 from test_fingerprint import FakeProber
 from test_pipeline import StaticSource, TableEnricher, dns_table
@@ -92,7 +92,7 @@ def test_results_merge_as_snapshots_and_closed_ports_drop_out(tmp_path):
 
 
 def test_assessment_judges_the_merged_report_when_saving(tmp_path):
-    from easm.assess import assessed
+    from farpoint.assess import assessed
 
     pipeline, _ = scenario(open_ports=(22, 443, 3389))
     report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r: assessed(r, [], {}, "2026-10-24T00:00:00Z"))
@@ -143,7 +143,7 @@ def test_progress_phases_count_their_own_jobs():
 
 
 def test_an_interrupt_while_fingerprinting_keeps_what_was_found():
-    from easm import runtime
+    from farpoint import runtime
 
     pipeline, _ = scenario()
     seen = []
@@ -188,8 +188,8 @@ def test_a_service_that_failed_this_time_keeps_its_old_row(tmp_path):
 
 
 def test_a_cname_to_a_lapsed_domain_is_claimable():
-    from easm.models import Inventory
-    from easm.pipeline import _dangling
+    from farpoint.models import Inventory
+    from farpoint.pipeline import _dangling
 
     inv = Inventory([D])
     inv.add(Observation("x", "old.example.com"))
@@ -221,7 +221,7 @@ def test_a_port_that_timed_out_keeps_its_row_but_one_refused_drops_it(tmp_path):
 
 def test_an_address_wide_service_judges_the_certificate_per_name():
     from test_fingerprint import make_cert
-    from easm.probe import TlsResult
+    from farpoint.probe import TlsResult
 
     pipeline, prober = scenario(open_ports=(993,))
     pipeline.fingerprint.ports = (993,)

@@ -3,12 +3,12 @@ import socket
 import httpx
 import pytest
 
-from easm.assess import Nvd
-from easm.enrich import Rdap
-from easm.fingerprint import FingerprintConfig, fingerprint_service
-from easm.posture import assess_domain
-from easm.probe import NetworkProber
-from easm.resolve import DnsResolver
+from farpoint.assess import Nvd
+from farpoint.enrich import Rdap
+from farpoint.fingerprint import FingerprintConfig, fingerprint_service
+from farpoint.posture import assess_domain
+from farpoint.probe import NetworkProber
+from farpoint.resolve import DnsResolver
 
 pytestmark = pytest.mark.network
 

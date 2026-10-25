@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from easm.models import Inventory, IpDetails, Observation, SourceError
-from easm.output import ReportError, load_report, merge_reports, run_report, write_outputs
+from farpoint.models import Inventory, IpDetails, Observation, SourceError
+from farpoint.output import ReportError, load_report, merge_reports, run_report, write_outputs
 
 
 def without_seen(row: dict) -> dict:
@@ -151,7 +151,7 @@ def test_inventory_from_before_merging_is_adopted(tmp_path):
 
 
 def test_output_files_respect_the_umask(tmp_path):
-    from easm import output
+    from farpoint import output
 
     umask = os.umask(0o022)
     os.umask(umask)
@@ -201,7 +201,7 @@ def test_new_counts_do_not_depend_on_timestamps():
 
 
 def test_tested_guesses_are_remembered_until_old_enough_to_try_again():
-    from easm.models import Inventory
+    from farpoint.models import Inventory
 
     inv = Inventory(["example.com"])
     inv.guessed = {"api-prod.example.com"}

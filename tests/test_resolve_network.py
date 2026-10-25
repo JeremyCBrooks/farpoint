@@ -1,6 +1,6 @@
 import pytest
 
-from easm.resolve import DnsResolver
+from farpoint.resolve import DnsResolver
 
 pytestmark = pytest.mark.network
 

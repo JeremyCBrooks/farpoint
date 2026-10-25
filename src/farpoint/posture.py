@@ -18,9 +18,9 @@ from functools import cache
 from importlib import resources
 from typing import Protocol
 
-from easm import runtime
-from easm.probe import Prober, cert_summary
-from easm.suffixes import registered
+from farpoint import runtime
+from farpoint.probe import Prober, cert_summary
+from farpoint.suffixes import registered
 
 MAX_SPF_LOOKUPS = 10  # RFC 7208: more makes the record fail (permerror), so mail is unauthenticated
 
@@ -65,7 +65,7 @@ class Dns(Protocol):
 
 @cache
 def bundled_selectors() -> tuple[str, ...]:
-    text = resources.files("easm.data").joinpath("dkim_selectors.txt").read_text(encoding="utf-8")
+    text = resources.files("farpoint.data").joinpath("dkim_selectors.txt").read_text(encoding="utf-8")
     return tuple(s.strip() for s in text.splitlines() if s.strip() and not s.startswith("#"))
 
 

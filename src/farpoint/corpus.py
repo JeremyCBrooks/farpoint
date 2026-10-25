@@ -1,9 +1,9 @@
-"""Build the cross-organisation naming corpus that easm.guess learns its priors from.
+"""Build the cross-organisation naming corpus that farpoint.guess learns its priors from.
 
-    uv run --group corpus python -m easm.corpus orgs  -d corpus --count 2000   # organisations, from OV/EV certificates in CT logs
-    uv run --group corpus python -m easm.corpus fetch -d corpus                # every name crt.sh has under each (resumable)
-    uv run --group corpus python -m easm.corpus stats -d corpus --exclude example.com
-    uv run --group corpus python -m easm.corpus evaluate -d corpus      # cross-validated: with vs without corpus
+    uv run --group corpus python -m farpoint.corpus orgs  -d corpus --count 2000   # organisations, from OV/EV certificates in CT logs
+    uv run --group corpus python -m farpoint.corpus fetch -d corpus                # every name crt.sh has under each (resumable)
+    uv run --group corpus python -m farpoint.corpus stats -d corpus --exclude example.com
+    uv run --group corpus python -m farpoint.corpus evaluate -d corpus      # cross-validated: with vs without corpus
 
 Organisations are the registered domains on organisation-validated certificates (the subject names an
 organisation), sampled at random positions in public CT logs: businesses rather than hobby sites, and
@@ -28,13 +28,13 @@ from pathlib import Path
 
 import httpx
 
-from easm.guess import BARE, Corpus, Prior, Taxonomy, bundled_prior, leave_one_out, render
-from easm.names import normalize_hostname
+from farpoint.guess import BARE, Corpus, Prior, Taxonomy, bundled_prior, leave_one_out, render
+from farpoint.names import normalize_hostname
 
 LOG_LIST = "https://www.gstatic.com/ct/log_list/v3/log_list.json"
 PSL = "https://publicsuffix.org/list/public_suffix_list.dat"
 CRTSH = "host=crt.sh port=5432 dbname=certwatch user=guest"
-USER_AGENT = "easm-corpus (cross-organisation naming statistics)"
+USER_AGENT = "farpoint-corpus (cross-organisation naming statistics)"
 MIN_NAMES = 5  # organisations with fewer names say little about naming
 MIN_ORGS = 3  # features seen in fewer organisations are dropped
 BATCH = 256  # CT entries asked for per request (logs may return fewer)
@@ -303,7 +303,7 @@ def evaluate(records: Iterable[tuple[str, list[str]]], folds: int = 5, names_per
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="python -m easm.corpus", description=__doc__.split("\n\n")[0])
+    p = argparse.ArgumentParser(prog="python -m farpoint.corpus", description=__doc__.split("\n\n")[0])
     p.add_argument("step", choices=["orgs", "fetch", "stats", "evaluate"])
     p.add_argument("-d", "--dir", type=Path, default=Path("corpus"), help="working directory (default: ./corpus)")
     p.add_argument("--count", type=int, default=2000, help="orgs: organisations to sample (default: 2000)")

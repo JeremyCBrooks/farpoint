@@ -1,6 +1,6 @@
 import pytest
 
-from easm.names import extract_hostnames, in_scope, normalize_hostname, normalize_ip, parse_domains
+from farpoint.names import extract_hostnames, in_scope, normalize_hostname, normalize_ip, parse_domains
 
 
 @pytest.mark.parametrize(

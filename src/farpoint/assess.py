@@ -20,9 +20,9 @@ from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
-from easm import runtime
-from easm.fingerprint import end_of_life, shared_address
-from easm.sources.base import HttpSource
+from farpoint import runtime
+from farpoint.fingerprint import end_of_life, shared_address
+from farpoint.sources.base import HttpSource
 
 LEVELS = ("high", "medium", "low")
 CVE_TTL_DAYS = 7

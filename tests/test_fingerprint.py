@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from easm.fingerprint import (
+from farpoint.fingerprint import (
     DEFAULT_PORTS,
     Evidence,
     FingerprintConfig,
@@ -15,7 +15,7 @@ from easm.fingerprint import (
     parse_ports,
     takeover_platform,
 )
-from easm.probe import HttpResult, SmtpResult, TlsResult, UnsupportedHere, cert_summary
+from farpoint.probe import HttpResult, SmtpResult, TlsResult, UnsupportedHere, cert_summary
 
 
 def make_cert(cn="www.example.com", sans=("www.example.com",), days=90, self_signed=False, key_size=2048):

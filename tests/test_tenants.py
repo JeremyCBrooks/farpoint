@@ -1,10 +1,10 @@
 import json
 
-from easm.models import Observation
-from easm.output import write_outputs
-from easm.pipeline import Pipeline
-from easm.resolve import Resolution
-from easm.tenants import TenantConfig, Vendor, bundled_vendors, named_after, plan, registered, spf_includes
+from farpoint.models import Observation
+from farpoint.output import write_outputs
+from farpoint.pipeline import Pipeline
+from farpoint.resolve import Resolution
+from farpoint.tenants import TenantConfig, Vendor, bundled_vendors, named_after, plan, registered, spf_includes
 
 from test_pipeline import StaticSource
 
@@ -177,7 +177,7 @@ def test_named_after_matches_whole_words_longest_name_first():
 
 
 def test_cli_seeds_guessing_with_earlier_runs_tried_names_and_tenants():
-    from easm.cli import _guess_config
+    from farpoint.cli import _guess_config
 
     report = {
         "hosts": [{"hostname": "www.example.com", "ips": ["192.0.2.1"]}],

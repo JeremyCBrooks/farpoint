@@ -6,9 +6,9 @@ import re
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
-from easm.models import Observation
-from easm.names import extract_hostnames
-from easm.sources.base import HttpSource, SourceFailure
+from farpoint.models import Observation
+from farpoint.names import extract_hostnames
+from farpoint.sources.base import HttpSource, SourceFailure
 
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 

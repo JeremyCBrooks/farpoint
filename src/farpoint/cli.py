@@ -1,4 +1,4 @@
-"""Command-line entry point: `uv run easm example.com` or `uv run easm -f domains.txt`."""
+"""Command-line entry point: `uv run farpoint example.com` or `uv run farpoint -f domains.txt`."""
 
 from __future__ import annotations
 
@@ -13,26 +13,26 @@ from pathlib import Path
 import httpx
 from rich.console import Console
 
-from easm import runtime
-from easm.assess import Kev, Nvd, assessed, lookup_vulns
-from easm.enrich import InternetDb, Rdap
-from easm.fingerprint import DEFAULT_PATHS, FingerprintConfig, parse_paths, parse_ports
-from easm.guess import GuessConfig
-from easm.names import parse_domains
-from easm.pipeline import Pipeline
-from easm.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
-from easm.probe import NetworkProber
-from easm.progress import LiveReporter, NullReporter
-from easm.resolve import DnsResolver
-from easm.sources import build_sources, select_sources
-from easm.related import NetworkProbes
-from easm.tenants import TenantConfig
+from farpoint import runtime
+from farpoint.assess import Kev, Nvd, assessed, lookup_vulns
+from farpoint.enrich import InternetDb, Rdap
+from farpoint.fingerprint import DEFAULT_PATHS, FingerprintConfig, parse_paths, parse_ports
+from farpoint.guess import GuessConfig
+from farpoint.names import parse_domains
+from farpoint.pipeline import Pipeline
+from farpoint.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
+from farpoint.probe import NetworkProber
+from farpoint.progress import LiveReporter, NullReporter
+from farpoint.resolve import DnsResolver
+from farpoint.sources import build_sources, select_sources
+from farpoint.related import NetworkProbes
+from farpoint.tenants import TenantConfig
 
-USER_AGENT = "easm/0.1 (passive OSINT discovery)"
+USER_AGENT = "farpoint/0.1 (passive OSINT discovery)"
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="easm", description="External attack surface mapping: passive discovery, plus opt-in light probing and assessment.")
+    p = argparse.ArgumentParser(prog="farpoint", description="External attack surface mapping: passive discovery, plus opt-in light probing and assessment.")
     p.add_argument("domains", nargs="*", help="root domains to map")
     p.add_argument("-f", "--file", type=Path, help="file with one domain per line (# comments allowed)")
     p.add_argument("-o", "--out", type=Path, default=Path("out"), help="output directory (default: ./out)")
@@ -277,7 +277,7 @@ def _prepare_assessment(args, http: httpx.Client, reporter, report_now, stamp: s
 
 
 def _assess_only(args, http: httpx.Client) -> int:
-    """`easm --assess -o DIR`: re-judge an existing inventory without scanning anything."""
+    """`farpoint --assess -o DIR`: re-judge an existing inventory without scanning anything."""
     try:
         report = load_report(args.out)
     except ReportError as exc:
@@ -303,7 +303,7 @@ def _assess_only(args, http: httpx.Client) -> int:
 def _summarise_assessment(report: dict) -> None:
     from collections import Counter
 
-    from easm.assess import technologies
+    from farpoint.assess import technologies
 
     if report.get("fingerprints"):
         hosts = {r["hostname"] for r in report["fingerprints"]}

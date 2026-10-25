@@ -1,6 +1,6 @@
-from easm.models import IpDetails, Observation
-from easm.pipeline import Pipeline
-from easm.resolve import Resolution
+from farpoint.models import IpDetails, Observation
+from farpoint.pipeline import Pipeline
+from farpoint.resolve import Resolution
 
 
 class StaticSource:

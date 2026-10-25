@@ -33,7 +33,7 @@ from typing import Protocol
 
 import httpx
 
-from easm.suffixes import registered
+from farpoint.suffixes import registered
 
 TIERS = ("weak", "medium", "strong")
 AUTODISCOVER = "https://autodiscover-s.outlook.com/autodiscover/autodiscover.svc"
@@ -93,8 +93,8 @@ class NetworkProbes:
 
 @cache
 def bundled_suffixes() -> tuple[str, ...]:
-    """Suffixes the TLD swap tries (not a public suffix list: see easm.suffixes for that)."""
-    text = resources.files("easm.data").joinpath("suffixes.txt").read_text(encoding="utf-8")
+    """Suffixes the TLD swap tries (not a public suffix list: see farpoint.suffixes for that)."""
+    text = resources.files("farpoint.data").joinpath("suffixes.txt").read_text(encoding="utf-8")
     return tuple(line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#"))
 
 

@@ -12,21 +12,21 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from easm import runtime
-from easm.enrich import Enricher
-from easm.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, FingerprintConfig, fingerprint_service, for_host, shared_address, takeover_platform
-from easm.posture import Dns, assess_domain, check_mx, hosted
-from easm.probe import Prober
-from easm.guess import GuessConfig, Taxonomy, parent_of
-from easm.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord
-from easm.related import TIERS as RELATED_TIERS
-from easm.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
-from easm.suffixes import registered as registered_domain
-from easm.names import is_public_ip, normalize_ip
-from easm.progress import NullReporter, ProgressReporter
-from easm.resolve import Resolution
-from easm.sources.base import Source
-from easm.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, named_after, org_modifiers, org_tokens, plan, random_name, registered
+from farpoint import runtime
+from farpoint.enrich import Enricher
+from farpoint.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, FingerprintConfig, fingerprint_service, for_host, shared_address, takeover_platform
+from farpoint.posture import Dns, assess_domain, check_mx, hosted
+from farpoint.probe import Prober
+from farpoint.guess import GuessConfig, Taxonomy, parent_of
+from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord
+from farpoint.related import TIERS as RELATED_TIERS
+from farpoint.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
+from farpoint.suffixes import registered as registered_domain
+from farpoint.names import is_public_ip, normalize_ip
+from farpoint.progress import NullReporter, ProgressReporter
+from farpoint.resolve import Resolution
+from farpoint.sources.base import Source
+from farpoint.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, named_after, org_modifiers, org_tokens, plan, random_name, registered
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class Pipeline:
     guess: GuessConfig | None = None  # predict unseen names and test them in DNS (needs `lookup`)
     tenants: TenantConfig | None = None  # look for the organisation's tenants on SaaS platforms (needs `lookup`, `txt`)
     txt: Callable[[str], list[str]] | None = None  # a name's TXT strings
-    related: Probes | None = None  # look for other domains the organisation owns (see easm.related)
+    related: Probes | None = None  # look for other domains the organisation owns (see farpoint.related)
     fingerprint: FingerprintConfig | None = None  # probe live hosts and the domains' mail/DNS (needs `lookup`, `prober`, `dns`)
     prober: Prober | None = None
     dns: Dns | None = None  # records()/txt() for posture and dangling-CNAME checks
@@ -59,7 +59,7 @@ class Pipeline:
     def run(self, domains: Iterable[str]) -> Inventory:
         """Collect, resolve, enrich. On Ctrl-C, stop and return what was gathered, marked interrupted.
 
-        Cancellation is process-wide (see easm.runtime): call runtime.reset() before re-running."""
+        Cancellation is process-wide (see farpoint.runtime): call runtime.reset() before re-running."""
         inv = Inventory(domains)
         for domain in inv.domains:
             inv.add(Observation("input", domain))
@@ -200,7 +200,7 @@ class Pipeline:
 
     def _related(self, inv: Inventory) -> None:
         """Domains in the scan domains' Microsoft 365 tenants, then the scan domains' names under every
-        other suffix, tied to the organisation by evidence (easm.related). Subdomains of the scan
+        other suffix, tied to the organisation by evidence (farpoint.related). Subdomains of the scan
         domains a tenant lists join the inventory; registered variants with no tie are lookalikes."""
         probes, suffixes = self.related, bundled_suffixes()
         done, failed, total = [0], [0], [0]
@@ -464,7 +464,7 @@ class Pipeline:
     def _fingerprint(self, inv: Inventory) -> None:
         """Sweep each live host's address for open ports, ask each open port who it is, check every
         scan domain's mail/DNS posture and the mail servers it runs itself, and look for CNAMEs that
-        point at nothing. See easm.fingerprint and easm.posture."""
+        point at nothing. See farpoint.fingerprint and farpoint.posture."""
         config, prober = self.fingerprint, self.prober
         pace = _paced(lambda: None, config.rate)
         targets: dict[str, str] = {}  # host -> the address it is probed at

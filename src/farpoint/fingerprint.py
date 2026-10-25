@@ -6,7 +6,7 @@ says first (SSH, FTP, SMTP, MySQL greet you), a TLS handshake, `GET /`, the favi
 well-known paths. The answers are matched against bundled rules (data/fingerprints.json) to name
 technologies and versions. Nothing logs in, sends a payload or tries a vulnerability.
 
-This module decides what to ask; easm.probe does the asking.
+This module decides what to ask; farpoint.probe does the asking.
 """
 
 from __future__ import annotations
@@ -22,9 +22,9 @@ from functools import cache
 from importlib import resources
 from urllib.parse import urljoin, urlsplit
 
-from easm import runtime
-from easm.models import ServiceRecord, Tech
-from easm.probe import HttpResult, Prober, UnsupportedHere, _name_matches, cert_summary
+from farpoint import runtime
+from farpoint.models import ServiceRecord, Tech
+from farpoint.probe import HttpResult, Prober, UnsupportedHere, _name_matches, cert_summary
 
 # Management and data services attackers scan for first, plus the common web and appliance ports.
 DEFAULT_PORTS = (
@@ -132,7 +132,7 @@ def load_rules(data: Mapping) -> tuple[Rule, ...]:
 def bundled_rules() -> tuple[Rule, ...]:
     import json
 
-    return load_rules(json.loads(resources.files("easm.data").joinpath("fingerprints.json").read_text(encoding="utf-8")))
+    return load_rules(json.loads(resources.files("farpoint.data").joinpath("fingerprints.json").read_text(encoding="utf-8")))
 
 
 @dataclass
@@ -204,7 +204,7 @@ def cpe_for(cpe: str | None, version: str | None) -> str | None:
 def bundled_takeovers() -> tuple[tuple[str, re.Pattern, re.Pattern | None], ...]:
     import json
 
-    data = json.loads(resources.files("easm.data").joinpath("takeover.json").read_text(encoding="utf-8"))
+    data = json.loads(resources.files("farpoint.data").joinpath("takeover.json").read_text(encoding="utf-8"))
     return tuple((p["service"], re.compile(p["cname"], re.I), re.compile(p["body"], re.I) if p.get("body") else None) for p in data["platforms"])
 
 
@@ -256,7 +256,7 @@ def shared_address(org: str | None, cnames_per_host: Iterable[Iterable[str]], ta
 def bundled_eol() -> dict[str, list[dict]]:
     import json
 
-    data = json.loads(resources.files("easm.data").joinpath("eol.json").read_text(encoding="utf-8"))
+    data = json.loads(resources.files("farpoint.data").joinpath("eol.json").read_text(encoding="utf-8"))
     return {k: v for k, v in data.items() if not k.startswith("_")}
 
 

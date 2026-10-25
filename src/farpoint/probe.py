@@ -1,9 +1,9 @@
-"""Network primitives for --fingerprint: the only code in easm that connects to the organisation's hosts.
+"""Network primitives for --fingerprint: the only code in farpoint that connects to the organisation's hosts.
 
 Everything here is one short, ordinary exchange: a TCP connect, reading what a server says first, a
 TLS handshake, one HTTP GET, an SMTP EHLO/STARTTLS, a zone transfer request. Nothing sends a payload,
-logs in, or guesses credentials. The logic that decides what to ask lives in easm.fingerprint and
-easm.posture, behind the Prober protocol, so it can be tested without a network.
+logs in, or guesses credentials. The logic that decides what to ask lives in farpoint.fingerprint and
+farpoint.posture, behind the Prober protocol, so it can be tested without a network.
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ import dns.exception
 import dns.query
 import dns.zone
 
-from easm import runtime
+from farpoint import runtime
 
-USER_AGENT = "easm/0.1 (host fingerprinting)"
+USER_AGENT = "farpoint/0.1 (host fingerprinting)"
 CONNECT_TIMEOUT = 3.0
 READ_TIMEOUT = 5.0
 BODY_LIMIT = 256 * 1024
@@ -226,7 +226,7 @@ class NetworkProber:
         reader = raw.makefile("rb")
         _, greeting = _smtp_reply(reader)
         result.banner = " ".join(greeting)
-        raw.sendall(b"EHLO easm.invalid\r\n")
+        raw.sendall(b"EHLO farpoint.invalid\r\n")
         _, result.ehlo = _smtp_reply(reader)
         result.starttls = any(line.upper().startswith("STARTTLS") for line in result.ehlo)
         if not result.starttls:

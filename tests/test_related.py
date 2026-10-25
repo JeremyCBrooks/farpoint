@@ -1,8 +1,8 @@
-from easm.models import Observation
-from easm.output import write_outputs
-from easm.pipeline import Pipeline
-from easm.related import Profile, bundled_suffixes, split, tie, variants
-from easm.suffixes import registered
+from farpoint.models import Observation
+from farpoint.output import write_outputs
+from farpoint.pipeline import Pipeline
+from farpoint.related import Profile, bundled_suffixes, split, tie, variants
+from farpoint.suffixes import registered
 
 from test_pipeline import StaticSource
 
@@ -99,7 +99,7 @@ def run(net, tmp_path=None):
 
 
 def test_related_domains_are_found_tied_and_reported_but_never_scanned(tmp_path, monkeypatch):
-    from easm import pipeline
+    from farpoint import pipeline
 
     monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
     net = FakeNet(
@@ -124,7 +124,7 @@ def test_related_domains_are_found_tied_and_reported_but_never_scanned(tmp_path,
 
 
 def test_a_suffix_that_answers_any_name_is_skipped(monkeypatch):
-    from easm import pipeline
+    from farpoint import pipeline
 
     monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
     monkeypatch.setattr(pipeline, "random_under", lambda s: f"random.{s}")
@@ -139,7 +139,7 @@ def test_no_related_lookups_unless_asked():
 
 
 def test_every_scan_domain_with_the_name_is_compared(monkeypatch):
-    from easm import pipeline
+    from farpoint import pipeline
 
     monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
     net = FakeNet(zones={
@@ -152,7 +152,7 @@ def test_every_scan_domain_with_the_name_is_compared(monkeypatch):
 
 
 def test_a_domain_no_longer_tied_leaves_related(tmp_path, monkeypatch):
-    from easm import pipeline
+    from farpoint import pipeline
 
     monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
     zones = {"example.com": {"NS": ["ns1.example.com"]}, "example.de": {"NS": ["ns1.example.com"]}}
@@ -164,7 +164,7 @@ def test_a_domain_no_longer_tied_leaves_related(tmp_path, monkeypatch):
 
 
 def test_a_lookup_that_times_out_is_an_error_not_unregistered(monkeypatch):
-    from easm import pipeline
+    from farpoint import pipeline
 
     monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
 

@@ -11,13 +11,13 @@ import pytest
 from rich.console import Console
 
 from conftest import fake_http
-from easm import runtime
-from easm.models import Inventory, Observation
-from easm.output import Checkpointer, merge_reports, recover_checkpoints, run_report, write_outputs
-from easm.pipeline import Pipeline
-from easm.progress import LiveReporter
-from easm.sources.base import SourceFailure, run_command
-from easm.sources.web import CrtSh
+from farpoint import runtime
+from farpoint.models import Inventory, Observation
+from farpoint.output import Checkpointer, merge_reports, recover_checkpoints, run_report, write_outputs
+from farpoint.pipeline import Pipeline
+from farpoint.progress import LiveReporter
+from farpoint.sources.base import SourceFailure, run_command
+from farpoint.sources.web import CrtSh
 
 D = "example.com"
 
@@ -86,7 +86,7 @@ def test_dns_and_enrichment_phases_count_up():
         def collect(self, domain):
             return src_obs
 
-    from easm.resolve import Resolution
+    from farpoint.resolve import Resolution
 
     Pipeline(sources=[Src()], lookup=lambda h: Resolution(), reporter=rec).run([D])
 
@@ -95,7 +95,7 @@ def test_dns_and_enrichment_phases_count_up():
 
 
 def test_phase_failures_are_counted():
-    from easm.resolve import Resolution
+    from farpoint.resolve import Resolution
 
     rec = Recorder()
 
@@ -169,7 +169,7 @@ def test_cancelling_terminates_running_commands_and_keeps_their_output():
 
 
 def test_interrupted_tool_keeps_parsed_results_and_reports_cancellation():
-    from easm.sources.tools import Subfinder
+    from farpoint.sources.tools import Subfinder
 
     runtime.cancel()
     source = Subfinder(runner=lambda argv: "a.example.com\nb.example.com\n")
@@ -294,7 +294,7 @@ def test_checkpoints_from_dead_runs_are_merged_and_live_ones_left_alone(tmp_path
 
 
 def test_a_reused_pid_does_not_hide_a_dead_runs_checkpoint(tmp_path):
-    """In a container easm is always PID 1: liveness must come from the lock, not the PID."""
+    """In a container farpoint is always PID 1: liveness must come from the lock, not the PID."""
     inv = Inventory([D])
     inv.add(Observation("crtsh", "killed.example.com"))
     stale = tmp_path / f".checkpoint-{os.getpid()}-deadbeef.json"  # same PID as this live process
@@ -395,7 +395,7 @@ def test_checkpoints_include_pages_from_jobs_still_running(tmp_path):
 
 
 def test_saving_never_touches_the_process_umask(monkeypatch, tmp_path):
-    from easm import output
+    from farpoint import output
 
     def forbidden(_):
         raise AssertionError("os.umask() changes process-wide state that subprocesses inherit")
@@ -434,7 +434,7 @@ def test_ctrl_c_while_applying_a_result_stops_at_the_next_wait():
 
 
 def test_signal_handler_writes_without_print_and_second_signal_exits(monkeypatch):
-    from easm import cli
+    from farpoint import cli
 
     writes, exits = [], []
     monkeypatch.setattr(cli.os, "write", lambda fd, data: writes.append(fd))
@@ -485,7 +485,7 @@ def test_cancelled_jobs_are_shown_as_interrupted_not_done():
 
 
 def test_rdap_falls_back_to_rdap_org_when_the_bootstrap_registry_is_down():
-    from easm.enrich import Rdap
+    from farpoint.enrich import Rdap
 
     body = {"name": "EXAMPLE-NET", "cidr0_cidrs": [{"v4prefix": "192.0.2.0", "length": 24}]}
     http = fake_http({"data.iana.org/rdap/ipv4.json": [httpx.Response(503)] * 3, "rdap.org/ip/192.0.2.1": httpx.Response(200, json=body)})

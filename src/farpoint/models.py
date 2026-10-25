@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from easm.names import in_scope, normalize_hostname, normalize_ip
+from farpoint.names import in_scope, normalize_hostname, normalize_ip
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ class LookalikeRecord:
 
 @dataclass
 class TenantRecord:
-    """A name on a third-party platform that carries the organisation's name (see easm.tenants)."""
+    """A name on a third-party platform that carries the organisation's name (see farpoint.tenants)."""
 
     hostname: str
     vendor: str
@@ -77,7 +77,7 @@ class TenantRecord:
 
 @dataclass
 class RelatedRecord:
-    """Another registered domain the organisation appears to own (see easm.related)."""
+    """Another registered domain the organisation appears to own (see farpoint.related)."""
 
     domain: str
     related_to: str  # the scan domain it was found from
@@ -87,7 +87,7 @@ class RelatedRecord:
 
 @dataclass
 class Tech:
-    """A technology a service appears to run (see easm.fingerprint)."""
+    """A technology a service appears to run (see farpoint.fingerprint)."""
 
     name: str  # "FortiGate SSL-VPN"
     category: str  # edge, cdn, waf, server, cms, framework, mail, panel, platform, database, remote-access, language
@@ -116,7 +116,7 @@ class ServiceRecord:
     location: str | None = None  # where it redirects, when off-host or past the redirect limit
     headers: dict[str, str] = field(default_factory=dict)  # the identifying ones only
     cookies: list[str] = field(default_factory=list)  # names only
-    tls: dict | None = None  # see easm.probe.cert_summary
+    tls: dict | None = None  # see farpoint.probe.cert_summary
     favicon: int | None = None  # Shodan-style mmh3 hash
     paths: dict[str, dict] = field(default_factory=dict)  # well-known path -> {status, note}
     tech: list[Tech] = field(default_factory=list)
@@ -146,7 +146,7 @@ class Inventory:
         self.guessed: set[str] = set()  # names --guess tested this run (whether or not they exist)
         self.services: dict[str, ServiceRecord] = {}  # hostname:port -> what --fingerprint found there
         self.closed: set[str] = set()  # hostname:port pairs --fingerprint found closed this run (their old rows go)
-        self.posture: dict[str, dict] = {}  # scan domain -> mail/DNS/registration facts (easm.posture)
+        self.posture: dict[str, dict] = {}  # scan domain -> mail/DNS/registration facts (farpoint.posture)
         self.dangling: dict[str, dict] = {}  # hostname -> {"reason", "claimable"}: a CNAME into nothing
         self.dangling_checked: set[str] = set()  # hostnames checked for that this run
         self.errors: list[SourceError] = []

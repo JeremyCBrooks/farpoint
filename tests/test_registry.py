@@ -1,7 +1,7 @@
 import pytest
 
 from conftest import fake_http
-from easm.sources import build_sources, select_sources
+from farpoint.sources import build_sources, select_sources
 
 
 @pytest.fixture

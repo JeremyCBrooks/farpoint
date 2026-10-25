@@ -8,11 +8,11 @@ import pytest
 
 from conftest import fake_http, pairs
 from test_pipeline import StaticSource
-from easm.models import Observation
-from easm.pipeline import Pipeline
-from easm.resolve import DnsResolver, Resolution
-from easm.sources.base import MAX_WAIT, SourceFailure, retry_after_seconds
-from easm.sources.web import CrtSh, VirusTotal
+from farpoint.models import Observation
+from farpoint.pipeline import Pipeline
+from farpoint.resolve import DnsResolver, Resolution
+from farpoint.sources.base import MAX_WAIT, SourceFailure, retry_after_seconds
+from farpoint.sources.web import CrtSh, VirusTotal
 
 D = "example.com"
 OK = httpx.Response(200, json=[{"name_value": "a.example.com"}])

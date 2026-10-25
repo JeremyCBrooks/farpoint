@@ -1,7 +1,7 @@
 """Opt-in guessing: learn how an organisation names its hosts, then predict names no dataset has seen.
 
 Learning and ranking are offline. Testing a guess is an ordinary DNS lookup through the recursive
-resolver, but unlike the rest of easm, each guess reaches the domain's authoritative nameservers, which
+resolver, but unlike the rest of farpoint, each guess reaches the domain's authoritative nameservers, which
 can see (and log) a burst of queries for names that mostly don't exist.
 
 Every known name is split into labels and each label into tokens (`portaltest` -> portal + test,
@@ -11,7 +11,7 @@ are modifiers. Candidates for a domain come from:
     stems and how common they are in this organisation (api-dev -> api-prod, once some other name or
     CNAME target here uses 'prod')
   - joining a modifier the other way (portaltest -> portal-test), dropping one, nearby numbers
-  - the organisation's tenants on other platforms, found by easm.tenants: their words besides its
+  - the organisation's tenants on other platforms, found by farpoint.tenants: their words besides its
     name (example-mft-traffic.vendor.co -> mft, mft-traffic), tried before anything else
   - prefixes reused over many names (www.), names repeated across the input domains
   - popular standalone names from a cross-organisation ranking, for hosts no pattern predicts
@@ -22,7 +22,7 @@ learned from the names being scanned. The only outside data is a popularity rank
 labels across many organisations, used as standalone guesses and as the dictionary that splits
 run-together labels.
 
-Measure it offline with `python -m easm.guess OUT_DIR`: each known host is hidden in turn and ranked
+Measure it offline with `python -m farpoint.guess OUT_DIR`: each known host is hidden in turn and ranked
 by a model learned from the others.
 """
 
@@ -39,7 +39,7 @@ from functools import cache, cached_property
 from importlib import resources
 from pathlib import Path
 
-from easm.names import normalize_hostname
+from farpoint.names import normalize_hostname
 
 Token = tuple[str, str]  # (text, separator before it: "-" or "")
 Label = tuple[Token, ...]
@@ -76,7 +76,7 @@ class GuessConfig:
 
 @dataclass(frozen=True)
 class Corpus:
-    """Naming statistics across many organisations, built by easm.corpus: how many organisations use
+    """Naming statistics across many organisations, built by farpoint.corpus: how many organisations use
     each modifier, use two modifiers on one stem (BARE: the stem also exists alone), or have a
     standalone name."""
 
@@ -131,7 +131,7 @@ def _clean(lines: Iterable[str]) -> list[str]:
 
 @cache
 def bundled_prior(corpus: bool = True) -> Prior:
-    data = resources.files("easm.data")
+    data = resources.files("farpoint.data")
     built = data.joinpath("corpus.json")
     stats = Corpus.from_json(json.loads(built.read_text(encoding="utf-8"))) if corpus and built.is_file() else None
     return Prior.from_lines(data.joinpath("subdomains.txt").read_text(encoding="utf-8").splitlines(), stats)
@@ -413,8 +413,8 @@ def leave_one_out(
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="python -m easm.guess", description="Offline evaluation of easm's guesser on an inventory.")
-    p.add_argument("out", type=Path, help="an easm output directory (reads its assets.json)")
+    p = argparse.ArgumentParser(prog="python -m farpoint.guess", description="Offline evaluation of farpoint's guesser on an inventory.")
+    p.add_argument("out", type=Path, help="an farpoint output directory (reads its assets.json)")
     p.add_argument("--k", default="100,500,2000", help="budgets to report recall at (default: 100,500,2000)")
     p.add_argument("--sample", type=int, default=300, help="hide at most this many hosts (default: 300)")
     p.add_argument("--rank", action="append", default=[], help="also report where this hostname ranks (repeatable)")

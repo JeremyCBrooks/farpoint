@@ -1,7 +1,7 @@
 import base64
 
-from easm.posture import assess_domain, check_dkim, check_dmarc, check_spf, dkim_key_bits, hosted, mail_provider, registration
-from easm.probe import HttpResult
+from farpoint.posture import assess_domain, check_dkim, check_dmarc, check_spf, dkim_key_bits, hosted, mail_provider, registration
+from farpoint.probe import HttpResult
 
 from test_fingerprint import FakeProber
 
@@ -85,7 +85,7 @@ def test_a_wildcard_dkim_record_is_reported_once():
 
 
 def test_a_resolver_that_fails_ds_queries_leaves_dnssec_unknown():
-    from easm.posture import check_dns
+    from farpoint.posture import check_dns
 
     row = check_dns(FakeDns({D: {"NS": ["ns1.dnshost.net"], "DS": "SERVFAIL"}}), FakeProber(), D)
     assert row["dnssec"] is None and row["caa"] == []

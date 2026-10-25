@@ -3,7 +3,7 @@ import json
 import pytest
 
 from conftest import pairs
-from easm.sources.tools import Bbot, Dnstwist, Subfinder
+from farpoint.sources.tools import Bbot, Dnstwist, Subfinder
 
 D = "example.com"
 
