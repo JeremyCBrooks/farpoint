@@ -34,7 +34,7 @@ uv run farpoint --list-sources              # which data sources are usable on t
 The ranked list is in `findings.csv`, and `technologies.csv` groups hosts by what they run.
 
 API keys make several sources return much more. Put them in a `.env` file in the directory you run
-from (see [Sources](#sources) for the names):
+from (see [Discovery](#discovery) for the names):
 
 ```bash
 SHODAN_API_KEY=...
@@ -42,28 +42,16 @@ VIRUSTOTAL_API_KEY=...
 OTX_API_KEY=...
 ```
 
-## Approach
+## How it works
 
-- **Start from root domains and widen.** Hostnames come from many independent datasets: certificate
-  logs, passive DNS, web archives and search engines of past scans. Optional phases widen further,
-  to sister domains, SaaS tenants and names predicted from the organisation's naming habits.
-- **Verify, and keep the evidence.** Every name is checked in DNS, and each records which sources
-  reported it, so names several sources agree on stand out from one-off sightings.
-- **Keep to scope.** Only names under the scan domains are kept and probed. Related domains, tenants
-  and lookalikes are reported for you to review, never scanned.
-- **Escalate contact one step at a time.** Passive datasets come first, then DNS lookups, then light
-  probing of the organisation's own hosts. Each step beyond passive is a separate opt-in.
-- **Use the lightest touch that answers the question.** Fingerprinting asks each service who it is
-  the way any client would. It never logs in, guesses passwords or sends exploits.
-- **Separate facts from judgments.** Discovery, enrichment and fingerprinting add facts to an
-  inventory that builds up across scans. Assessment derives findings from those facts afresh each
-  time, so findings always reflect the latest look.
-- **Rank like an attacker.** Findings are ordered by what an attacker choosing a soft target would
-  try first, such as exposed VPN appliances, admin panels and spoofable mail, not by CVSS score.
-- **Never report unknown as absent.** When a check fails, its answer is recorded as unknown, never as
-  a missing control.
-
-## How a scan works
+farpoint collects hostnames from many independent public datasets, checks each in live DNS, and keeps
+a record of which sources reported it. Optional stages then widen the search, to sister domains, SaaS
+tenants and names predicted from the organisation's own naming habits. Further optional stages
+fingerprint what is live and rank what an attacker would try first. Each stage that makes more contact
+than the one before is a separate opt-in. Only names under the scan domains are ever probed: related
+domains, tenants and lookalikes are reported for you to review. Findings are worked out afresh from the
+whole inventory on every assessment. A check that fails is recorded as unknown, never as a missing
+control.
 
 A scan runs these phases in order. Each phase works on what the earlier ones found.
 
@@ -79,6 +67,7 @@ A scan runs these phases in order. Each phase works on what the earlier ones fou
 | Assessment | Turns the inventory into ranked findings and matches versions to CVEs | NVD, CISA | `--assess` |
 
 Results are then merged into the inventory in the output folder, and every output file is rewritten.
+[ARCHITECTURE.md](ARCHITECTURE.md) has the methodology behind each phase and a system diagram.
 
 ## Options
 
@@ -113,9 +102,6 @@ Results are then merged into the inventory in the output folder, and every outpu
 
 ## Discovery
 
-Each source is queried once per domain. Only names equal to or under a scan domain are kept, and
-each host records which sources reported it.
-
 | Source | Kind | Key (environment variable) |
 |---|---|---|
 | crt.sh | Certificate transparency | none |
@@ -134,40 +120,23 @@ each host records which sources reported it.
 Install the optional tools with `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`
 and `uv tool install bbot`. Keys are read from the environment or from `.env` in the current
 directory; the environment wins. Sources without their key or binary are skipped and listed in the
-summary.
-
-Requests are throttled per service: VirusTotal to its free tier's 4 a minute, Shodan to 1 a second.
-Transport errors, 5xx and 429 responses are retried with exponential backoff, honouring
-`Retry-After`. A source that fails is recorded in `assets.json` with any pages it returned first,
-and the scan continues.
+summary. A source that fails is recorded in `assets.json` with any pages it returned first, and the
+scan continues.
 
 Lookalike domains (typosquats and homoglyphs registered by anyone) go to `lookalikes.csv` and are
 never scanned.
 
 ## Related domains (`--related`)
 
-Finds other registered domains the organisation owns: brands, country domains, defensive
-registrations. Two methods:
-
-- **Microsoft 365.** The domains verified in the Microsoft 365 tenant each scan domain belongs to.
-  Only an owner can verify a domain, so these are the organisation's. Subdomains of the scan domains
-  it lists join the inventory with source `m365`.
-- **Suffix swap.** Each scan domain's name under every other suffix in `src/farpoint/data/suffixes.txt`
-  (all top-level domains plus common second levels such as `com.au`). Registered ones are tied to the
-  organisation by evidence. One signal alone is at most `medium`, because nameservers, parking
-  addresses and redirects can each be shared or faked:
-  - `strong`: signals that agree, such as the organisation's own nameservers plus a shared mail host,
-    address or redirect home, or the same nameservers plus a redirect home or the organisation's own
-    mail host
-  - `medium`: its own nameservers, a direct redirect home, or its own mail host
-  - `weak`: the same nameservers at an outside provider, a shared address or generic mail host, or a
-    redirect home through someone else's host
-
-  Registered variants with no tie go to lookalikes.
+Finds other registered domains the organisation owns, such as brands, country domains and defensive
+registrations. They come from the scan domains' Microsoft 365 tenant, and from the scan domains' names
+under every other suffix (`example.de`, `example.com.au`). Each is given a `tie` of `strong`, `medium`
+or `weak` by the evidence linking it to the organisation. Registered variants with no tie go to
+lookalikes.
 
 Results go to `related.csv`, and the summary lists the strong and medium ones. **Related domains are
 never scanned**: owning a domain doesn't mean you're authorised to scan it, so add the ones you are
-to your domain list yourself. A domain looked at again and no longer tied leaves the list.
+to your domain list yourself.
 
 **Not passive:** about 1,800 lookups per scan domain go to the registries, 8 at a time. Each
 registered variant gets a few DNS lookups and one HTTP request to see where it redirects, and
@@ -175,54 +144,32 @@ Microsoft gets one request per scan domain.
 
 ## Resolution
 
-Every discovered name is looked up for A, AAAA and CNAME records. In-scope CNAME targets join the
-inventory and are resolved too. `hosts.csv` shows `resolves` as yes, no, or blank when the lookup
-timed out after a retry. A name with `resolves=no` but addresses listed is a historical record: it
-was seen in passive DNS but no longer resolves.
+`hosts.csv` shows `resolves` as yes, no, or blank when the lookup timed out after a retry. A name with
+`resolves=no` but addresses listed is a historical record: it was seen in passive DNS but no longer
+resolves.
 
 ## Tenants (`--tenants`)
 
 Finds the organisation's accounts on other companies' platforms, such as `example.sharepoint.com` or
-`example.my.salesforce.com`. Platforms are tried in this order:
+`example.my.salesforce.com`. Platforms the organisation's own DNS records point to are tried first,
+then a bundled table of common ones. Platforms that answer any name are allowed for.
 
-1. tenant names the scan domains' TXT records give outright (`EXAMPLE123.onmicrosoft.com`)
-2. platforms the domains' records say they use: verification strings and SPF includes. Here the
-   organisation's common name modifiers are tried too (`example-dev`, `example-test`)
-3. zones the organisation's CNAMEs point into, from this scan and earlier ones in `--out`
-4. every platform in `src/farpoint/data/tenants.json`
-
-Tenant names are built from each scan domain's first label. Each pattern is first checked with
-three random names. On a platform that answers any name, a tenant counts only if it answers
-differently. Where DNS can't tell, the name is kept as **unverified**, and only when the domain's own
-records name the platform. A tenant's `tie` says what links it to the organisation: `records` (its
-own TXT or SPF), `cname`, or `name` (a name match only, which may be another organisation).
-
-A CNAME target outside the scan domains that carries the organisation's name is recorded as a
-tenant too, with the organisation's hosts that point at it.
+In `tenants.csv`, a tenant's `tie` says what links it to the organisation: `records` (its own TXT or
+SPF), `cname` (its hosts point there), or `name` (a name match only, which may be another
+organisation). `verified=no` means the platform answers any name, so DNS can't confirm the tenant
+exists.
 
 **Not passive:** the platforms' nameservers see the lookups, and the organisation's nameservers see
-one TXT query per domain. Results go to `tenants.csv`.
+one TXT query per domain.
 
 ## Guessing (`--guess`)
 
-Finds names that public datasets missed by learning how the organisation names its hosts from
-everything known: this scan, the inventory in `--out`, and CNAME targets such as
-`portal-prod.azurewebsites.net`. It then tests names it hasn't seen:
-
-- modifiers a name lacks, ranked by how often they appear together elsewhere (`api-dev` → `api-prod`)
-- the other way of joining (`portaltest` → `portal-test`), dropping a modifier, nearby numbers
-- prefixes the organisation reuses (`www.`), and names repeated across the scan domains
-- popular standalone names (`files`, `sftp`, `vpn`) from `src/farpoint/data/subdomains.txt`
-- with `--tenants`, the words in the organisation's verified tenant names (`example-mft.vendor.co` → `mft`)
-
-The budget is spread over three rounds plus a small final round, so names found in one round have
-their variants tried in the next. Every name tested is remembered in `assets.json`, and later scans
-into the same `--out` skip it until 90 days have passed, so each scan goes further down the list.
-
-Before guessing under a parent name, three random names there are looked up. If they resolve
-(wildcard DNS), a guess counts only if it has an address or alias of its own. If they time out, no
-guesses are made there. If most guesses under a parent resolve anyway, they are all discarded.
-Skipped parents are listed in the errors in `assets.json`. Found names have source `guess`.
+Finds names that public datasets missed by learning how the organisation names its hosts
+(`api-dev` → `api-prod`, `portaltest` → `portal-test`) and testing names it hasn't seen in DNS. It
+learns from this scan, the inventory in `--out` and, with `--tenants`, the organisation's tenant
+names. Every name tested is remembered, and later scans into the same `--out` skip it for 90 days, so
+each scan goes further down the list. Found names have source `guess`. Parents skipped because of
+wildcard DNS are listed in the errors in `assets.json`.
 
 **Not passive:** the domain's authoritative nameservers see every guess, mostly for names that don't
 exist. `--guess-rate` spreads them out; 2000 lookups at 5 a second take about 7 minutes.
@@ -248,58 +195,29 @@ uv run python -m farpoint.corpus stats -d corpus --exclude example.com --out src
 Use `--exclude` for any organisation you will evaluate on, so its own names don't leak into the
 statistics.
 
-## Enrichment
-
-Each public address is looked up in RDAP for its owner and network, and in Shodan's free
-InternetDB for the ports, CVEs, hostnames and tags (such as `cdn`) Shodan has seen. Neither contacts
-the address itself. In-scope hostnames InternetDB reports join the inventory.
-
 ## Fingerprinting (`--fingerprint`)
 
-Identifies what each live host runs, with the lightest touch that answers the question. It only
-contacts in-scope hosts that resolve now to a public address. It never contacts lookalikes, related
-domains, tenants, private addresses, or addresses a name had in the past.
+Identifies what each live host runs. It only contacts in-scope hosts that resolve now to a public
+address. It never contacts lookalikes, related domains, tenants, private addresses, or addresses a name
+had in the past. It never logs in, guesses passwords or sends exploits.
 
-- **Ports.** One TCP connect per port per address. The default 43 ports cover remote access
-  (22, 3389, 5900, 5985), databases (1433, 3306, 5432, 6379, 9200, 27017), mail, directory services,
-  container APIs, and web and appliance ports (80, 443, 8443, 10443...). Ports Shodan has seen open
-  on the address are added. Addresses that belong to a CDN or SaaS front end, such as Cloudflare,
-  CloudFront, Azure Front Door or Shopify, only get 80 and 443, because the machine is the provider's.
-- **Services.** Each open port is asked who it is in the ordinary way:
-  - servers that speak first (SSH, FTP, MySQL, VNC) have their greeting read
-  - mail ports get SMTP `EHLO` and `STARTTLS`, never `MAIL FROM`
-  - TLS ports get a handshake for the certificate and version, plus two handshakes to see whether
-    TLS 1.0 and 1.1 are still accepted
-  - web services get `GET /` (following redirects within the service), the favicon (hashed the way
-    Shodan does, to search for in Shodan) and the `--paths`
-  - database and RDP ports get nothing past the connect
-
-  Web ports are checked per hostname, since virtual hosts differ. Other services are checked once
-  per address and recorded for each hostname on it.
-- **Technologies.** The answers are matched against `src/farpoint/data/fingerprints.json`, which covers
+- **Ports**: 43 by default, covering remote access, databases, mail, directory services, container
+  APIs, and web and appliance ports. Addresses belonging to a CDN or SaaS front end only get 80 and 443.
+- **Services**: each open port is asked who it is the ordinary way: its greeting, a TLS handshake,
+  `GET /`, the favicon and the `--paths`. Mail ports get `EHLO` and `STARTTLS`, never `MAIL FROM`.
+- **Technologies**: the answers are matched against `src/farpoint/data/fingerprints.json`, which covers
   VPN and firewall appliances (FortiGate, GlobalProtect, NetScaler, BIG-IP, Cisco ASA, Ivanti,
   SonicWall, Check Point), remote access gateways, mail (Exchange with its build number), CDNs and
   WAFs, web servers, languages, CMSs (WordPress with plugin and theme versions), admin panels and
-  hosting platforms. Each match carries a version and CPE where the answer gives one. Add a rule to
-  that file to recognise more.
-- **Domain posture**, for each scan domain:
-  - mail: provider, SPF (its `all`, DNS lookups against the limit of 10, includes that don't exist or
-    whose domain is unregistered), DMARC (`p`, `sp`, `pct`), DKIM keys under 32 common selectors with
-    their sizes, MTA-STS, TLS-RPT and BIMI
-  - mail servers under the organisation's own domains get one SMTP connection for their banner,
-    STARTTLS and certificate. Hosted providers such as Microsoft 365 or Google are left alone
-  - DNS: nameservers, a zone transfer (`AXFR`) request to each, DNSSEC, CAA and wildcard DNS
-  - registration: registrar, creation and expiry dates, and transfer lock, from RDAP
-- **Dangling DNS.** For each name that doesn't resolve, its CNAME and the CNAME's target are looked
-  up. A target that doesn't exist on a platform where names can be claimed (Azure, Elastic
-  Beanstalk), or under an unregistered domain, is a takeover risk. So is a live host serving a
-  platform's "nothing configured here" page (`src/farpoint/data/takeover.json`). A target that doesn't
-  exist anywhere else is reported as a broken record.
+  hosting platforms. Add a rule to that file to recognise more.
+- **Domain posture**, per scan domain: SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI, the STARTTLS of mail
+  servers the organisation runs itself, nameservers, zone transfers, DNSSEC, CAA and registration.
+- **Dangling DNS**: CNAMEs pointing at names that don't exist, flagged as takeover risks where the
+  name could be claimed.
 
-Connections are paced by `--probe-rate`, with at most 2 at a time to one address, and identify
-themselves with the user agent `farpoint/0.1 (host fingerprinting)`. A scan of about 100 hosts makes a
-few thousand connections over a few minutes. Results go to `fingerprints.csv`, `technologies.csv`
-and `posture.csv`.
+Connections are paced by `--probe-rate` and identify themselves with the user agent
+`farpoint/0.1 (host fingerprinting)`. A scan of about 100 hosts makes a few thousand connections over a
+few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.csv`.
 
 **Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request
 may be logged as reconnaissance. Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then
@@ -316,21 +234,13 @@ choosing a soft target, not by CVSS. Assessment sends nothing to the organisatio
 | medium | self-signed or mismatched certificates, TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups |
 | low | missing HSTS, wildcard certificates, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
 
-For each product version fingerprinting identified, assessment asks NVD which CVEs affect it and
-checks them against CISA's Known Exploited Vulnerabilities catalogue. NVD answers are cached in
-`assets.json` for a week. Without a key NVD allows about one request every 6 seconds, so set
-`NVD_API_KEY` for large inventories.
+Each product version fingerprinting identified is checked against NVD for CVEs and against CISA's
+Known Exploited Vulnerabilities catalogue. NVD answers are cached in `assets.json` for a week. Without
+a key NVD allows about one request every 6 seconds, so set `NVD_API_KEY` for large inventories.
+Distribution package versions and CVEs on shared CDN addresses are discounted.
 
-Some matches are discounted:
-- a version from a distribution package (`OpenSSH_8.9p1 Ubuntu`) is capped at medium unless the CVE
-  is known to be exploited, since distributions backport fixes
-- CVEs Shodan lists for a shared CDN or SaaS address are low, since they are the provider's to fix
-- a check that failed (a DNS error, a mail server that never answered) is reported as unknown, never
-  as a missing control
-
-Findings are derived from the whole inventory each time, so they reflect the latest look at each
-host. `first_seen` records when a finding was first reported. `technologies.csv` lists each product
-and version with how many hosts run it, its end-of-life date and its CVE counts, edge devices first.
+`first_seen` records when a finding was first reported. `technologies.csv` lists each product and
+version with how many hosts run it, its end-of-life date and its CVE counts, edge devices first.
 
 ## Output (`--out`, default `./out`)
 
@@ -352,16 +262,9 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |
 
 Every row has `first_seen` and `last_seen` (UTC). `assets.json` is the source of truth, and the other
-files are regenerated from it after every scan.
-
-How rows merge:
-- hosts, addresses and lookalikes are combined across scans. Their addresses, CNAMEs, sources,
-  ports and CVEs are unioned, and `resolves` and the address owner take the latest answer
-- fingerprints and posture describe the latest look. A host and port fingerprinted again replaces its
-  old row. One that now refuses connections is removed. One that timed out or wasn't checked keeps
-  its row and its old `last_seen`
-- findings are re-derived from the whole inventory by each assessment
-- if assessment fails, the scan is still saved and the error recorded
+files are regenerated from it after every scan. Discovered facts accumulate across scans, while
+fingerprints, posture and findings describe the latest look (see
+[ARCHITECTURE.md](ARCHITECTURE.md#9-merge-and-output) for the exact rules).
 
 Writes are atomic. On Linux and macOS they are also locked, so two scans into one folder don't lose
 each other's results; on Windows, don't run two at once. A scan refuses to start if the existing
@@ -398,21 +301,5 @@ uv run pytest               # offline test suite
 uv run pytest -m network    # smoke tests against real DNS, example.com and NVD
 ```
 
-Code layout, in `src/farpoint/`:
-
-| Module | Role |
-|---|---|
-| `cli.py` | Command line |
-| `pipeline.py` | Runs the phases in order |
-| `sources/` | One class per discovery source |
-| `names.py`, `models.py` | Normalising and scoping names; the inventory |
-| `resolve.py`, `enrich.py` | DNS resolution; RDAP and InternetDB |
-| `related.py`, `tenants.py`, `guess.py` | The discovery opt-ins |
-| `probe.py` | The only code that connects to the organisation's hosts |
-| `fingerprint.py`, `posture.py` | What fingerprinting asks, and what the answers mean |
-| `assess.py` | Findings, NVD and CISA lookups |
-| `output.py` | Merging and writing the output files |
-
-To add a discovery source, subclass `HttpSource` (retries included) or `CommandSource` (binary
-checks included), yield `Observation`s, and register it in `sources/__init__.py`. Scoping,
-normalisation and de-duplication happen centrally in the inventory.
+[ARCHITECTURE.md](ARCHITECTURE.md) covers the code layout, the methodology of each stage, a system
+diagram, and how to add sources, technology rules, tenant platforms and findings.
