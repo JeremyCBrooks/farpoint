@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import threading
@@ -26,7 +27,9 @@ import dns.zone
 
 from farpoint import runtime
 
-USER_AGENT = "farpoint/0.1 (host fingerprinting)"
+_AGENT = "farpoint/0.1 (host fingerprinting{})"
+USER_AGENT = _AGENT.format("")
+_ENGAGEMENT = re.compile(r"[A-Za-z0-9._:@+/=-](?:[A-Za-z0-9 ._:@+/=-]{0,62}[A-Za-z0-9._:@+/=-])?")  # safe inside a header comment
 CONNECT_TIMEOUT = 3.0
 READ_TIMEOUT = 5.0
 BODY_LIMIT = 256 * 1024
@@ -126,11 +129,23 @@ def _sni(host: str) -> str | None:
         return host
 
 
-class NetworkProber:
-    """The real network. At most PER_IP connections to one address at a time; every call checks for Ctrl-C."""
+def user_agent(engagement: str | None = None) -> str:
+    """The User-Agent of requests to the organisation's hosts, naming the engagement if one is given.
+    Raises ValueError for an ID that can't go in a header."""
+    if engagement is None:
+        return USER_AGENT
+    if not _ENGAGEMENT.fullmatch(engagement):
+        raise ValueError("at most 64 letters, digits, spaces and .-_:@+/=, not starting or ending with a space")
+    return _AGENT.format(f"; engagement {engagement}")
 
-    def __init__(self, timeout: float = READ_TIMEOUT) -> None:
+
+class NetworkProber:
+    """The real network. At most PER_IP connections to one address at a time; every call checks for Ctrl-C.
+    `engagement` goes in the User-Agent so the organisation can tell who is probing (see user_agent)."""
+
+    def __init__(self, timeout: float = READ_TIMEOUT, engagement: str | None = None) -> None:
         self.timeout = timeout
+        self.user_agent = user_agent(engagement)
         self._lock = threading.Lock()
         self._slots: dict[str, threading.BoundedSemaphore] = {}
 
@@ -192,7 +207,7 @@ class NetworkProber:
             else:
                 conn = _PinnedHTTPConnection(host, ip, port, self.timeout)
             try:
-                conn.request("GET", quote(path, safe="/?&=%:@!$'()*+,;~-._"), headers={"User-Agent": USER_AGENT, "Accept": "*/*", "Accept-Encoding": "identity", "Connection": "close"})
+                conn.request("GET", quote(path, safe="/?&=%:@!$'()*+,;~-._"), headers={"User-Agent": self.user_agent, "Accept": "*/*", "Accept-Encoding": "identity", "Connection": "close"})
                 resp = conn.getresponse()
                 headers = [(k.lower(), v) for k, v in resp.getheaders()]
                 try:
@@ -259,8 +274,7 @@ class NetworkProber:
         return self._guard(nameserver_ip, go)
 
     def fetch(self, url: str) -> HttpResult | None:
-        """Each of the host's addresses in turn until one connects, so a scanner without IPv6 still
-        reaches a dual-stacked host."""
+        """Each of the host's public addresses in turn until one connects."""
         parts = urlsplit(url)
         host, port = parts.hostname or "", parts.port or 443
         try:
@@ -277,7 +291,7 @@ class NetworkProber:
                     return None
                 except OSError:
                     raise _Unreachable from None
-                conn.request("GET", parts.path or "/", headers={"User-Agent": USER_AGENT, "Connection": "close"})
+                conn.request("GET", parts.path or "/", headers={"User-Agent": self.user_agent, "Connection": "close"})
                 resp = conn.getresponse()
                 return HttpResult(resp.status, [(k.lower(), v) for k, v in resp.getheaders()], resp.read(64 * 1024))
             except (OSError, http.client.HTTPException):

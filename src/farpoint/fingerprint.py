@@ -32,7 +32,7 @@ DEFAULT_PORTS = (
     4443, 5432, 5443, 5900, 5985, 5986, 6379, 6443, 7443, 8000, 8080, 8443, 8888, 9200, 9443, 10443, 20443,
     30443, 40443, 50443, 60443, 27017,
 )
-DEFAULT_PATHS = ("/robots.txt", "/.well-known/security.txt", "/.git/HEAD")
+DEFAULT_PATHS = ("/robots.txt", "/.well-known/security.txt")
 WEB_ONLY = (80, 443)  # ports tried on shared CDN/hosting addresses, which aren't the organisation's machines
 
 SERVICE_NAMES = {

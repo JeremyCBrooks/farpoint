@@ -193,15 +193,27 @@ def test_a_web_service_is_read_from_headers_page_favicon_and_paths():
     assert (rec.service, rec.status, rec.title, rec.server) == ("https", 200, "Example & Co", "nginx/1.18.0")
     assert rec.cookies == ["PHPSESSID"] and "date" not in rec.headers
     assert rec.favicon == favicon_hash(b"\x89PNGfake")
-    assert rec.paths["/.git/HEAD"] == {"status": 200, "note": "git repository exposed"}
     assert rec.paths["/robots.txt"]["note"] == "disallows /admin /backup"
     assert rec.paths["/.well-known/security.txt"] == {"status": 404}
-    assert {"git-exposed", "login-form", "version-disclosure"} <= set(rec.signals)
+    assert {"login-form", "version-disclosure"} <= set(rec.signals)
+    assert not any(c[0] == "http" and ".git" in c[4] for c in prober.calls)
     names = {t.name: t for t in rec.tech}
     assert names["WordPress"].version == "6.1.1"
     assert names["WordPress plugin contact-form-7"].version == "5.7.1"
     assert rec.tls["version"] == "TLSv1.3" and rec.tls["matches"]
     assert rec.tls["legacy"] == {"TLSv1": None, "TLSv1.1": True}  # None: this machine can't offer TLS 1.0
+
+
+def test_an_exposed_git_repository_is_found_when_asked_for():
+    prober = FakeProber(
+        tls={(HOST, 443): TlsResult("TLSv1.3", "TLS_AES_128_GCM_SHA256", make_cert())},
+        http={("https", HOST, 443, "/"): HOME, ("https", HOST, 443, "/.git/HEAD"): HttpResult(200, [], b"ref: refs/heads/main\n")},
+    )
+
+    rec = fingerprint_service(prober, HOST, IP, 443, config=FingerprintConfig(paths=("/.git/HEAD",)))
+
+    assert rec.paths["/.git/HEAD"] == {"status": 200, "note": "git repository exposed"}
+    assert "git-exposed" in rec.signals
 
 
 def test_redirects_are_followed_within_the_service_and_recorded_when_they_leave_it():

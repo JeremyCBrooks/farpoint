@@ -238,7 +238,7 @@ def test_certificates_are_judged_against_today_not_the_day_they_were_fingerprint
         "posture": [{"domain": "example.com", "mx_health": [{"host": "mx.example.com", "ip": "192.0.2.25", "starttls": True, "tls": fingerprinted}]}],
     }
 
-    found = derive(report, today=TODAY)  # TODAY is past not_after: re-assessed weeks later
+    found = derive(report, today=TODAY)  # TODAY is past not_after
 
     assert ("high", "certificate-expired") in kinds(found, "www.example.com:443")
     assert ("low", "mx-certificate-invalid") in kinds(found, "mx.example.com")

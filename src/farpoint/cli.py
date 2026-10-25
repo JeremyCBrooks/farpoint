@@ -21,7 +21,7 @@ from farpoint.guess import GuessConfig
 from farpoint.names import parse_domains
 from farpoint.pipeline import Pipeline
 from farpoint.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
-from farpoint.probe import NetworkProber
+from farpoint.probe import NetworkProber, user_agent
 from farpoint.progress import LiveReporter, NullReporter
 from farpoint.resolve import DnsResolver
 from farpoint.sources import build_sources, select_sources
@@ -77,6 +77,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--paths", default=",".join(DEFAULT_PATHS), metavar="LIST", help=f"well-known paths --fingerprint requests per web service, or none (default: {','.join(DEFAULT_PATHS)})")
     p.add_argument("--probe-rate", type=float, default=20.0, metavar="N", help="at most N --fingerprint connections a second (default: 20)")
     p.add_argument("--no-legacy-tls", action="store_true", help="skip --fingerprint's TLS 1.0/1.1 handshakes")
+    p.add_argument(
+        "--engagement",
+        metavar="ID",
+        help="with --fingerprint: an engagement ID (ticket or client code) added to the User-Agent of its requests, so the "
+        "organisation can tell who is probing; the passive sources and --related don't send it",
+    )
     p.add_argument(
         "--assess",
         action="store_true",
@@ -190,6 +196,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tenant-budget must be at least 1")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    if args.engagement is not None:
+        if not args.fingerprint:
+            parser.error("--engagement only labels --fingerprint's requests; add --fingerprint")
+        try:
+            user_agent(args.engagement)
+        except ValueError as exc:
+            parser.error(f"--engagement: {exc}")
     try:
         sources = select_sources(all_sources, only=_csv(args.only), exclude=_csv(args.exclude))
     except ValueError as exc:
@@ -222,7 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         txt=resolver.txt,
         related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
         fingerprint=fingerprint if args.fingerprint else None,
-        prober=NetworkProber() if args.fingerprint else None,
+        prober=NetworkProber(engagement=args.engagement) if args.fingerprint else None,
         dns=resolver,
         rdap_domain=rdap.domain if args.fingerprint else None,
     )

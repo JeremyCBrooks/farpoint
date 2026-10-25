@@ -153,3 +153,41 @@ def test_a_policy_host_on_a_private_address_is_never_dialled(routes, monkeypatch
 
     assert NetworkProber(timeout=2).fetch("https://mta-sts.example.com/.well-known/mta-sts.txt") is None
     assert dialled == []
+
+
+@pytest.fixture
+def http_server():
+    """A plain HTTP server on loopback that records each request's User-Agent: (port, agents)."""
+    agents: list[str] = []
+
+    class Record(BaseHTTPRequestHandler):
+        def do_GET(self):
+            agents.append(self.headers.get("User-Agent", ""))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Record)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield server.server_address[1], agents
+    server.shutdown()
+    server.server_close()
+
+
+def test_requests_to_the_organisations_hosts_carry_the_engagement_id(routes, http_server):
+    table, _ = routes
+    port, agents = http_server
+    table[("203.0.113.80", 80)] = port
+
+    NetworkProber(timeout=2, engagement="ACME-2026-Q4").http("http", "www.example.com", "203.0.113.80", 80)
+    NetworkProber(timeout=2).http("http", "www.example.com", "203.0.113.80", 80)
+
+    assert agents == ["farpoint/0.1 (host fingerprinting; engagement ACME-2026-Q4)", "farpoint/0.1 (host fingerprinting)"]
+
+
+@pytest.mark.parametrize("bad", ["ACME\r\nX-Injected: 1", "a(b)c", "x" * 65, "   ", " ACME", "ACME ", ""])
+def test_an_engagement_id_that_cannot_go_in_a_header_is_refused(bad):
+    with pytest.raises(ValueError):
+        NetworkProber(engagement=bad)

@@ -90,9 +90,10 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--guess-rate N` | At most N `--guess` lookups a second (default: no limit). |
 | `--fingerprint` | Probe live hosts and check each domain's mail and DNS posture. **Not passive.** |
 | `--ports LIST` | Ports `--fingerprint` checks. `22,443,8000-8010` replaces the defaults, `+8081` adds to them, `none` checks only 80 and 443. |
-| `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt,/.git/HEAD`). |
+| `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt`). |
 | `--probe-rate N` | At most N `--fingerprint` connections a second across the scan (default 20). |
 | `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
+| `--engagement ID` | With `--fingerprint`, add an engagement ID (a ticket or client code: up to 64 letters, digits, spaces and `.-_:@+/=`, not starting or ending with a space) to the user agent of its requests, so the organisation can tell who is probing. The passive sources and `--related` don't send it. Plain-HTTP probes send it unencrypted. |
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
 | `--timeout SECONDS` | HTTP timeout for data sources (default 60). |
@@ -216,7 +217,8 @@ had in the past. It never logs in, guesses passwords or sends exploits.
   name could be claimed.
 
 Connections are paced by `--probe-rate` and identify themselves with the user agent
-`farpoint/0.1 (host fingerprinting)`. A scan of about 100 hosts makes a few thousand connections over a
+`farpoint/0.1 (host fingerprinting)`, or `farpoint/0.1 (host fingerprinting; engagement ID)` with
+`--engagement`. A scan of about 100 hosts makes a few thousand connections over a
 few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.csv`.
 
 **Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request

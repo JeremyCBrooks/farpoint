@@ -375,7 +375,8 @@ address.
    "nothing configured here" page. A target that simply doesn't exist is a broken record.
 
 **Pacing.** Connections are paced across the scan by `--probe-rate` (default 20 a second), with at most
-2 in flight to one address (`probe.PER_IP`), and identify themselves with a `farpoint/0.1` user agent.
+2 in flight to one address (`probe.PER_IP`), and identify themselves with a `farpoint/0.1` user agent that carries the `--engagement` ID, if given.
+Only `--fingerprint`'s requests carry the ID; the passive sources and `--related` don't.
 
 ### 8. Assessment (`--assess`)
 

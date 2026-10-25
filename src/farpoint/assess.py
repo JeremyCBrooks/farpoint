@@ -281,8 +281,7 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
 
 
 def _days_left(tls: Mapping, today: date) -> int | None:
-    """Days from `today` until the certificate expires: an inventory re-assessed weeks after it was
-    fingerprinted must not trust the days_left recorded then."""
+    """Days from `today` until the certificate expires."""
     try:
         return (date.fromisoformat(tls["not_after"][:10]) - today).days
     except (KeyError, TypeError, ValueError):
@@ -310,7 +309,7 @@ def _cve_finding(ep: str, label: str, tech: Mapping, cves: Sequence[Mapping], ke
 def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str]) -> list[dict]:
     out = []
     for host in sorted({r["hostname"] for r in fingerprints}):
-        # only the labels the organisation chose under its domain: demo-corp.com's www is not a demo
+        # only the labels under the organisation's domain
         root = max((d for d in domains if in_scope(host, d)), key=len, default=None) or registered(host) or host
         if DEV_NAMES.search(host.removesuffix(root).rstrip(".")):
             out.append(_finding("medium", "non-production-exposed", host, "a development/test/old system reachable from the internet: usually less patched and monitored"))

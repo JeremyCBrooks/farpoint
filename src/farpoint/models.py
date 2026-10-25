@@ -140,7 +140,7 @@ _SECRET_PARAM = re.compile(r"([?&](?:api[_-]?key|key|token|access[_-]?token|secr
 
 def describe(exc: BaseException) -> str:
     """One line for an error report: the exception's type and first line, with secrets in request
-    URLs (Shodan's key=, HackerTarget's apikey=) masked, since reports get saved and shared."""
+    URLs (Shodan's key=, HackerTarget's apikey=) masked."""
     text = str(exc).splitlines()[0] if str(exc) else ""
     return f"{type(exc).__name__}: " + _SECRET_PARAM.sub(r"\1***", text)
 
