@@ -1,0 +1,16 @@
+.git/
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+out/
+corpus/
+.env
+.env.*
+.checkpoint-*
+.lock
+assets.unmerged-*.json
+dist/
+build/
+*.egg-info/

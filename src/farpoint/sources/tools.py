@@ -9,7 +9,7 @@ from collections.abc import Iterator
 
 from farpoint.models import Observation
 from farpoint.names import extract_hostnames
-from farpoint.sources.base import CommandSource
+from farpoint.sources.base import CommandSource, SourceFailure
 
 
 class Subfinder(CommandSource):
@@ -36,16 +36,22 @@ class Bbot(CommandSource):
         return [self.binary, "-t", domain, "-p", "subdomain-enum", "-rf", "passive", "-y", "--silent", "--json"]
 
     def parse(self, output: str, domain: str) -> Iterator[Observation]:
+        seen = False
         for line in output.splitlines():
             try:
                 event = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(event, dict):
+                continue
+            seen = True
             if event.get("type") != "DNS_NAME":
                 continue
             yield Observation(self.name, event["data"])
             for ip in event.get("resolved_hosts") or []:
                 yield Observation(self.name, event["data"], ip)
+        if not seen:  # a scan that ran emits its SCAN event at least; bbot exits 0 when module setup fails
+            raise SourceFailure("bbot printed no events: its scan never started (run bbot without --silent to see why)")
 
 
 class Dnstwist(CommandSource):

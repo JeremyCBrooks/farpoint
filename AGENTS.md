@@ -17,7 +17,12 @@ uv run pytest tests/test_assess.py::test_name    # a single test
 uv run pytest -m network                         # smoke tests against real DNS, example.com and NVD
 uv run farpoint example.com                      # passive scan into ./out
 uv run python -m farpoint.guess out              # offline evaluation of the guesser on an inventory
+docker run --rm $(docker build -q --target test .)   # offline suite in the container image
 ```
+
+The `Dockerfile` pins subfinder, bbot and the base images. When you change dependencies, sources or
+external tools, check that the image still builds: the `full` target fails if a bbot module can't be
+set up.
 
 If `uv run pytest` fails with "uv trampoline failed to canonicalize script path" (seen in Git Bash on
 Windows), use `uv run python -m pytest` instead.

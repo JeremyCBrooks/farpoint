@@ -203,7 +203,11 @@ observations. Unavailable sources are listed as skipped, not as failures.
   minute, Shodan 1 a second), retries with exponential backoff on transport errors, 5xx and 429, and
   honours `Retry-After` up to a cap.
 - `CommandSource` wraps external tools (subfinder, bbot, dnstwist), runs them as tracked subprocesses so
-  an interrupt kills them, and parses their output.
+  an interrupt kills them, and parses their output. A tool is available only if it is on PATH and the
+  program that starts it exists: an ELF binary's dynamic loader, or a script's `#!` interpreter. A
+  musl build on a glibc system would otherwise look installed and fail at exec. A tool that still
+  can't start is a `SourceFailure`. bbot exits 0 when it can't set up its modules, so a bbot run that
+  prints no JSON events is a failure too.
 - dnstwist's results are marked `lookalike=True`: registered typosquats belong to anyone, so they are
   recorded but never treated as the organisation's.
 
@@ -472,7 +476,7 @@ by the lock, not the PID, since PIDs are reused.
 | Where | Control |
 |---|---|
 | Discovery and enrichment APIs | per-service throttle and pool size; backoff with `Retry-After` |
-| Related domains | 8 concurrent lookups |
+| Related domains | 8 concurrent lookups (capped by `--workers`); `--related-rate` lookups started per second, all kinds sharing one pace |
 | Tenants | `--tenant-budget` total lookups |
 | Guessing | `--guess-budget` per domain, `--guess-rate` per second |
 | Fingerprinting | `--probe-rate` per second; 2 connections per address; web-only on shared front ends |

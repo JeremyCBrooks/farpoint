@@ -11,7 +11,7 @@ are marked **not passive** below. Only use farpoint on domains you own or are au
 
 ## Quick start
 
-You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+You need Python 3.11+ and [uv](https://docs.astral.sh/uv/), or Docker (see [Docker](#docker)).
 
 ```bash
 uv sync                                     # install
@@ -83,11 +83,12 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--no-enrich` | Skip the RDAP and Shodan InternetDB lookups for addresses. |
 | `--nameserver IP` | DNS resolver to use instead of the system's. Repeat for several. |
 | `--related` | Look for other domains the organisation owns. **Not passive.** |
+| `--related-rate N` | Start at most N `--related` lookups a second (default: no limit). Needs `--related`. |
 | `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms. **Not passive.** |
 | `--tenant-budget N` | DNS lookups `--tenants` may make in total (default 800). |
 | `--guess` | Predict unseen hostnames and test them in DNS. **Not passive.** |
 | `--guess-budget N` | DNS lookups `--guess` may make per domain (default 2000). |
-| `--guess-rate N` | At most N `--guess` lookups a second (default: no limit). |
+| `--guess-rate N` | At most N `--guess` lookups a second (default: no limit). Needs `--guess`. |
 | `--fingerprint` | Probe live hosts and check each domain's mail and DNS posture. **Not passive.** |
 | `--ports LIST` | Ports `--fingerprint` checks. `22,443,8000-8010` replaces the defaults, `+8081` adds to them, `none` checks only 80 and 443. |
 | `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt`). |
@@ -116,14 +117,16 @@ Results are then merged into the inventory in the output folder, and every outpu
 | Shodan | Subdomains and records | required `SHODAN_API_KEY` |
 | VirusTotal | Subdomain relations | required `VIRUSTOTAL_API_KEY` (free tier works) |
 | subfinder | Passive subdomain tool | `subfinder` on PATH |
-| bbot | Passive subdomain-enum preset | `bbot` on PATH (Linux, macOS, WSL) |
+| bbot | Passive subdomain-enum preset | `bbot` on PATH (Linux, macOS, WSL), or the [Docker](#docker) image |
 | dnstwist | Registered lookalike domains, DNS only | bundled |
 
 Install the optional tools with `go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest`
 and `uv tool install bbot`. Keys are read from the environment or from `.env` in the current
 directory; the environment wins. Sources without their key or binary are skipped and listed in the
-summary. A source that fails is recorded in `assets.json` with any pages it returned first, and the
-scan continues.
+summary, as is a tool that can't start here, such as a binary built for Alpine on a glibc system. A
+source that fails is recorded in `assets.json` with any pages it returned first, and the scan
+continues. A bbot run that prints no events, which is what bbot does when it can't set up its
+modules, counts as failed, not as finding nothing.
 
 Lookalike domains (typosquats and homoglyphs registered by anyone) go to `lookalikes.csv` and are
 never scanned.
@@ -140,9 +143,12 @@ Results go to `related.csv`, and the summary lists the strong and medium ones. *
 never scanned**: owning a domain doesn't mean you're authorised to scan it, so add the ones you are
 to your domain list yourself.
 
-**Not passive:** about 1,800 lookups per scan domain go to the registries, 8 at a time. Each
-registered variant gets a few DNS lookups and one HTTP request to see where it redirects, and
-Microsoft gets one request per scan domain.
+**Not passive:** about 1,800 lookups per scan domain go to the registries, 8 at a time (fewer with
+`--workers`). Each registered variant gets a few DNS lookups and one HTTP request to see where it
+redirects, and Microsoft gets one request per scan domain. `--related-rate` spreads all of these
+lookups out: at 10 a second, one domain takes about 3 minutes. A lookup can be more than one packet
+(a DNS lookup that times out is retried, and a redirect check follows each hop), so the network sees
+a little more. Unpaced, a burst of this size can overwhelm a small NAT or home router.
 
 ## Resolution
 
@@ -301,6 +307,37 @@ kill the next scan into the same folder merges it automatically.
   CVE matches are by version, so treat them as leads to confirm.
 - Favicon hashes are recorded but not matched against known products.
 - DKIM is checked under common selectors only, so "not found" can mean "uses another selector".
+
+## Docker
+
+The image bundles farpoint with every discovery source, subfinder and bbot included, so it is also
+the way to run bbot on Windows. It reads `.env` and writes `./out` in the current directory:
+
+```bash
+mkdir -p out                                # first: Docker would create it owned by root
+docker compose run --rm farpoint example.com --fingerprint --assess
+docker compose run --rm farpoint --list-sources
+```
+
+Without compose, build and run it directly:
+
+```bash
+docker build -t farpoint .                  # --target slim: no subfinder or bbot, about 350 MB instead of 1.4 GB
+docker run --rm -it --init --env-file .env -v "$PWD/out:/work/out" farpoint example.com
+```
+
+- **`--init`** (compose sets `init: true`) lets Ctrl-C stop subfinder and bbot. `docker stop` saves
+  results like Ctrl-C does.
+- **The scan runs as uid 1000.** On a Linux host where your uid differs, make `out` writable by
+  uid 1000.
+- **subfinder and bbot keys** are in their own config, not `.env`. Mount
+  `~/.config/subfinder/provider-config.yaml` and `~/.config/bbot/secrets.yml` under `/home/scan/`
+  (commented out in `compose.yaml`).
+- **DNS is slower in a container**, because Docker bypasses the host's caching resolver. That slows
+  `--guess`, `--tenants` and `--related`. On Linux, use `--network host` (`network_mode: host`), or
+  point `--nameserver` at a fast resolver.
+- **IPv6** addresses show as unreachable unless the Docker network has IPv6 enabled.
+- `docker build --target test .` builds an image that runs the offline test suite.
 
 ## Development
 

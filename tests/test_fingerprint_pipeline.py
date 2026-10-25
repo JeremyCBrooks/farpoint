@@ -253,6 +253,24 @@ def test_cli_rejects_a_worker_count_below_one(tmp_path, capsys):
         assert "--workers must be at least 1" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(("flag", "needs"), [("--related-rate", "--related"), ("--guess-rate", "--guess")])
+def test_cli_rejects_a_rate_for_a_stage_that_is_not_running(tmp_path, capsys, flag, needs):
+    with pytest.raises(SystemExit) as exit:
+        cli.main(["example.com", "--no-resolve", "--only", "crtsh", flag, "5", "-o", str(tmp_path)])
+    assert exit.value.code == 2
+    assert needs in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("flag", "stage"), [("--related-rate", "--related"), ("--guess-rate", "--guess")])
+@pytest.mark.parametrize("rate", ["0", "-1", "nan"])
+def test_cli_rejects_a_rate_that_would_not_pace(tmp_path, capsys, flag, stage, rate):
+    """A NaN rate passes `<= 0` but would silently switch pacing off."""
+    with pytest.raises(SystemExit) as exit:
+        cli.main(["example.com", "--only", "crtsh", stage, flag, rate, "-o", str(tmp_path)])
+    assert exit.value.code == 2
+    assert f"{flag} must be positive" in capsys.readouterr().err
+
+
 def test_cli_checks_the_engagement_id_before_scanning(tmp_path, capsys):
     def usage_error(*args):
         with pytest.raises(SystemExit) as exit:

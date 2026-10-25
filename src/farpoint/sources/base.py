@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import random
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
@@ -12,6 +13,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -133,7 +135,10 @@ def run_command(argv: Sequence[str], timeout: float = 1800, unit: str = "lines",
     """Run a CLI tool, streaming its stdout so progress shows while it runs. Cancelling the run
     terminates it and returns what it printed so far; a non-zero exit only fails if it produced no output."""
     with tempfile.TemporaryFile("w+", encoding="utf-8") as stderr:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=stderr, text=True, encoding="utf-8", errors="replace")
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=stderr, text=True, encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise SourceFailure(f"{argv[0]} can't be started: {exc}") from exc
         runtime.track(proc)
         runtime.status(waiting)
         timed_out = threading.Event()
@@ -162,6 +167,44 @@ def run_command(argv: Sequence[str], timeout: float = 1800, unit: str = "lines",
         return stdout
 
 
+PT_INTERP = 3  # ELF program header naming the dynamic loader
+
+
+def _loader_present(path: str) -> bool:
+    """Whether the program the system runs to start `path` exists: an ELF binary's dynamic loader, or a
+    script's #! interpreter. Without it exec fails as if `path` were missing, as a binary built for
+    musl (Alpine) does on a glibc system. Anything else, including a file we may run but not read, is
+    assumed runnable."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return True
+    if head.startswith(b"#!"):
+        interpreter = [w.decode(errors="replace") for w in head[2:].split(b"\n", 1)[0].split()]
+        if not interpreter or not Path(interpreter[0]).exists():
+            return False
+        if Path(interpreter[0]).name == "env" and len(interpreter) > 1 and not interpreter[1].startswith("-"):
+            return shutil.which(interpreter[1]) is not None  # #!/usr/bin/env python3: env runs what PATH finds
+        return True
+    if not head.startswith(b"\x7fELF") or len(head) < 64 or head[4] != 2:  # ELF64 only
+        return True
+    order = "<" if head[5] == 1 else ">"
+    phoff, = struct.unpack_from(order + "Q", head, 32)
+    phentsize, phnum = struct.unpack_from(order + "HH", head, 54)
+    for i in range(phnum):
+        at = phoff + i * phentsize
+        if at + 56 > len(head):
+            return True  # program headers beyond what was read: can't tell
+        p_type, _, offset, _, _, size = struct.unpack_from(order + "IIQQQQ", head, at)
+        if p_type == PT_INTERP:
+            if offset + size > len(head):
+                return True
+            loader = head[offset : offset + size].rstrip(b"\0").decode(errors="replace")
+            return Path(loader).exists()
+    return True  # statically linked
+
+
 class CommandSource:
     """Base for external CLI tools. Subclasses define binary, argv() and parse()."""
 
@@ -175,7 +218,8 @@ class CommandSource:
         self.which = which
 
     def available(self) -> bool:
-        return self.which(self.binary) is not None
+        path = self.which(self.binary)
+        return path is not None and _loader_present(path)
 
     def argv(self, domain: str) -> list[str]:
         raise NotImplementedError

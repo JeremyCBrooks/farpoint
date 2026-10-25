@@ -1,0 +1,21 @@
+# docker compose run --rm farpoint example.com --fingerprint --assess
+# Results land in ./out; API keys come from ./.env. See README.md ("Docker").
+services:
+  farpoint:
+    build:
+      context: .
+      target: full  # or slim: no subfinder or bbot
+    image: farpoint
+    init: true  # reaps subfinder's and bbot's processes and passes on Ctrl-C
+    stop_grace_period: 30s  # time to save results on docker stop
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./out:/work/out
+      # Keys for subfinder and bbot are in their own config, not .env:
+      # - ~/.config/subfinder/provider-config.yaml:/home/scan/.config/subfinder/provider-config.yaml:ro
+      # - ~/.config/bbot/secrets.yml:/home/scan/.config/bbot/secrets.yml:ro
+    # Container DNS skips the host's caching resolver and was about half as fast in testing, which
+    # matters for --guess, --tenants and --related. On Linux, host networking avoids that:
+    # network_mode: host

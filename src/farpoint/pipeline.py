@@ -50,6 +50,7 @@ class Pipeline:
     tenants: TenantConfig | None = None  # look for the organisation's tenants on SaaS platforms (needs `lookup`, `txt`)
     txt: Callable[[str], list[str]] | None = None  # a name's TXT strings
     related: Probes | None = None  # look for other domains the organisation owns (see farpoint.related)
+    related_rate: float | None = None  # start at most this many --related lookups a second (None: as fast as workers go)
     fingerprint: FingerprintConfig | None = None  # probe live hosts and the domains' mail/DNS (needs `lookup`, `prober`, `dns`)
     prober: Prober | None = None
     dns: Dns | None = None  # records()/txt() for posture and dangling-CNAME checks
@@ -202,7 +203,8 @@ class Pipeline:
         """Domains in the scan domains' Microsoft 365 tenants, then the scan domains' names under every
         other suffix, tied to the organisation by evidence (farpoint.related). Subdomains of the scan
         domains a tenant lists join the inventory; registered variants with no tie are lookalikes."""
-        probes, suffixes = self.related, bundled_suffixes()
+        probes = _PacedProbes(self.related, self.related_rate)
+        suffixes = bundled_suffixes()
         done, failed, total = [0], [0], [0]
 
         def run(kind: str, jobs: dict[str, Callable]) -> dict[str, object]:
@@ -639,15 +641,33 @@ def _paced(fn: Callable, rate: float | None) -> Callable:
         return fn
     pace, next_start = threading.Lock(), [0.0]
 
-    def paced(*args):
+    def paced(*args, **kwargs):
         with pace:
             delay = next_start[0] - time.monotonic()
             if delay > 0:
                 runtime.sleep(delay)
             next_start[0] = max(next_start[0], time.monotonic()) + 1 / rate
-        return fn(*args)
+        return fn(*args, **kwargs)
 
     return paced
+
+
+class _PacedProbes:
+    """`probes` with every call, of every kind, started at most `rate` times a second in all (None: unpaced)."""
+
+    def __init__(self, probes: Probes, rate: float | None) -> None:
+        self._probes, self._pace = probes, _paced(lambda: None, rate)
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._probes, name)
+        if not callable(attr):
+            return attr
+
+        def paced(*args, **kwargs):
+            self._pace()
+            return attr(*args, **kwargs)
+
+        return paced
 
 
 def _cname_tenants(inv: Inventory, hosts: Mapping[str, Iterable[str]]) -> None:

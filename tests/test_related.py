@@ -123,6 +123,58 @@ def test_related_domains_are_found_tied_and_reported_but_never_scanned(tmp_path,
     assert "examplebrand.com,example.com,strong" in (tmp_path / "related.csv").read_text()
 
 
+def test_related_rate_spaces_out_every_request_it_makes(monkeypatch, sleeps):
+    from farpoint import pipeline
+
+    monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
+    calls = []
+
+    class CountingNet(FakeNet):
+        def tenant_domains(self, domain):
+            calls.append(domain)
+            return super().tenant_domains(domain)
+
+        def records(self, name, rdtype):
+            calls.append(name)
+            return super().records(name, rdtype)
+
+        def redirects(self, name):
+            calls.append(name)
+            return super().redirects(name)
+
+        def network_owner(self, ip):
+            calls.append(ip)
+            return super().network_owner(ip)
+
+    net = CountingNet(zones={"example.com": {"NS": ["ns1.example.com"]}, "example.de": {"NS": ["ns1.example.com"]}})
+    src = StaticSource("crtsh", [])
+    Pipeline(sources=[src], related=net, related_rate=2).run(["example.com"])
+    assert len(calls) > 2
+    assert sleeps == [0.5] * (len(calls) - 1)
+
+
+def test_related_rate_paces_probes_called_with_keywords(monkeypatch, sleeps):
+    from farpoint import pipeline
+
+    monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
+    real_of = pipeline.Profile.of
+    monkeypatch.setattr(pipeline.Profile, "of", staticmethod(lambda probes, name, ns=None: real_of(_Keywords(probes), name, ns)))
+    net = FakeNet(zones={"example.com": {"NS": ["ns1.example.com"], "A": ["93.184.216.34"]}, "example.de": {"NS": ["ns1.example.com"], "A": ["93.184.216.34"]}})
+    inv = Pipeline(sources=[StaticSource("crtsh", [])], related=net, related_rate=2).run(["example.com"])
+    assert not [e for e in inv.errors if e.source.startswith("related")]
+    assert "example.de" in inv.related
+
+
+class _Keywords:
+    """`probes`, with records() always called by keyword."""
+
+    def __init__(self, probes) -> None:
+        self._probes = probes
+
+    def records(self, name, rdtype):
+        return self._probes.records(name=name, rdtype=rdtype)
+
+
 def test_a_suffix_that_answers_any_name_is_skipped(monkeypatch):
     from farpoint import pipeline
 

@@ -65,6 +65,9 @@ def _parser() -> argparse.ArgumentParser:
         "other suffixes (example.de) tied to it by evidence; reported, never scanned "
         "(not passive: registries, the variants and Microsoft see requests)",
     )
+    p.add_argument(
+        "--related-rate", type=float, metavar="N", help="start at most N --related lookups a second, to spread them out (default: no limit)"
+    )
     p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
     p.add_argument(
         "--fingerprint",
@@ -192,8 +195,13 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"--{flag} needs DNS resolution; drop --no-resolve")
     if args.guess_budget < 1:
         parser.error("--guess-budget must be at least 1")
-    if args.guess_rate is not None and args.guess_rate <= 0:
+    if args.guess_rate is not None and not args.guess_rate > 0:  # NaN too
         parser.error("--guess-rate must be positive")
+    if args.related_rate is not None and not args.related_rate > 0:
+        parser.error("--related-rate must be positive")
+    for rate, stage in (("guess_rate", "guess"), ("related_rate", "related")):
+        if getattr(args, rate) is not None and not getattr(args, stage):
+            parser.error(f"--{rate.replace('_', '-')} only paces --{stage}; add --{stage}")
     if args.tenant_budget < 1:
         parser.error("--tenant-budget must be at least 1")
     if args.workers < 1:
@@ -236,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
         related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
+        related_rate=args.related_rate,
         fingerprint=fingerprint if args.fingerprint else None,
         prober=NetworkProber(engagement=args.engagement) if args.fingerprint else None,
         dns=resolver,
