@@ -77,6 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--paths", default=",".join(DEFAULT_PATHS), metavar="LIST", help=f"well-known paths --fingerprint requests per web service, or none (default: {','.join(DEFAULT_PATHS)})")
     p.add_argument("--probe-rate", type=float, default=20.0, metavar="N", help="at most N --fingerprint connections a second (default: 20)")
     p.add_argument("--no-legacy-tls", action="store_true", help="skip --fingerprint's TLS 1.0/1.1 handshakes")
+    p.add_argument("--no-axfr", action="store_true", help="skip --fingerprint's zone-transfer requests")
     p.add_argument(
         "--engagement",
         metavar="ID",
@@ -180,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
             paths=parse_paths(args.paths),
             rate=args.probe_rate,
             legacy_tls=not args.no_legacy_tls,
+            axfr=not args.no_axfr,
         )
     except ValueError as exc:
         parser.error(f"--ports/--paths: {exc}")

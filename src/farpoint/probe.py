@@ -77,7 +77,7 @@ class Prober(Protocol):
 
     def smtp(self, host: str, ip: str, port: int = 25) -> SmtpResult: ...
 
-    def axfr(self, nameserver_ip: str, domain: str) -> int: ...  # records transferred (0: refused)
+    def axfr(self, nameserver_ip: str, domain: str) -> int | None: ...  # records transferred (0: refused, None: no answer)
 
     def fetch(self, url: str) -> HttpResult | None: ...  # a plain HTTPS GET with certificate checks (MTA-STS policy)
 
@@ -263,11 +263,15 @@ class NetworkProber:
             pass
         return result
 
-    def axfr(self, nameserver_ip: str, domain: str) -> int:
-        def go() -> int:
+    def axfr(self, nameserver_ip: str, domain: str) -> int | None:
+        def go() -> int | None:
             try:
                 zone = dns.zone.from_xfr(dns.query.xfr(nameserver_ip, domain, timeout=self.timeout, lifetime=self.timeout * 2))
-            except (dns.exception.DNSException, OSError, EOFError):
+            except ConnectionRefusedError:  # it doesn't serve DNS over TCP, so it can't hand the zone out
+                return 0
+            except (dns.exception.Timeout, OSError, EOFError):  # no answer: whether it would is unknown
+                return None
+            except dns.exception.DNSException:  # refused, or an answer that isn't a zone
                 return 0
             return sum(len(node.rdatasets) for node in zone.nodes.values())
 

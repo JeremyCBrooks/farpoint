@@ -263,3 +263,42 @@ def test_cli_checks_the_engagement_id_before_scanning(tmp_path, capsys):
     assert "--engagement: at most 64" in usage_error("--fingerprint", "--engagement", "a(b)c")
     assert "--engagement only labels --fingerprint" in usage_error("--related", "--engagement", "ACME-2026-Q4")
     assert "needs DNS resolution" in usage_error("--fingerprint", "--no-resolve", "--engagement", "ACME-2026-Q4")  # a valid one passes
+
+
+def test_posture_csv_tells_a_refused_zone_transfer_from_one_never_tried(tmp_path):
+    def axfr_column(out):
+        with (out / "posture.csv").open(encoding="utf-8") as f:
+            return next(csv.DictReader(f))["axfr"]
+
+    pipeline, prober = scenario()
+    pipeline.dns.zones["ns1.dnshost.net"] = {"A": ["93.184.216.53"]}
+    write_outputs(pipeline.run([D]), tmp_path / "tried", "2026-10-25T00:00:00Z")
+    assert [c for c in prober.calls if c[0] == "axfr"] == [("axfr", "93.184.216.53", D)]
+    assert axfr_column(tmp_path / "tried") == "no"
+
+    pipeline, prober = scenario()  # --no-axfr
+    pipeline.fingerprint = FingerprintConfig(ports=(443,), paths=(), rate=None, legacy_tls=False, axfr=False)
+    pipeline.dns.zones["ns1.dnshost.net"] = {"A": ["93.184.216.53"]}
+    write_outputs(pipeline.run([D]), tmp_path / "off", "2026-10-25T00:00:00Z")
+    assert not [c for c in prober.calls if c[0] == "axfr"]
+    assert axfr_column(tmp_path / "off") == ""  # unknown, not "no"
+
+
+def test_a_scan_that_did_not_ask_keeps_the_last_zone_transfer_answer(tmp_path):
+    from farpoint.assess import assessed
+
+    pipeline, prober = scenario()
+    prober.axfr = lambda ip, domain: 40  # the whole zone
+    pipeline.dns.zones["ns1.dnshost.net"] = {"A": ["93.184.216.53"]}
+    write_outputs(pipeline.run([D]), tmp_path, "2026-10-01T00:00:00Z")
+
+    pipeline, _ = scenario()  # --no-axfr: nothing was asked, so the open transfer is still the latest answer
+    pipeline.fingerprint = FingerprintConfig(ports=(443,), paths=(), rate=None, legacy_tls=False, axfr=False)
+    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r: assessed(r, [], {}, "2026-10-24T00:00:00Z"))
+    assert ("zone-transfer", D) in {(f["kind"], f["target"]) for f in report["findings"]}
+
+    pipeline, _ = scenario()  # the domain moved to other nameservers: the old answer no longer applies
+    pipeline.fingerprint = FingerprintConfig(ports=(443,), paths=(), rate=None, legacy_tls=False, axfr=False)
+    pipeline.dns.zones[D]["NS"] = ["ns1.newhost.net"]
+    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-25T00:00:00Z")
+    assert report["posture"][0]["axfr"] is None

@@ -191,3 +191,46 @@ def test_requests_to_the_organisations_hosts_carry_the_engagement_id(routes, htt
 def test_an_engagement_id_that_cannot_go_in_a_header_is_refused(bad):
     with pytest.raises(ValueError):
         NetworkProber(engagement=bad)
+
+
+def nameserver(answer: bool) -> int:
+    """A one-connection DNS server on loopback TCP: REFUSED to whatever it's asked, or (answer=False) silence."""
+    import dns.message
+    import dns.rcode
+
+    listener = socket.create_server(("127.0.0.1", 0))
+
+    def serve():
+        conn, _ = listener.accept()
+        with conn:
+            size = int.from_bytes(conn.recv(2), "big")
+            query = dns.message.from_wire(conn.recv(size))
+            if not answer:
+                conn.recv(1)  # until the prober gives up
+                return
+            reply = dns.message.make_response(query)
+            reply.set_rcode(dns.rcode.REFUSED)
+            wire = reply.to_wire()
+            conn.sendall(len(wire).to_bytes(2, "big") + wire)
+        listener.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return listener.getsockname()[1]
+
+
+def test_a_refused_zone_transfer_is_a_no_and_a_silent_or_unreachable_nameserver_is_unknown(monkeypatch):
+    real = probe.dns.query.xfr
+    port = {}
+
+    def xfr(where, *args, **kwargs):
+        if where not in port:  # a reset, as from a host with nothing on TCP 53 (Windows retries loopback resets for seconds)
+            raise ConnectionRefusedError(10061, "refused")
+        return real("127.0.0.1", *args, **{**kwargs, "port": port[where]})
+
+    monkeypatch.setattr(probe.dns.query, "xfr", xfr)
+    port["192.0.2.1"], port["192.0.2.2"] = nameserver(answer=True), nameserver(answer=False)
+    prober = NetworkProber(timeout=0.3)
+
+    assert prober.axfr("192.0.2.1", "example.com") == 0
+    assert prober.axfr("192.0.2.2", "example.com") is None
+    assert prober.axfr("192.0.2.3", "example.com") == 0  # it won't talk DNS over TCP, so it won't transfer the zone

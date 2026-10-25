@@ -1,6 +1,7 @@
 """Per scan domain posture for --fingerprint: how spoofable its mail is, how its DNS is run, when its
 registration lapses. Almost all of it is DNS through the recursive resolver; the exceptions are one
-zone-transfer request per nameserver, the MTA-STS policy fetch, and one RDAP query to the registry.
+zone-transfer request per nameserver the organisation runs itself (managed DNS services never allow one,
+see data/dns_providers.json), the MTA-STS policy fetch, and one RDAP query to the registry.
 
 Mail servers are checked separately (check_mx), and only the ones the organisation runs itself: a
 hosted provider's (Microsoft 365, Google, a mail gateway) are the provider's, not the target's.
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import json
 import re
 import secrets
 from collections.abc import Callable, Mapping, Sequence
@@ -68,6 +70,17 @@ class Dns(Protocol):
 def bundled_selectors() -> tuple[str, ...]:
     text = resources.files("farpoint.data").joinpath("dkim_selectors.txt").read_text(encoding="utf-8")
     return tuple(s.strip() for s in text.splitlines() if s.strip() and not s.startswith("#"))
+
+
+@cache
+def bundled_dns_providers() -> tuple[tuple[str, re.Pattern], ...]:
+    data = json.loads(resources.files("farpoint.data").joinpath("dns_providers.json").read_text(encoding="utf-8"))
+    return tuple((p["provider"], re.compile(p["ns"], re.IGNORECASE)) for p in data["providers"])
+
+
+def dns_provider(nameserver: str) -> str | None:
+    """The managed DNS service a nameserver belongs to, or None (self-run, or a service not listed)."""
+    return next((name for name, pattern in bundled_dns_providers() if pattern.search(nameserver)), None)
 
 
 def mail_provider(mx: Sequence[str], own: Callable[[str], bool]) -> str | None:
@@ -236,23 +249,30 @@ def check_mta_sts(dns: Dns, prober: Prober, domain: str) -> dict:
 # --- DNS -----------------------------------------------------------------------------------------
 
 
-def check_dns(dns: Dns, prober: Prober, domain: str) -> dict:
+def check_dns(dns: Dns, prober: Prober, domain: str, axfr: bool = True) -> dict:
     ns = dns.records(domain, "NS") or []
     providers = sorted({registered(n) or n for n in ns})
-    axfr = []
-    for n in ns:
+    transferred, answered, unanswered = [], False, False
+    for n in ns if axfr else ():
+        if dns_provider(n):  # a managed service: it never will, and asking looks like reconnaissance
+            continue
         try:
-            addresses = dns.records(n, "A") or []
+            public = lambda rdtype: [a for a in dns.records(n, rdtype) or [] if ipaddress.ip_address(a).is_global]  # never into a private network
+            address = (public("A") or public("AAAA"))[:1]
         except Exception:  # noqa: BLE001 - this nameserver's address is unknown: skip it
             continue
-        for ip in [a for a in addresses if ipaddress.ip_address(a).is_global][:1]:  # never into a private network
-            if prober.axfr(ip, domain) > 0:
-                axfr.append(n)
+        for ip in address:
+            records = prober.axfr(ip, domain)
+            answered |= records is not None
+            unanswered |= records is None
+            if records:
+                transferred.append(n)
     wildcard = dns.records(f"{secrets.token_hex(8)}.{domain}", "A")
     return {
         "ns": ns,
         "ns_providers": providers,
-        "axfr": axfr,  # nameservers that hand out the whole zone
+        # nameservers that hand out the whole zone; None: none was asked, or one didn't answer, so it's unknown
+        "axfr": transferred or (None if unanswered or not answered else []),
         "dnssec": None if (ds := _strict(dns, domain, "DS")) is None else bool(ds),  # None: the resolver couldn't say
         "caa": _strict(dns, domain, "CAA"),
         "wildcard": bool(wildcard),
@@ -296,6 +316,7 @@ def assess_domain(
     own: Callable[[str], bool],
     rdap: Callable[[str], Mapping] | None = None,
     selectors: Sequence[str] | None = None,
+    axfr: bool = True,
 ) -> dict:
     errors: list[str] = []
 
@@ -315,7 +336,7 @@ def assess_domain(
     row.update(part("dmarc", lambda: check_dmarc(dns, domain)))
     row.update(part("dkim", lambda: {"dkim": check_dkim(dns, domain, selectors if selectors is not None else bundled_selectors())}))
     row.update(part("mta-sts", lambda: check_mta_sts(dns, prober, domain)))
-    row.update(part("dns", lambda: check_dns(dns, prober, domain)))
+    row.update(part("dns", lambda: check_dns(dns, prober, domain, axfr)))
     if errors:
         row["check_errors"] = errors
     if rdap:

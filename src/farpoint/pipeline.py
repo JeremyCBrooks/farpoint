@@ -543,7 +543,7 @@ class Pipeline:
     def _posture(self, inv: Inventory) -> None:
         dns, prober = self.dns, self.prober
         own = lambda host: inv.scope_of(host) is not None or registered_domain(host) in inv.domains
-        jobs: dict[Key, Callable] = {("posture", d): (lambda d=d: assess_domain(dns, prober, d, own, self.rdap_domain)) for d in inv.domains}
+        jobs: dict[Key, Callable] = {("posture", d): (lambda d=d: assess_domain(dns, prober, d, own, self.rdap_domain, axfr=self.fingerprint.axfr)) for d in inv.domains}
         quiet = [h for h, r in sorted(inv.hosts.items()) if r.resolves is False]
         jobs.update({("dangling", h): (lambda h=h: _dangling(dns, inv, h)) for h in quiet})
         done, failed, total = [0], [0], [len(jobs)]

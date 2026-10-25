@@ -218,6 +218,13 @@ def _snapshot_rows(prior: list[dict], current: list[dict], key: str, stamp: str,
     return list(rows.values()), new
 
 
+def _keep_axfr(row: dict, before: dict | None) -> dict:
+    """A zone transfer not asked for this run (--no-axfr, or no answer) keeps the last answer from the same nameservers."""
+    if row.get("axfr") is None and before and before.get("axfr") is not None and sorted(before.get("ns", [])) == sorted(row.get("ns", [])):
+        return {**row, "axfr": before["axfr"]}
+    return row
+
+
 def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     """Fold this run's report into the running inventory. Lists are unioned; a host's `resolves` and an
     IP's org/network take this run's value when it has one. Rows gain first_seen/last_seen."""
@@ -275,7 +282,8 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     fingerprints, new_fingerprints = _snapshot_rows(  # a port found closed now drops its row; one that failed to answer keeps it
         prior.get("fingerprints", []), current.get("fingerprints", []), "endpoint", stamp, prior_stamp, gone=current.get("closed", []),
     )
-    posture, _ = _snapshot_rows(prior.get("posture", []), current.get("posture", []), "domain", stamp, prior_stamp)
+    before = {r["domain"]: r for r in prior.get("posture", [])}
+    posture, _ = _snapshot_rows(prior.get("posture", []), [_keep_axfr(r, before.get(r["domain"])) for r in current.get("posture", [])], "domain", stamp, prior_stamp)
     dangling_now = {r["hostname"] for r in current.get("dangling", [])}
     dangling, _ = _snapshot_rows(
         prior.get("dangling", []), current.get("dangling", []), "hostname", stamp, prior_stamp,
@@ -436,6 +444,7 @@ def _posture_csv_rows(report: dict) -> list[dict]:
             "dkim": [f"{sel}:{'revoked' if bits == 0 else bits}" if bits is not None else sel for sel, bits in sorted((p.get("dkim") or {}).items())],
             "mx_starttls": [f"{m['host']}:{'yes' if m.get('starttls') else 'no'}" for m in mx_health],
             "caa": None if p.get("caa") is None else bool(p["caa"]),
+            "axfr": None if p.get("axfr") is None else (p["axfr"] or "no"),  # blank: not asked, or no answer
             "transfer_lock": transfer_locked(p.get("status", [])),
         })
     return rows

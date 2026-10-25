@@ -1,0 +1,11 @@
+{
+ "_comment": "Managed DNS services where a customer cannot make a zone transferable to the public internet: either they have no outbound zone transfers, or transfers go only to individually listed addresses. --fingerprint doesn't ask these nameservers for a zone transfer (AXFR): it can't succeed, and it is the request most often logged as reconnaissance. Services that let customers open transfers to address ranges (Cloudflare, NS1, UltraDNS, ClouDNS, GoDaddy) are deliberately absent, as are any whose documentation doesn't say. Each pattern is matched against a nameserver's name and only covers the names a service gives its customers. Checked against provider documentation and live NS records on 2026-10-25.",
+ "providers": [
+  {"provider": "Amazon Route 53", "ns": "\\.awsdns-\\d+\\.(com|net|org|co\\.uk)$", "why": "no outbound zone transfers"},
+  {"provider": "Azure DNS", "ns": "\\.azure-dns\\.(com|net|org|info)$", "why": "no zone transfers"},
+  {"provider": "Google Cloud DNS", "ns": "^ns-cloud-[a-e]\\d\\.googledomains\\.com$", "why": "no outbound zone transfers documented"},
+  {"provider": "Oracle Cloud DNS", "ns": "\\.dns\\.oraclecloud\\.net$", "why": "transfers only to downstream servers listed one address each"},
+  {"provider": "Linode", "ns": "^ns\\d\\.linode\\.com$", "why": "transfers only to listed addresses, served from axfr*.linode.com"},
+  {"provider": "deSEC", "ns": "^ns\\d\\.desec\\.(io|org)$", "why": "no outbound zone transfers"}
+ ]
+}

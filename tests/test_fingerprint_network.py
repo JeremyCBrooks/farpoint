@@ -26,7 +26,7 @@ def test_example_com_posture():
     row = assess_domain(resolver, NetworkProber(), "example.com", lambda h: h.endswith("example.com"), rdap=rdap.domain)
     assert row["spf"] and row["spf_all"] == "-all"  # a domain that sends no mail says so
     assert row["ns"] and row["expires"] and row["registrar"]
-    assert row["axfr"] == []
+    assert row["axfr"] == []  # Cloudflare's nameservers: asked, since customers can open transfers, and refused
 
 
 def test_nvd_lists_cves_for_an_old_nginx():

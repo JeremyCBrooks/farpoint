@@ -93,6 +93,7 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt`). |
 | `--probe-rate N` | At most N `--fingerprint` connections a second across the scan (default 20). |
 | `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
+| `--no-axfr` | Skip `--fingerprint`'s zone-transfer (`AXFR`) requests. |
 | `--engagement ID` | With `--fingerprint`, add an engagement ID (a ticket or client code: up to 64 letters, digits, spaces and `.-_:@+/=`, not starting or ending with a space) to the user agent of its requests, so the organisation can tell who is probing. The passive sources and `--related` don't send it. Plain-HTTP probes send it unencrypted. |
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
@@ -213,6 +214,12 @@ had in the past. It never logs in, guesses passwords or sends exploits.
   hosting platforms. Add a rule to that file to recognise more.
 - **Domain posture**, per scan domain: SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI, the STARTTLS of mail
   servers the organisation runs itself, nameservers, zone transfers, DNSSEC, CAA and registration.
+  A zone transfer isn't requested from managed DNS services whose customers can't open one to the
+  internet (Route 53, Azure DNS, Google Cloud DNS and others in `src/farpoint/data/dns_providers.json`).
+  Every other nameserver is asked, including Cloudflare's, since some services let customers allow
+  transfers to whole address ranges. In `posture.csv`, `axfr` lists the nameservers that handed over the zone, `no` if
+  none did, and is blank when it's unknown: none was asked (`--no-axfr`, or only such services) or one
+  didn't answer. A scan that gets no answer keeps the last one while the nameservers stay the same.
 - **Dangling DNS**: CNAMEs pointing at names that don't exist, flagged as takeover risks where the
   name could be claimed.
 
@@ -222,7 +229,7 @@ Connections are paced by `--probe-rate` and identify themselves with the user ag
 few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.csv`.
 
 **Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request
-may be logged as reconnaissance. Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then
+may be logged as reconnaissance (`--ports none` and `--no-axfr` drop both). Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then
 shows as unknown, with an error suggesting `--nameserver 1.1.1.1`.
 
 ## Assessment (`--assess`)

@@ -70,6 +70,7 @@ class FakeProber:
         return self.smtp_.get((host, port), SmtpResult())
 
     def axfr(self, ip, domain):
+        self.calls.append(("axfr", ip, domain))
         return 0
 
     def fetch(self, url):

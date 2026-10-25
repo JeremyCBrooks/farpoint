@@ -136,6 +136,87 @@ def test_a_whole_domain():
     assert row["status"] == ["active"]
 
 
+def test_zone_transfers_are_only_tried_against_nameservers_the_organisation_runs():
+    dns = FakeDns({
+        D: {"NS": ["ns1.example.com", "ns-12.awsdns-34.org", "ns1-05.azure-dns.com"]},
+        "ns1.example.com": {"A": ["93.184.216.53"]},
+        "ns-12.awsdns-34.org": {"A": ["205.251.192.12"]},
+        "ns1-05.azure-dns.com": {"A": ["13.107.236.5"]},
+    })
+    prober = FakeProber()
+
+    row = assess_domain(dns, prober, D, lambda h: h.endswith(D), selectors=[])
+
+    assert [c for c in prober.calls if c[0] == "axfr"] == [("axfr", "93.184.216.53", D)]
+    assert row["axfr"] == []  # tried, and refused
+
+
+def test_only_services_that_cannot_open_a_zone_transfer_are_left_unasked():
+    from farpoint.posture import dns_provider
+
+    seen = {  # NS records looked up 2026-10-25
+        "ns-1707.awsdns-21.co.uk": "Amazon Route 53", "ns-264.awsdns-33.com": "Amazon Route 53", "ns4-204.azure-dns.info": "Azure DNS",
+        "ns-cloud-a1.googledomains.com": "Google Cloud DNS", "ns3.p201.dns.oraclecloud.net": "Oracle Cloud DNS",
+        "ns1.linode.com": "Linode", "ns2.desec.org": "deSEC",
+    }
+    assert {n: dns_provider(n) for n in seen} == seen
+    asked = (
+        "ns1.example.com", "ns.awsdns-1.com.example.net", "ns1.notawsdns-1.com",  # self-run, or lookalikes
+        "hera.ns.cloudflare.com", "dns3.p09.nsone.net", "pdns196.ultradns.com", "pns64.cloudns.uk", "ns01.domaincontrol.com",  # customers can open transfers to ranges
+        "ns5.googledomains.com",  # Google's own DNS, not Cloud DNS
+    )
+    for name in asked:
+        assert dns_provider(name) is None, name
+
+
+def test_a_domain_on_managed_dns_only_is_never_asked_for_a_zone_transfer():
+    dns = FakeDns({
+        D: {"NS": ["ns-12.awsdns-34.org", "ns-1500.awsdns-58.co.uk"]},
+        "ns-12.awsdns-34.org": {"A": ["205.251.192.12"]},
+        "ns-1500.awsdns-58.co.uk": {"A": ["205.251.197.220"]},
+    })
+    prober = FakeProber()
+
+    row = assess_domain(dns, prober, D, lambda h: h.endswith(D), selectors=[])
+
+    assert not [c for c in prober.calls if c[0] == "axfr"]
+    assert row["axfr"] is None  # not tried: unknown, never "refused"
+
+
+def test_a_nameserver_that_never_answers_leaves_the_zone_transfer_unknown():
+    dns = FakeDns({
+        D: {"NS": ["ns1.example.com", "ns2.example.com"]},
+        "ns1.example.com": {"A": ["93.184.216.53"]},
+        "ns2.example.com": {"A": ["93.184.216.54"]},
+    })
+
+    class Prober(FakeProber):
+        def axfr(self, ip, domain):
+            return 0 if ip == "93.184.216.53" else None  # ns2 timed out: it might still hand the zone out
+
+    assert assess_domain(dns, Prober(), D, lambda h: h.endswith(D), selectors=[])["axfr"] is None
+
+
+def test_a_nameserver_with_only_an_ipv6_address_is_still_asked_for_the_zone():
+    dns = FakeDns({D: {"NS": ["ns1.example.com"]}, "ns1.example.com": {"AAAA": ["2606:2800:21f:cb07:6820:80da:af6b:8b2c"]}})
+    prober = FakeProber()
+
+    row = assess_domain(dns, prober, D, lambda h: h.endswith(D), selectors=[])
+
+    assert [c for c in prober.calls if c[0] == "axfr"] == [("axfr", "2606:2800:21f:cb07:6820:80da:af6b:8b2c", D)]
+    assert row["axfr"] == []
+
+
+def test_zone_transfers_can_be_turned_off():
+    dns = FakeDns({D: {"NS": ["ns1.example.com"]}, "ns1.example.com": {"A": ["93.184.216.53"]}})
+    prober = FakeProber()
+
+    row = assess_domain(dns, prober, D, lambda h: h.endswith(D), selectors=[], axfr=False)
+
+    assert not [c for c in prober.calls if c[0] == "axfr"]
+    assert row["axfr"] is None
+
+
 def test_a_failing_check_does_not_lose_the_others():
     class Flaky(FakeDns):
         def txt(self, name):

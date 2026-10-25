@@ -362,7 +362,8 @@ address.
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
      exist or sit on unregistered domains); DMARC `p`, `sp`, `pct`; DKIM key sizes under 32 common
      selectors; MTA-STS (the policy is fetched over verified HTTPS), TLS-RPT, BIMI
-   - DNS: nameservers, one `AXFR` request to each, DNSSEC, CAA, wildcard
+   - DNS: nameservers, one `AXFR` request to each the organisation runs itself (not to managed
+     services that can't allow one, listed in `data/dns_providers.json`, nor with `--no-axfr`), DNSSEC, CAA, wildcard
    - registration: registrar, dates and transfer lock from RDAP
 
    Each part fails independently. A failed check is recorded as an error and its value left unknown.
@@ -517,5 +518,9 @@ against real DNS, `example.com` and NVD.
   markers that show a domain uses it.
 - **A takeover platform:** add it to `data/takeover.json` with its CNAME pattern and unclaimed-page
   signature.
+- **A managed DNS service:** add it to `data/dns_providers.json` with a pattern for its nameservers'
+  names and a `why`. Only list a service when its documentation shows customers can't open a zone
+  transfer to the internet (no outbound transfers, or only to individually listed addresses): its
+  nameservers aren't asked, so a wrong entry hides a finding.
 - **A finding:** add it to `assess.derive` or one of its helpers. Keep it a pure function of the report,
   and raise nothing when the underlying check's answer is unknown.
