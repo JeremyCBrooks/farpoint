@@ -111,7 +111,8 @@ def variants(domain: str, suffixes: Sequence[str]) -> list[str]:
     if parts is None:
         return []
     name, own = parts
-    return [f"{name}.{s}" for s in suffixes if s != own]
+    # a suffix the PSL doesn't list (co.de) or lists only by wildcard (*.za) gives no registered domain
+    return [v for s in suffixes if s != own and split(v := f"{name}.{s}")]
 
 
 def random_under(suffix: str) -> str:

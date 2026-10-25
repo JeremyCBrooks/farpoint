@@ -19,6 +19,7 @@ from importlib import resources
 from typing import Protocol
 
 from farpoint import runtime
+from farpoint.models import describe
 from farpoint.probe import Prober, cert_summary
 from farpoint.suffixes import registered
 
@@ -131,11 +132,14 @@ def check_spf(dns: Dns, domain: str) -> SpfCheck:
 
 def _count_lookups(dns: Dns, terms: Sequence[str], check: SpfCheck, seen: set[str], depth: int) -> None:
     """Count the DNS lookups evaluating `terms` costs, following include/redirect into their records."""
+    has_all = any(t.lstrip("+-~?").lower() == "all" for t in terms)
     for term in terms:
         mechanism, _, target = re.split(r"([:=/])", term.lstrip("+-~?").lower() + ":", maxsplit=1)
         target = target.rstrip(":")
         if mechanism in ("a", "mx", "ptr", "exists"):
             check.lookups += 1
+        elif mechanism == "redirect" and has_all:
+            continue  # RFC 7208 6.1: ignored when the record has an all mechanism
         elif mechanism in ("include", "redirect") and target:
             check.lookups += 1
             if "%{" in target or target in seen or depth > 5 or check.lookups > 30:
@@ -164,15 +168,17 @@ def tags(record: str) -> dict[str, str]:
 
 
 def check_dmarc(dns: Dns, domain: str) -> dict:
-    """The domain's DMARC policy, falling back to its registered domain's as receivers do."""
+    """The domain's DMARC policy, falling back to its registered domain's as receivers do (which
+    then apply its sp=, if it has one, rather than its p=)."""
     for name in dict.fromkeys([domain, registered(domain) or domain]):
         records = [t for t in dns.txt(f"_dmarc.{name}") if t.lower().startswith("v=dmarc1")]
         if records:
             t = tags(records[0])
+            inherited = name != domain
             return {
                 "dmarc": records[0],
-                "dmarc_from": name if name != domain else None,
-                "dmarc_policy": t.get("p", "").lower() or None,
+                "dmarc_from": name if inherited else None,
+                "dmarc_policy": (inherited and t.get("sp", "").lower()) or t.get("p", "").lower() or None,
                 "dmarc_subdomain_policy": t.get("sp", "").lower() or None,
                 "dmarc_pct": int(t["pct"]) if t.get("pct", "").isdigit() else 100,
                 "dmarc_reports": bool(t.get("rua")),
@@ -300,7 +306,7 @@ def assess_domain(
         except runtime.Cancelled:
             raise
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{name}: {type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}")
+            errors.append(f"{name}: {describe(exc)}")
             return {}
 
     mx = part("mx", lambda: {"mx": dns.records(domain, "MX") or []}).get("mx", [])
@@ -316,7 +322,7 @@ def assess_domain(
         try:
             row.update(registration(rdap(registered(domain) or domain)))
         except Exception as exc:  # registration is a nice-to-have: never lose the rest over it
-            row["registration_error"] = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+            row["registration_error"] = describe(exc)
     return row
 
 

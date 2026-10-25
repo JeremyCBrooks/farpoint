@@ -243,3 +243,11 @@ def test_a_failed_assessment_still_saves_the_scan(tmp_path):
 
     assert json.loads((tmp_path / "assets.json").read_text())["runs"]
     assert report["errors"][-1]["source"] == "assess"
+
+
+def test_cli_rejects_a_worker_count_below_one(tmp_path, capsys):
+    for workers in ("0", "-2"):
+        with pytest.raises(SystemExit) as exit:
+            cli.main(["example.com", "--no-resolve", "--workers", workers, "-o", str(tmp_path)])
+        assert exit.value.code == 2  # a usage error, not a traceback mid-scan
+        assert "--workers must be at least 1" in capsys.readouterr().err

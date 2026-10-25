@@ -266,8 +266,7 @@ files are regenerated from it after every scan. Discovered facts accumulate acro
 fingerprints, posture and findings describe the latest look (see
 [ARCHITECTURE.md](ARCHITECTURE.md#9-merge-and-output) for the exact rules).
 
-Writes are atomic. On Linux and macOS they are also locked, so two scans into one folder don't lose
-each other's results; on Windows, don't run two at once. A scan refuses to start if the existing
+Writes are atomic and locked, so two scans into one folder don't lose each other's results. A scan refuses to start if the existing
 `assets.json` can't be read. If it becomes unreadable during a scan, the scan is saved beside it as
 `assets.unmerged-<time>.json`.
 

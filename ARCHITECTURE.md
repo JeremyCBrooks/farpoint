@@ -461,7 +461,7 @@ saves; a second exits without saving. During the save, signals no longer stop an
 ### Checkpoints (`output.Checkpointer`)
 
 At most every 5 seconds the in-progress inventory, including pages from jobs still running, is written
-to `.checkpoint-<pid>-<random>.json`, with an exclusive lock held on a matching `.lock` file. The next
+to `.checkpoint-<pid>-<random>.json`, with an exclusive lock (`fcntl`, or `msvcrt` on Windows) held on a matching `.lock` file. The next
 run into the folder merges any checkpoint whose lock is free (`recover_checkpoints`). Liveness is decided
 by the lock, not the PID, since PIDs are reused.
 
@@ -504,7 +504,6 @@ against real DNS, `example.com` and NVD.
 - Technology and CVE matching is by what services reveal and by version; products that hide their
   banner are missed, and CVE matches are leads to confirm.
 - DKIM is checked under common selectors only.
-- Directory locking uses `fcntl`, so on Windows two concurrent scans into one folder are not protected.
 
 ## Extending farpoint
 

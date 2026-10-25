@@ -408,6 +408,20 @@ def test_saving_never_touches_the_process_umask(monkeypatch, tmp_path):
     write_outputs(inv, tmp_path)
 
 
+def test_saving_works_where_os_has_no_fchmod(monkeypatch, tmp_path):
+    """Windows Pythons before 3.13 have no os.fchmod; requires-python allows them."""
+    from farpoint import output
+
+    monkeypatch.delattr(output.os, "fchmod", raising=False)
+    inv = Inventory([D])
+    inv.add(Observation("crtsh", "a.example.com"))
+
+    write_outputs(inv, tmp_path)
+
+    assert (tmp_path / "hosts.txt").read_text() == "a.example.com\n"
+    assert not list(tmp_path.glob(".hosts.txt.*"))
+
+
 def test_interrupt_is_deferred_until_the_main_thread_is_waiting():
     runtime.request_interrupt()  # e.g. Ctrl-C while a result is being applied: nothing raised here
 

@@ -165,3 +165,20 @@ def test_virustotal_follows_next_link():
     http = fake_http({"www.virustotal.com/api/v3/domains/example.com/subdomains": handler})
 
     assert pairs(VirusTotal(http, api_key="vt").collect(D)) == {("a.example.com", None), ("b.example.com", None)}
+
+
+@pytest.mark.parametrize("status", [401, 503])  # raise_for_status, and retries running out
+def test_api_keys_in_request_urls_never_reach_saved_errors(status, tmp_path):
+    from farpoint.output import write_outputs
+    from farpoint.pipeline import Pipeline
+
+    http = fake_http({"api.shodan.io/dns/domain/example.com": httpx.Response(status), "api.hackertarget.com/hostsearch/": httpx.Response(status)})
+    sources = [Shodan(http, api_key="SECRET-1", retries=0), HackerTarget(http, api_key="SECRET-2", retries=0)]
+
+    inv = Pipeline(sources=sources).run([D])
+    write_outputs(inv, tmp_path)
+
+    assert {e.source for e in inv.errors} == {"shodan", "hackertarget"}
+    assert all(str(status) in e.message for e in inv.errors)  # still says what went wrong
+    saved = (tmp_path / "assets.json").read_text()
+    assert "SECRET" not in saved

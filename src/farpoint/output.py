@@ -22,11 +22,12 @@ from pathlib import Path
 
 try:
     import fcntl
-except ImportError:  # Windows: no advisory locking
+except ImportError:  # Windows: msvcrt's byte-range locks instead
     fcntl = None
+    import msvcrt
 
 from farpoint.guess import RETRY_DAYS
-from farpoint.models import Inventory, Observation
+from farpoint.models import Inventory, Observation, describe
 from farpoint.related import TIERS as _RELATED_TIERS
 from farpoint.tenants import TIES as _TIES
 
@@ -314,12 +315,30 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     }
 
 
+def _lock(fh, wait: bool = True) -> bool:
+    """Take an exclusive lock on open file `fh`, held until it is closed or its process dies.
+    With wait=False, returns False at once if someone else holds it."""
+    if fcntl:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            return False
+        return True
+    fh.seek(0)
+    while True:
+        try:  # LK_LOCK itself retries for about 10 seconds before giving up
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            if not wait:
+                return False
+
+
 @contextlib.contextmanager
 def _locked(out_dir: Path) -> Iterator[None]:
     """Serialise read-merge-write so two runs into the same directory can't drop each other's results."""
     with open(out_dir / ".lock", "w") as fh:
-        if fcntl:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+        _lock(fh)
         yield
 
 
@@ -337,8 +356,11 @@ _FILE_MODE = 0o666 & ~_read_umask()  # what open() gives a new file (mkstemp alo
 def _write_atomic(path: Path, text: str, mode: int) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:  # closed before any unlink: Windows can't delete open files
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, mode)
+            else:  # Windows before Python 3.13
+                os.chmod(tmp, mode)
             fh.write(text)
         os.replace(tmp, path)
     except BaseException:
@@ -478,7 +500,7 @@ def _judged(report: dict, assess: Callable[[dict], dict]) -> dict:
     try:
         return assess(report)
     except Exception as exc:  # noqa: BLE001 - never lose a scan to its assessment
-        error = {"source": "assess", "target": "inventory", "message": f"{type(exc).__name__}: {exc}; findings not updated"}
+        error = {"source": "assess", "target": "inventory", "message": f"{describe(exc)}; findings not updated"}
         return {**report, "errors": [*report.get("errors", []), error]}
 
 
@@ -524,8 +546,7 @@ class Checkpointer:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._lock_fh is None:
             self._lock_fh = open(self.lock_path, "w")
-            if fcntl:
-                fcntl.flock(self._lock_fh, fcntl.LOCK_EX)
+            _lock(self._lock_fh)
         extra = [obs for observations in list((pending or {}).values()) for obs in list(observations)]
         if extra:
             inv = copy.deepcopy(inv)
@@ -537,30 +558,15 @@ class Checkpointer:
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
         if self._lock_fh is not None:
-            self.lock_path.unlink(missing_ok=True)
-            self._lock_fh.close()
+            self._lock_fh.close()  # first: Windows can't delete an open file
             self._lock_fh = None
+            self.lock_path.unlink(missing_ok=True)
 
 
 def _owner_alive(checkpoint: Path) -> bool:
     """Whether the run that wrote `checkpoint` is still running: it holds the lock on its .lock file."""
-    lock_path = checkpoint.with_suffix(".lock")
-    if not fcntl:  # no flock (Windows): fall back to the PID in the name
-        pid = checkpoint.stem.removeprefix(".checkpoint-").split("-")[0]
-        try:
-            os.kill(int(pid), 0)
-        except (ValueError, ProcessLookupError):
-            return False
-        except PermissionError:
-            return True
-        return True
-    try:
-        with open(lock_path, "a") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(fh, fcntl.LOCK_UN)
-    except BlockingIOError:
-        return True
-    return False
+    with open(checkpoint.with_suffix(".lock"), "a") as fh:
+        return not _lock(fh, wait=False)  # closing the file releases the lock we took
 
 
 def recover_checkpoints(out_dir: Path) -> list[dict]:

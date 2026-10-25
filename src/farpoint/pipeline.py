@@ -18,7 +18,7 @@ from farpoint.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY,
 from farpoint.posture import Dns, assess_domain, check_mx, hosted
 from farpoint.probe import Prober
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
-from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord
+from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
 from farpoint.related import TIERS as RELATED_TIERS
 from farpoint.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
 from farpoint.suffixes import registered as registered_domain
@@ -696,7 +696,7 @@ def _drain(source: Source, domain: str, observations: list[Observation]) -> tupl
 
 
 def _record_failure(inv: Inventory, name: str, target: str, exc: Exception) -> str:
-    message = f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}"
+    message = describe(exc)
     log.warning("%s failed for %s: %s", name, target, message)
     inv.errors.append(SourceError(name, target, message))
     return message

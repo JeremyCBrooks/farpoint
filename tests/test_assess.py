@@ -229,3 +229,28 @@ def test_transfer_lock_reads_the_same_in_posture_and_findings():
     assert _posture_csv_rows({"posture": [row]})[0]["transfer_lock"] is False
     assert ("low", "no-transfer-lock") in kinds(derive({"posture": [row]}, today=TODAY))
     assert transfer_locked(["client transfer prohibited"]) and transfer_locked(["clientTransferProhibited"])
+
+
+def test_certificates_are_judged_against_today_not_the_day_they_were_fingerprinted():
+    fingerprinted = {"not_after": "2026-10-01T00:00:00Z", "days_left": 45, "self_signed": False, "matches": True, "subject": "www.example.com"}
+    report = {
+        "fingerprints": [endpoint("www.example.com", 443, tls=fingerprinted)],
+        "posture": [{"domain": "example.com", "mx_health": [{"host": "mx.example.com", "ip": "192.0.2.25", "starttls": True, "tls": fingerprinted}]}],
+    }
+
+    found = derive(report, today=TODAY)  # TODAY is past not_after: re-assessed weeks later
+
+    assert ("high", "certificate-expired") in kinds(found, "www.example.com:443")
+    assert ("low", "mx-certificate-invalid") in kinds(found, "mx.example.com")
+    assert ("medium", "certificate-expiring") in kinds(derive(report, today=date(2026, 9, 20)), "www.example.com:443")
+
+
+def test_a_scan_domain_named_like_a_test_system_does_not_make_every_host_one():
+    report = {"domains": ["demo-corp.com", "test.co.uk"], "fingerprints": [
+        endpoint("www.demo-corp.com", 443), endpoint("demo-corp.com", 443), endpoint("www.test.co.uk", 443),
+        endpoint("staging.demo-corp.com", 443), endpoint("api.dev.test.co.uk", 443),
+    ]}
+
+    flagged = {f["target"] for f in derive(report, today=TODAY) if f["kind"] == "non-production-exposed"}
+
+    assert flagged == {"staging.demo-corp.com", "api.dev.test.co.uk"}

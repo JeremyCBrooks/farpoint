@@ -227,7 +227,11 @@ class NetworkProber:
         _, greeting = _smtp_reply(reader)
         result.banner = " ".join(greeting)
         raw.sendall(b"EHLO farpoint.invalid\r\n")
-        _, result.ehlo = _smtp_reply(reader)
+        code, ehlo = _smtp_reply(reader)
+        if code != "250":  # refused (421 busy, 554 rejected): it never said what it supports, so ehlo stays empty
+            raw.sendall(b"QUIT\r\n")
+            return result
+        result.ehlo = ehlo
         result.starttls = any(line.upper().startswith("STARTTLS") for line in result.ehlo)
         if not result.starttls:
             raw.sendall(b"QUIT\r\n")
@@ -255,27 +259,44 @@ class NetworkProber:
         return self._guard(nameserver_ip, go)
 
     def fetch(self, url: str) -> HttpResult | None:
+        """Each of the host's addresses in turn until one connects, so a scanner without IPv6 still
+        reaches a dual-stacked host."""
         parts = urlsplit(url)
-        host = parts.hostname or ""
+        host, port = parts.hostname or "", parts.port or 443
         try:
-            ip = next(a[4][0] for a in socket.getaddrinfo(host, parts.port or 443, proto=socket.IPPROTO_TCP))
-        except (OSError, StopIteration):
-            return None
-        if not ipaddress.ip_address(ip).is_global:  # never follow the organisation's DNS into a private network
+            ips = list(dict.fromkeys(a[4][0] for a in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)))
+        except OSError:
             return None
 
-        def go() -> HttpResult | None:
-            conn = _PinnedHTTPSConnection(host, ip, parts.port or 443, _context(verify=True), self.timeout)
+        def go(ip: str) -> HttpResult | None:
+            conn = _PinnedHTTPSConnection(host, ip, port, _context(verify=True), self.timeout)
             try:
+                try:
+                    conn.connect()
+                except ssl.SSLError:  # reached it: its TLS or certificate is the answer
+                    return None
+                except OSError:
+                    raise _Unreachable from None
                 conn.request("GET", parts.path or "/", headers={"User-Agent": USER_AGENT, "Connection": "close"})
                 resp = conn.getresponse()
                 return HttpResult(resp.status, [(k.lower(), v) for k, v in resp.getheaders()], resp.read(64 * 1024))
-            except (OSError, http.client.HTTPException, ssl.SSLError):
+            except (OSError, http.client.HTTPException):
                 return None
             finally:
                 conn.close()
 
-        return self._guard(ip, go)
+        for ip in ips:
+            if not ipaddress.ip_address(ip).is_global:  # never follow the organisation's DNS into a private network
+                continue
+            try:
+                return self._guard(ip, lambda: go(ip))
+            except _Unreachable:
+                continue
+        return None
+
+
+class _Unreachable(Exception):
+    """This address didn't take the connection; another of the host's may."""
 
 
 class UnsupportedHere(Exception):

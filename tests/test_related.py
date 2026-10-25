@@ -133,6 +133,18 @@ def test_a_suffix_that_answers_any_name_is_skipped(monkeypatch):
     assert "example.io" not in inv.related and "example.io" not in inv.lookalikes
 
 
+def test_suffixes_under_which_a_name_is_not_a_registered_domain_are_not_tried():
+    """co.de is no ICANN suffix (example.co.de is a subdomain of co.de); *.za makes example.za a suffix."""
+    zones = {"example.com": {"NS": ["ns1.example.com"]}, "example.co.de": {"NS": ["ns.parking.net"]}, "example.za": {"NS": ["ns.parking.net"]}}
+    net = FakeNet(zones)
+
+    inv, _ = run(net)  # the real bundled suffixes, which include both
+
+    assert "example.co.de" not in net.asked and "example.za" not in net.asked
+    assert not inv.errors
+    assert all(split(v) for v in variants("example.com", bundled_suffixes()))
+
+
 def test_no_related_lookups_unless_asked():
     inv = Pipeline(sources=[StaticSource("crtsh", [])]).run(["example.com"])
     assert inv.related == {}

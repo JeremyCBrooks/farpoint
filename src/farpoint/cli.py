@@ -188,6 +188,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--guess-rate must be positive")
     if args.tenant_budget < 1:
         parser.error("--tenant-budget must be at least 1")
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
     try:
         sources = select_sources(all_sources, only=_csv(args.only), exclude=_csv(args.exclude))
     except ValueError as exc:

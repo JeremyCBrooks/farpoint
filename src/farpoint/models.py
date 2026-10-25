@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -132,6 +133,16 @@ class SourceError:
     source: str
     target: str
     message: str
+
+
+_SECRET_PARAM = re.compile(r"([?&](?:api[_-]?key|key|token|access[_-]?token|secret)=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def describe(exc: BaseException) -> str:
+    """One line for an error report: the exception's type and first line, with secrets in request
+    URLs (Shodan's key=, HackerTarget's apikey=) masked, since reports get saved and shared."""
+    text = str(exc).splitlines()[0] if str(exc) else ""
+    return f"{type(exc).__name__}: " + _SECRET_PARAM.sub(r"\1***", text)
 
 
 class Inventory:

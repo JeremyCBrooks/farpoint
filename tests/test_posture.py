@@ -153,3 +153,29 @@ def test_registration_failure_does_not_lose_the_rest():
 
     row = assess_domain(FakeDns({D: {"TXT": ["v=spf1 -all"]}}), FakeProber(), D, lambda h: False, rdap=rdap, selectors=[])
     assert row["spf_all"] == "-all" and row["registration_error"].startswith("ConnectionError")
+
+
+def test_a_subdomain_inheriting_dmarc_is_judged_by_the_subdomain_policy():
+    """RFC 7489: receivers apply sp= (falling back to p=) to mail from the organisational domain's subdomains."""
+    lax_subdomains = FakeDns({"_dmarc.example.com": {"TXT": ["v=DMARC1; p=quarantine; sp=none"]}})
+    strict_subdomains = FakeDns({"_dmarc.example.com": {"TXT": ["v=DMARC1; p=none; sp=reject"]}})
+    no_sp = FakeDns({"_dmarc.example.com": {"TXT": ["v=DMARC1; p=reject"]}})
+
+    assert check_dmarc(lax_subdomains, "shop.example.com")["dmarc_policy"] == "none"
+    assert check_dmarc(strict_subdomains, "shop.example.com")["dmarc_policy"] == "reject"
+    assert check_dmarc(no_sp, "shop.example.com")["dmarc_policy"] == "reject"
+    assert check_dmarc(strict_subdomains, D)["dmarc_policy"] == "none"  # the domain itself: p=
+
+
+def test_a_redirect_is_ignored_when_the_record_has_an_all():
+    """RFC 7208 6.1: redirect= takes effect only when the record has no all mechanism."""
+    dns = FakeDns({
+        D: {"TXT": ["v=spf1 include:_spf.vendor.com -all redirect=_spf.big.com"]},
+        "_spf.vendor.com": {"TXT": ["v=spf1 ip4:198.51.100.0/24 ~all"]},
+        "_spf.big.com": {"TXT": ["v=spf1 " + " ".join(f"include:_{i}.big.com" for i in range(12)) + " ~all"]},
+    })
+
+    spf = check_spf(dns, D)
+
+    assert spf.all == "-all" and spf.lookups == 1
+    assert spf.missing == []  # never evaluated, so its missing includes are no concern

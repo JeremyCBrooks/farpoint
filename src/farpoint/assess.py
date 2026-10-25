@@ -22,7 +22,9 @@ import httpx
 
 from farpoint import runtime
 from farpoint.fingerprint import end_of_life, shared_address
+from farpoint.names import in_scope
 from farpoint.sources.base import HttpSource
+from farpoint.suffixes import registered
 
 LEVELS = ("high", "medium", "low")
 CVE_TTL_DAYS = 7
@@ -196,7 +198,7 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     https_hosts = {r["hostname"] for r in fingerprints if r.get("service") == "https" and (r.get("status") or 0) < 500}
     for r in fingerprints:
         out.extend(_endpoint_findings(r, vulns, kev, today, https_hosts))
-    out.extend(_host_findings(fingerprints))
+    out.extend(_host_findings(fingerprints, report.get("domains", [])))
     cnames = {h["hostname"]: h.get("cnames", []) for h in report.get("hosts", [])}
     for ip in report.get("ips", []):
         if ip.get("vulns"):
@@ -246,7 +248,7 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
             out.append(_finding(level, sig, ep, what))
     tls = r.get("tls") or {}
     if tls.get("not_after"):
-        days = tls.get("days_left")
+        days = _days_left(tls, today)
         if days is not None and days < 0:
             out.append(_finding("high", "certificate-expired", ep, f"the certificate expired on {tls['not_after'][:10]}"))
         elif days is not None and days <= 30:
@@ -278,6 +280,15 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
     return out
 
 
+def _days_left(tls: Mapping, today: date) -> int | None:
+    """Days from `today` until the certificate expires: an inventory re-assessed weeks after it was
+    fingerprinted must not trust the days_left recorded then."""
+    try:
+        return (date.fromisoformat(tls["not_after"][:10]) - today).days
+    except (KeyError, TypeError, ValueError):
+        return tls.get("days_left")
+
+
 def _cve_finding(ep: str, label: str, tech: Mapping, cves: Sequence[Mapping], kev: Mapping, r: Mapping) -> dict:
     known = {c["id"] for c in cves if c.get("kev") or c.get("id") in kev}
     exploited = [c for c in cves if c.get("id") in known]
@@ -296,10 +307,12 @@ def _cve_finding(ep: str, label: str, tech: Mapping, cves: Sequence[Mapping], ke
     return _finding(level, "known-vulnerable-version", ep, detail, evidence, tech["name"])
 
 
-def _host_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
+def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str]) -> list[dict]:
     out = []
     for host in sorted({r["hostname"] for r in fingerprints}):
-        if DEV_NAMES.search(host.split(".", 1)[0]) or DEV_NAMES.search(host):
+        # only the labels the organisation chose under its domain: demo-corp.com's www is not a demo
+        root = max((d for d in domains if in_scope(host, d)), key=len, default=None) or registered(host) or host
+        if DEV_NAMES.search(host.removesuffix(root).rstrip(".")):
             out.append(_finding("medium", "non-production-exposed", host, "a development/test/old system reachable from the internet: usually less patched and monitored"))
     return out
 
@@ -354,7 +367,7 @@ def _posture_findings(p: Mapping, today: date) -> list[dict]:
         if mx.get("starttls") is False:  # None: it never answered EHLO, so unknown
             out.append(_finding("medium", "mx-no-starttls", mx["host"], f"mail server for {d} does not offer STARTTLS", [mx.get("banner", "")], d))
         tls = mx.get("tls") or {}
-        if tls and (tls.get("self_signed") or tls.get("matches") is False or (tls.get("days_left") or 0) < 0):
+        if tls and (tls.get("self_signed") or tls.get("matches") is False or (_days_left(tls, today) or 0) < 0):
             out.append(_finding("low", "mx-certificate-invalid", mx["host"], f"mail server for {d} presents an invalid certificate ({tls.get('subject')})", about=d))
     if p.get("axfr"):
         out.append(_finding("high", "zone-transfer", d, "nameservers hand the whole zone to anyone (AXFR)", p["axfr"]))
