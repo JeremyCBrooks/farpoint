@@ -5,3 +5,14 @@ __pycache__/
 out/
 .env
 corpus/
+.env.*
+!.env.example
+src/farpoint/data/corpus.json
+.checkpoint-*.json
+.checkpoint-*.lock
+.lock
+assets.unmerged-*.json
+dist/
+build/
+*.egg-info/
+.claude/settings.local.json
