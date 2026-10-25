@@ -30,37 +30,37 @@ opt-in. Assessment and the merge happen after the pipeline, against the merged i
 
 ```mermaid
 flowchart TD
-    IN([root domains]) --> INV0[Inventory<br/>scan domains as seed hosts]
+    IN(["root domains"]) --> INV0["Inventory<br/>scan domains as seed hosts"]
 
-    subgraph PIPE["Pipeline.run  (pipeline.py)"]
+    subgraph PIPE["Pipeline.run (pipeline.py)"]
         direction TB
-        D[1. Discovery<br/>sources/*] --> R
-        R[2. Related domains<br/>related.py]:::opt --> RES
-        RES[3. Resolution<br/>resolve.py] --> T
-        T[4. Tenants<br/>tenants.py]:::opt --> G
-        G[5. Guessing<br/>guess.py]:::opt --> E
-        E[6. Enrichment<br/>enrich.py] --> F
-        F[7. Fingerprinting<br/>fingerprint.py, posture.py, probe.py]:::opt
-        G -. rounds: new names' CNAME targets .-> RES
+        D["Stage 1: Discovery<br/>sources/"] --> R
+        R["Stage 2: Related domains<br/>related.py"]:::opt --> RES
+        RES["Stage 3: Resolution<br/>resolve.py"] --> T
+        T["Stage 4: Tenants<br/>tenants.py"]:::opt --> G
+        G["Stage 5: Guessing<br/>guess.py"]:::opt --> E
+        E["Stage 6: Enrichment<br/>enrich.py"] --> F
+        F["Stage 7: Fingerprinting<br/>fingerprint.py, posture.py, probe.py"]:::opt
+        G -.->|"each round: new names' CNAME targets"| RES
     end
 
     INV0 --> D
-    F --> RUN[run_report<br/>this run as a dict]
+    F --> RUN["run_report<br/>this run as a dict"]
 
-    PRIOR[(out/assets.json<br/>prior inventory)] --> PREV[preview: prior + this run]
+    PRIOR[("out/assets.json<br/>prior inventory")] --> PREV["preview: prior + this run"]
     RUN --> PREV
-    PREV --> V[8a. CVE lookups<br/>NVD, CISA KEV]:::opt
+    PREV --> V["Stage 8a: CVE lookups<br/>NVD, CISA KEV"]:::opt
 
-    RUN --> M[9. merge_reports<br/>under a directory lock]
+    RUN --> M["Stage 9: merge_reports<br/>under a directory lock"]
     PRIOR --> M
-    M --> J[8b. derive findings<br/>assess.py, pure]:::opt
+    M --> J["Stage 8b: derive findings<br/>assess.py, pure"]:::opt
     V --> J
-    J --> W[write every output file<br/>atomically]
-    M -->|without --assess| W
-    W --> OUT[(assets.json, hosts.csv, ips.csv,<br/>fingerprints.csv, findings.csv, ...)]
+    J --> W["write every output file<br/>atomically"]
+    M -->|"without assessment"| W
+    W --> OUT[("assets.json, hosts.csv, ips.csv,<br/>fingerprints.csv, findings.csv ...")]
 
-    PRIOR -. earlier hosts, CNAMEs, tenants,<br/>names already guessed .-> T
-    PRIOR -. .-> G
+    PRIOR -.->|"earlier hosts, CNAMEs, tenants"| T
+    PRIOR -.->|"names already guessed"| G
 
     classDef opt stroke-dasharray: 5 5
 ```
@@ -73,20 +73,20 @@ organisation's own hosts.
 ```mermaid
 flowchart LR
     subgraph P0["Passive: third parties only"]
-        S1[Discovery sources<br/>CT logs, passive DNS,<br/>archives, Shodan, VT ...]
-        S2[Enrichment<br/>RDAP, InternetDB]
-        S3[Assessment lookups<br/>NVD, CISA]
+        S1["Discovery sources<br/>CT logs, passive DNS,<br/>archives, Shodan, VT ..."]
+        S2["Enrichment<br/>RDAP, InternetDB"]
+        S3["Assessment lookups<br/>NVD, CISA"]
     end
     subgraph P1["DNS: recursive resolver"]
-        S4[Resolution]
+        S4["Resolution"]
     end
     subgraph P2["Not passive: other parties' infrastructure"]
-        S5[Related<br/>registries, variants, Microsoft]
-        S6[Tenants<br/>platforms' nameservers]
-        S7[Guessing<br/>the domain's authoritative NS]
+        S5["Related<br/>registries, variants, Microsoft"]
+        S6["Tenants<br/>platforms' nameservers"]
+        S7["Guessing<br/>the domain's authoritative NS"]
     end
     subgraph P3["Not passive: the organisation's hosts"]
-        S8[Fingerprinting<br/>probe.py only]
+        S8["Fingerprinting<br/>probe.py only"]
     end
     P0 --> P1 --> P2 --> P3
 ```
