@@ -109,9 +109,9 @@ attacker look at first?* It starts from root domains and nothing else, and build
    results back to the organisation with evidence and says how strong the tie is.
 4. **Characterise what is live.** Fingerprinting asks each live service who it is, in the ordinary way
    any client would, and names the products and versions.
-5. **Judge separately from observing.** Assessment is a pure function from facts to findings. It runs
-   over the whole merged inventory every time, so findings always describe the latest facts and are
-   never merged or left stale.
+5. **Judge separately from observing.** Assessment is a pure function from facts to findings. Each
+   `--assess` runs it over the whole merged inventory, so findings describe the facts at that
+   assessment and are never merged. A scan without `--assess` leaves the last findings as they were.
 
 Five rules shape every stage:
 
@@ -119,7 +119,7 @@ Five rules shape every stage:
 |---|---|
 | **Stay in scope** | `Inventory.add` drops every observation not equal to or under a scan domain. Related domains, tenants and lookalikes go to separate tables and are never probed. |
 | **Escalate contact one step at a time** | Each stage beyond passive has its own flag. `--no-resolve` refuses to combine with any stage that needs DNS. `probe.py` is the only module that connects to the organisation. |
-| **Use the lightest touch that answers** | Fingerprinting reads banners, does one handshake, one `GET`. No logins, payloads, credential guesses or exploit checks. |
+| **Use the lightest touch that answers** | Fingerprinting reads banners, does TLS handshakes and plain `GET`s (the home page, the favicon, a few well-known paths). No logins, payloads, credential guesses or exploit checks. |
 | **Unknown is not absent** | A timeout makes `resolves` `None`, not `False`. A failed DNSSEC query makes `dnssec` unknown, not "off". A timed-out port keeps its old row. Findings are never raised from missing answers. |
 | **Never lose a scan** | One failing source never sinks a run; Ctrl-C saves what was gathered; a checkpoint survives a hard kill; a failing assessment still saves the scan. |
 
@@ -246,8 +246,8 @@ scanned.
 
 **Goal:** what each name points at now.
 
-**Method** (`resolve.DnsResolver`, `Pipeline._resolve`). Every host gets A, AAAA and CNAME lookups
-through the recursive resolver, with one retry. The result is three-state: `resolves` is `True`,
+**Method** (`resolve.DnsResolver`, `Pipeline._resolve`). Every host gets A and AAAA lookups
+through the recursive resolver, with one retry; CNAMEs are read from the answers' alias chain. The result is three-state: `resolves` is `True`,
 `False`, or `None` on timeout. In-scope CNAME targets are added to the inventory and resolved in the
 next pass; the loop runs until no unresolved hosts remain. CNAME targets outside scope are recorded on
 the host, never followed.
@@ -354,8 +354,8 @@ address.
    | Unknown | anything else | read a greeting; if none, try TLS and HTTP |
 
    Web requests are `GET /` (following redirects within the same service, up to 3), the favicon
-   (hashed the way Shodan does), and the `--paths`. TLS ports also get TLS 1.0 and 1.1 handshakes unless
-   `--no-legacy-tls`. Web and unknown ports are asked per hostname, since virtual hosts differ; other
+   (hashed the way Shodan does), and the `--paths`. Any port except SMTP that completed a TLS handshake
+   also gets TLS 1.0 and 1.1 handshakes unless `--no-legacy-tls`. Web and unknown ports are asked per hostname, since virtual hosts differ; other
    services are asked once per address and copied to each hostname there.
 3. **Technology matching** (`fingerprint.identify`). Everything a service said is collected into
    `Evidence` (headers, cookies, title, body, redirect, banner, CNAMEs, generator, certificate) and
@@ -366,8 +366,9 @@ address.
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
      exist or sit on unregistered domains); DMARC `p`, `sp`, `pct`; DKIM key sizes under 32 common
      selectors; MTA-STS (the policy is fetched over verified HTTPS), TLS-RPT, BIMI
-   - DNS: nameservers, one `AXFR` request to each the organisation runs itself (not to managed
-     services that can't allow one, listed in `data/dns_providers.json`, nor with `--no-axfr`), DNSSEC, CAA, wildcard
+   - DNS: nameservers, one `AXFR` request to each nameserver (third-party services such as
+     Cloudflare included), except managed services that can't allow one, listed in
+     `data/dns_providers.json`, and none with `--no-axfr`; DNSSEC, CAA, wildcard
    - registration: registrar, dates and transfer lock from RDAP
 
    Each part fails independently. A failed check is recorded as an error and its value left unknown.
@@ -379,9 +380,13 @@ address.
    be claimed (`data/takeover.json`), is a takeover risk. So is a live host serving a platform's
    "nothing configured here" page. A target that simply doesn't exist is a broken record.
 
-**Pacing.** Connections are paced across the scan by `--probe-rate` (default 20 a second), with at most
-2 in flight to one address (`probe.PER_IP`), and identify themselves with a `farpoint/0.1` user agent that carries the `--engagement` ID, if given.
-Only `--fingerprint`'s requests carry the ID; the passive sources and `--related` don't.
+**Pacing.** `--probe-rate` (default 20 a second) paces the start of each port connect and each
+service identification across the scan. A service identification makes several connections
+(handshakes, `GET /` and its redirects, the favicon, the paths), and posture's checks aren't paced, so
+the connection rate can be several times the setting. At most 2 connections are in flight to one
+address (`probe.PER_IP`). Web requests identify themselves with a `farpoint/0.1` user agent that
+carries the `--engagement` ID, if given. Only `--fingerprint`'s requests carry the ID; the passive
+sources and `--related` don't.
 
 ### 8. Assessment (`--assess`)
 
@@ -438,7 +443,7 @@ under a directory lock:
    |---|---|---|
    | Accumulating facts | hosts, IPs, lookalikes, tenants | sets unioned; `resolves` and owner take the latest answer |
    | Latest look | fingerprints, posture, related | replaced when looked at again; a refused port removes its row; a timeout keeps it with its old `last_seen` |
-   | Judgments | findings | re-derived each time |
+   | Judgments | findings | re-derived by each `--assess`; kept unchanged by a scan without it |
 
 2. runs the assessment's derivation on the merged report, if requested. If it raises, the scan is saved
    unjudged with the error recorded.
@@ -462,7 +467,8 @@ isn't a terminal.
 Ctrl-C and SIGTERM are only delivered to the main thread while it waits for the next result
 (`runtime.interruptible`); arriving at any other time they are deferred to the next wait. Cancelling
 wakes every `runtime.sleep` and terminates tracked subprocesses. The first signal stops the scan and
-saves; a second exits without saving. During the save, signals no longer stop anything.
+saves; a second exits without saving. A signal that arrives during the save doesn't stop it, but
+the second signal still exits at once, even mid-save; the atomic writes leave every file whole.
 
 ### Checkpoints (`output.Checkpointer`)
 
@@ -479,7 +485,7 @@ by the lock, not the PID, since PIDs are reused.
 | Related domains | 8 concurrent lookups (capped by `--workers`); `--related-rate` lookups started per second, all kinds sharing one pace |
 | Tenants | `--tenant-budget` total lookups |
 | Guessing | `--guess-budget` per domain, `--guess-rate` per second |
-| Fingerprinting | `--probe-rate` per second; 2 connections per address; web-only on shared front ends |
+| Fingerprinting | `--probe-rate` port checks and service checks started per second; 2 connections per address; web-only on shared front ends |
 | NVD | about 1 request every 6 seconds without `NVD_API_KEY`; 7-day cache |
 
 ### Bundled data (`src/farpoint/data/`)
@@ -493,6 +499,7 @@ by the lock, not the PID, since PIDs are reused.
 | `fingerprints.json` | fingerprinting | technology rules: matchers, category, CPE template |
 | `takeover.json` | fingerprinting | claimable platforms and their "unclaimed" page signatures |
 | `dkim_selectors.txt` | posture | the common DKIM selectors checked |
+| `dns_providers.json` | posture | managed DNS services that can't allow a zone transfer, so aren't asked |
 | `eol.json` | assessment | end-of-life dates by product and version |
 | `corpus.json` (optional, not bundled) | guessing | cross-organisation naming statistics |
 

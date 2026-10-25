@@ -48,8 +48,9 @@ farpoint collects hostnames from many independent public datasets, checks each i
 a record of which sources reported it. Optional stages then widen the search, to sister domains, SaaS
 tenants and names predicted from the organisation's own naming habits. Further optional stages
 fingerprint what is live and rank what an attacker would try first. Each stage that makes more contact
-than the one before is a separate opt-in. Only names under the scan domains are ever probed: related
-domains, tenants and lookalikes are reported for you to review. Findings are worked out afresh from the
+than the one before is a separate opt-in. Only names under the scan domains are ever probed, apart
+from a zone-transfer request to the scan domains' nameservers: related domains, tenants and
+lookalikes are reported for you to review. Findings are worked out afresh from the
 whole inventory on every assessment. A check that fails is recorded as unknown, never as a missing
 control.
 
@@ -92,13 +93,13 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--fingerprint` | Probe live hosts and check each domain's mail and DNS posture. **Not passive.** |
 | `--ports LIST` | Ports `--fingerprint` checks. `22,443,8000-8010` replaces the defaults, `+8081` adds to them, `none` checks only 80 and 443. |
 | `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt`). |
-| `--probe-rate N` | At most N `--fingerprint` connections a second across the scan (default 20). |
+| `--probe-rate N` | Start at most N `--fingerprint` port checks and service checks a second across the scan (default 20). A service check makes several connections. |
 | `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
 | `--no-axfr` | Skip `--fingerprint`'s zone-transfer (`AXFR`) requests. |
 | `--engagement ID` | With `--fingerprint`, add an engagement ID (a ticket or client code: up to 64 letters, digits, spaces and `.-_:@+/=`, not starting or ending with a space) to the user agent of its requests, so the organisation can tell who is probing. The passive sources and `--related` don't send it. Plain-HTTP probes send it unencrypted. |
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
-| `--timeout SECONDS` | HTTP timeout for data sources (default 60). |
+| `--timeout SECONDS` | HTTP timeout for data sources, RDAP, NVD, CISA and Microsoft (default 60). |
 | `--workers N` | Jobs run at once per source or phase (default 16). |
 | `--no-progress` | No live progress display. |
 | `-v, --verbose` | Log each result and retry as plain lines instead of the live display. |
@@ -144,8 +145,8 @@ never scanned**: owning a domain doesn't mean you're authorised to scan it, so a
 to your domain list yourself.
 
 **Not passive:** about 1,800 lookups per scan domain go to the registries, 8 at a time (fewer with
-`--workers`). Each registered variant gets a few DNS lookups and one HTTP request to see where it
-redirects, and Microsoft gets one request per scan domain. `--related-rate` spreads all of these
+`--workers`). Each registered variant gets a few DNS lookups and an HTTP request (HTTPS, then plain HTTP if
+that fails) to see where it redirects, and Microsoft gets one request per scan domain. `--related-rate` spreads all of these
 lookups out: at 10 a second, one domain takes about 3 minutes. A lookup can be more than one packet
 (a DNS lookup that times out is retried, and a redirect check follows each hop), so the network sees
 a little more. Unpaced, a burst of this size can overwhelm a small NAT or home router.
@@ -174,10 +175,12 @@ one TXT query per domain.
 
 Finds names that public datasets missed by learning how the organisation names its hosts
 (`api-dev` → `api-prod`, `portaltest` → `portal-test`) and testing names it hasn't seen in DNS. It
-learns from this scan, the inventory in `--out` and, with `--tenants`, the organisation's tenant
-names. Every name tested is remembered, and later scans into the same `--out` skip it for 90 days, so
-each scan goes further down the list. Found names have source `guess`. Parents skipped because of
-wildcard DNS are listed in the errors in `assets.json`.
+learns from this scan, the inventory in `--out` and the organisation's verified tenant names (from
+this scan's `--tenants`, or earlier ones in `--out`). Every name tested is remembered, and later scans
+into the same `--out` skip it for 90 days, so each scan goes further down the list. Found names have
+source `guess`. Under a wildcard, a guess counts only if it answers differently. Parents where the
+wildcard check got no answer, or where most guesses resolved, are skipped and listed in the errors in
+`assets.json`.
 
 **Not passive:** the domain's authoritative nameservers see every guess, mostly for names that don't
 exist. `--guess-rate` spreads them out; 2000 lookups at 5 a second take about 7 minutes.
@@ -212,7 +215,8 @@ had in the past. It never logs in, guesses passwords or sends exploits.
 - **Ports**: 43 by default, covering remote access, databases, mail, directory services, container
   APIs, and web and appliance ports. Addresses belonging to a CDN or SaaS front end only get 80 and 443.
 - **Services**: each open port is asked who it is the ordinary way: its greeting, a TLS handshake,
-  `GET /`, the favicon and the `--paths`. Mail ports get `EHLO` and `STARTTLS`, never `MAIL FROM`.
+  `GET /`, the favicon and the `--paths`. SMTP ports (25, 587) get `EHLO` and `STARTTLS`, never
+  `MAIL FROM`.
 - **Technologies**: the answers are matched against `src/farpoint/data/fingerprints.json`, which covers
   VPN and firewall appliances (FortiGate, GlobalProtect, NetScaler, BIG-IP, Cisco ASA, Ivanti,
   SonicWall, Check Point), remote access gateways, mail (Exchange with its build number), CDNs and
@@ -229,7 +233,9 @@ had in the past. It never logs in, guesses passwords or sends exploits.
 - **Dangling DNS**: CNAMEs pointing at names that don't exist, flagged as takeover risks where the
   name could be claimed.
 
-Connections are paced by `--probe-rate` and identify themselves with the user agent
+Port checks and service checks are paced by `--probe-rate`, and a service check makes several
+connections (handshakes, `GET /` and its redirects, the favicon, the paths). The domain posture
+checks aren't paced. Web requests identify themselves with the user agent
 `farpoint/0.1 (host fingerprinting)`, or `farpoint/0.1 (host fingerprinting; engagement ID)` with
 `--engagement`. A scan of about 100 hosts makes a few thousand connections over a
 few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.csv`.
@@ -245,7 +251,7 @@ choosing a soft target, not by CVSS. Assessment sends nothing to the organisatio
 
 | Level | Examples |
 |---|---|
-| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git`; expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days |
+| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days |
 | medium | self-signed or mismatched certificates, TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups |
 | low | missing HSTS, wildcard certificates, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
 
@@ -255,7 +261,8 @@ a key NVD allows about one request every 6 seconds, so set `NVD_API_KEY` for lar
 Distribution package versions and CVEs on shared CDN addresses are discounted.
 
 `first_seen` records when a finding was first reported. `technologies.csv` lists each product and
-version with how many hosts run it, its end-of-life date and its CVE counts, edge devices first.
+version with how many hosts run it, its end-of-life date, its CVE count and the known-exploited
+ones, edge devices first.
 
 ## Output (`--out`, default `./out`)
 
@@ -271,14 +278,15 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames |
 | `fingerprints.csv` | With `--fingerprint`: one row per open host and port: service, technologies, status, title, server, redirect, signals, certificate, TLS versions, banner, favicon hash, paths |
-| `technologies.csv` | With `--fingerprint`: each technology and version, host count, end-of-life date, CVE and known-exploited counts, hosts |
-| `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, mail server STARTTLS, nameservers, DNSSEC, CAA, AXFR, registration |
+| `technologies.csv` | With `--fingerprint`: each technology's category, name and version, host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
+| `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registration |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
 | `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |
 
-Every row has `first_seen` and `last_seen` (UTC). `assets.json` is the source of truth, and the other
-files are regenerated from it after every scan. Discovered facts accumulate across scans, while
-fingerprints, posture and findings describe the latest look (see
+Every row except in `technologies.csv` has `first_seen` and `last_seen` (UTC). `assets.json` is the
+source of truth, and the other files are regenerated from it after every scan. Discovered facts
+accumulate across scans, while fingerprints and posture describe the latest look. Findings describe
+the latest `--assess`: a scan without it leaves them as they were (see
 [ARCHITECTURE.md](ARCHITECTURE.md#9-merge-and-output) for the exact rules).
 
 Writes are atomic and locked, so two scans into one folder don't lose each other's results. A scan refuses to start if the existing
@@ -289,8 +297,8 @@ Writes are atomic and locked, so two scans into one folder don't lose each other
 
 In a terminal, farpoint shows a live line per source and domain with what it is doing (requesting,
 waiting on a rate limit, retrying), then its result count or error. Counters follow for each later
-phase. `-v` prints the same events as plain lines, which is also what happens when output isn't a
-terminal. `--no-progress` turns the display off.
+phase. `-v` prints the same events as plain lines instead. When output isn't a terminal, or with
+`--no-progress`, there is no display, and only failures are printed unless you add `-v`.
 
 **Ctrl-C (or SIGTERM) stops the scan and saves what it has**, including pages already fetched by
 sources still running, and marks the scan as interrupted. Press Ctrl-C again to quit without saving.
