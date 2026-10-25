@@ -63,7 +63,9 @@ Windows), use `uv run python -m pytest` instead.
   - The stage test files have `Fake*` classes for the DNS, prober and related-domain protocols.
 - The autouse `sleeps` fixture records sleeps instead of sleeping and advances a fake clock. To test
   backoff and rate limits, assert on the recorded sleeps.
-- Mark any test that needs the real internet with `@pytest.mark.network`.
+- Mark any test that needs the real internet with `@pytest.mark.network`. The autouse `offline` fixture
+  refuses every other test's non-loopback connections, UDP sends and name lookups, and fails the test
+  even when farpoint swallows the error.
 
 ## Extending
 
