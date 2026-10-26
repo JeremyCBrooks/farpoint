@@ -199,6 +199,7 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     https_hosts = {r["hostname"] for r in fingerprints if r.get("service") == "https" and (r.get("status") or 0) < 500}
     for r in fingerprints:
         out.extend(_endpoint_findings(r, vulns, kev, today, https_hosts))
+    out.extend(_exposed_findings(fingerprints))
     out.extend(_host_findings(fingerprints, report.get("domains", [])))
     cnames = {h["hostname"]: h.get("cnames", []) for h in report.get("hosts", [])}
     # an address only passive DNS knows, or that live DNS stopped returning, may belong to someone else by now
@@ -228,10 +229,7 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
 
 def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, https_hosts: set[str]) -> list[dict]:
     out = []
-    ep, port = r["endpoint"], r.get("port")
-    if port in EXPOSED:  # Elasticsearch, Docker, WinRM and Kubernetes answer HTTP and are just as exposed
-        level, what = EXPOSED[port]
-        out.append(_finding(level, "exposed-service", ep, f"{what} answers on port {port} from the internet"))
+    ep = r["endpoint"]
     for t in r.get("tech", []):
         name, version = t["name"], t.get("version")
         label = f"{name} {version}" if version else name
@@ -286,6 +284,21 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
     return out
 
 
+def _exposed_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
+    """One finding per address and port: the service runs on the machine, whichever names point at it.
+    Elasticsearch, Docker, WinRM and Kubernetes answer HTTP and are just as exposed."""
+    names: dict[tuple[str, int], list[str]] = {}
+    for r in fingerprints:
+        if r.get("port") in EXPOSED:
+            names.setdefault((r.get("ip") or r["hostname"], r["port"]), []).append(r["hostname"])
+    out = []
+    for (address, port), hosts in sorted(names.items()):
+        level, what = EXPOSED[port]
+        target = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+        out.append(_finding(level, "exposed-service", target, f"{what} answers on port {port} from the internet", sorted(hosts)))
+    return out
+
+
 def _days_left(tls: Mapping, today: date) -> int | None:
     """Days from `today` until the certificate expires."""
     try:
@@ -325,8 +338,9 @@ def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str]) -> l
             out.append(_finding("medium", "non-production-exposed", host, "a development/test/old system reachable from the internet: usually less patched and monitored"))
     parked: dict[str, list[str]] = {}
     for r in fingerprints:
-        if any(t.get("category") == "parking" for t in r.get("tech", [])):
-            parked.setdefault(_root(r["hostname"], domains), []).append(r["endpoint"])
+        root = _root(r["hostname"], domains)
+        if r["hostname"] in (root, f"www.{root}") and any(t.get("category") == "parking" for t in r.get("tech", [])):
+            parked.setdefault(root, []).append(r["endpoint"])  # a parked subdomain is one site, not the domain
     for d, endpoints in sorted(parked.items()):
         out.append(_finding("medium", "parked-domain", d, 'shows a parking page: confirm the organisation still controls it, and publish "v=spf1 -all" and DMARC p=reject so no one can send mail as it', sorted(endpoints)))
     return out

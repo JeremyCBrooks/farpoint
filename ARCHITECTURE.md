@@ -403,9 +403,11 @@ organisation. If interrupted, the scan is saved without a new assessment.
 **b. Derivation** (`assess.derive`), a pure function from the merged report to findings, run inside
 the save. It walks:
 
-- each fingerprinted endpoint: exposed management and data ports, edge appliances and admin panels by
-  technology category, end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web
-  signals, dev/test hosts, parked scan domains
+- each address's exposed management and data ports, one finding per address and port whatever names
+  point at it
+- each fingerprinted endpoint: edge appliances and admin panels by technology category, end-of-life
+  versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals, dev/test hosts, parked
+  scan domains
 - each address's Shodan CVEs
 - dangling DNS: claimable targets are takeovers (high), the rest broken CNAMEs (low)
 - each domain's posture: SPF, DMARC, DKIM, MTA-STS, STARTTLS, AXFR, DNSSEC, CAA, registration expiry

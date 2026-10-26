@@ -291,7 +291,9 @@ def test_ordinary_pages_are_not_mistaken_for_products(ev):
     ("Domain registered | Dynadot", True),
     ("example.com is for sale | HugeDomains", True),
     ("Parked Domain name on Hostinger DNS system", True),
+    ("This domain is for sale", True),
     ("Register a domain name today - Acme Hosting", False),
+    ("1967 Riva Aquarama is for sale - Acme Marine", False),
 ])
 def test_parking_pages_are_recognised(title, parked):
     assert ("Parking page" in {t.name for t in identify(Evidence(title=title))}) is parked

@@ -34,7 +34,7 @@ def test_what_an_attacker_looks_for_first_is_high():
     found = derive(report, today=TODAY)
 
     assert ("high", "edge-device") in kinds(found, "vpn.example.com:443")
-    assert ("high", "exposed-service") in kinds(found, "db.example.com:3389")
+    assert ("high", "exposed-service") in kinds(found, "192.0.2.1:3389")
     assert ("high", "admin-interface") in kinds(found, "ci.example.com:443")
     assert {("high", "end-of-life"), ("high", "git-exposed")} <= kinds(found, "old.example.com:443")
     assert ("medium", "non-production-exposed") in kinds(found, "old.example.com")
@@ -47,8 +47,13 @@ def test_data_services_that_speak_http_are_still_exposed():
     assert ("high", "exposed-service") in kinds(derive({"fingerprints": [endpoint("es.example.com", 9200, service="http")]}, today=TODAY))
 
 
-def test_a_router_answering_bgp_is_exposed():
-    assert ("medium", "exposed-service") in kinds(derive({"fingerprints": [endpoint("gw.example.com", 179, service="tcp")]}, today=TODAY))
+def test_a_router_answering_bgp_is_exposed_once_per_address():
+    report = {"fingerprints": [endpoint(h, 179, service="tcp") for h in ("vpn.example.com", "intranet.example.com", "remote.example.com")]}
+
+    exposed = [f for f in derive(report, today=TODAY) if f["kind"] == "exposed-service"]
+
+    assert [(f["level"], f["target"]) for f in exposed] == [("medium", "192.0.2.1:179")]  # one router, however many names point at it
+    assert exposed[0]["evidence"] == ["intranet.example.com", "remote.example.com", "vpn.example.com"]
 
 
 def test_findings_of_one_kind_on_one_endpoint_stay_distinct():
@@ -150,6 +155,8 @@ def test_a_parked_scan_domain_is_reported_once():
 
     assert [(f["level"], f["target"]) for f in parked] == [("medium", "example.net")]
     assert "www.example.net:443" in parked[0]["evidence"]
+    deeper = {"domains": ["example.org"], "fingerprints": [endpoint("shop.example.org", 443, tech=parking)]}  # one site, not the domain
+    assert [f for f in derive(deeper, today=TODAY) if f["kind"] == "parked-domain"] == []
 
 
 def test_shodan_cves_on_addresses():

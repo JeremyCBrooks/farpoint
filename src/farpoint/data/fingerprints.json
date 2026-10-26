@@ -1603,7 +1603,7 @@
    "category": "parking",
    "match": [
     {
-     "title": "^Domain registered\\b|\\bis for sale\\b|\\bparked domain\\b|\\bdomain (name )?(is )?parked\\b"
+     "title": "^Domain registered\\b|\\bdomain( name)? (is )?for sale\\b|^[a-z0-9-]+(\\.[a-z0-9-]+)+ is for sale\\b|\\bparked domain\\b|\\bdomain (name )?(is )?parked\\b"
     }
    ]
   }

@@ -98,7 +98,7 @@ def test_assessment_judges_the_merged_report_when_saving(tmp_path):
     report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r: assessed(r, [], {}, "2026-10-24T00:00:00Z"))
 
     kinds = {(f["kind"], f["target"]) for f in report["findings"]}
-    assert ("exposed-service", "www.example.com:3389") in kinds and ("subdomain-takeover", "old.example.com") in kinds
+    assert ("exposed-service", f"{ORIGIN}:3389") in kinds and ("subdomain-takeover", "old.example.com") in kinds
     with open(tmp_path / "findings.csv", newline="") as fh:
         assert next(csv.DictReader(fh))["level"] == "high"
 
