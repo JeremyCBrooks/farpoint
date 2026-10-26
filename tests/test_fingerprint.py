@@ -287,6 +287,16 @@ def test_ordinary_pages_are_not_mistaken_for_products(ev):
     assert {t.category for t in identify(ev)} & {"edge", "panel", "remote-access", "mail"} == set()
 
 
+@pytest.mark.parametrize("title, parked", [
+    ("Domain registered | Dynadot", True),
+    ("example.com is for sale | HugeDomains", True),
+    ("Parked Domain name on Hostinger DNS system", True),
+    ("Register a domain name today - Acme Hosting", False),
+])
+def test_parking_pages_are_recognised(title, parked):
+    assert ("Parking page" in {t.name for t in identify(Evidence(title=title))}) is parked
+
+
 def test_title_rules_still_catch_the_real_products():
     assert {"Jenkins", "GitLab"} <= {t.name for t in identify(Evidence(title="Dashboard [Jenkins]"))} | {t.name for t in identify(Evidence(title="Sign in · GitLab"))}
 

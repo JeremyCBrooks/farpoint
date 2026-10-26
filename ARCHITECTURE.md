@@ -405,18 +405,19 @@ the save. It walks:
 
 - each fingerprinted endpoint: exposed management and data ports, edge appliances and admin panels by
   technology category, end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web
-  signals, dev/test hosts
+  signals, dev/test hosts, parked scan domains
 - each address's Shodan CVEs
 - dangling DNS: claimable targets are takeovers (high), the rest broken CNAMEs (low)
 - each domain's posture: SPF, DMARC, DKIM, MTA-STS, STARTTLS, AXFR, DNSSEC, CAA, registration expiry
-  and transfer lock
+  and transfer lock. A scan domain with no nameservers is reported as possibly unregistered (high),
+  not as missing SPF and DMARC, since there is no zone to publish them in
 
 **Ranking.** `level` is attacker interest, not CVSS:
 
 | Level | Meaning | Examples |
 |---|---|---|
 | high | tried first | RDP/SMB/databases/container APIs open; VPN appliances; Jenkins, GitLab, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git`; takeovers; spoofable mail; zone transfers |
-| medium | useful weakness | self-signed or mismatched certificates; TLS 1.0/1.1; HTTP only; directory listings; login prompts; dev/staging hosts; weak DKIM |
+| medium | useful weakness | self-signed or mismatched certificates; TLS 1.0/1.1; HTTP only; directory listings; login prompts; dev/staging hosts; weak DKIM; BGP open; parked domains |
 | low | hygiene | missing HSTS; no DNSSEC or CAA; version-revealing headers; broken CNAMEs |
 
 **Discounts**, to avoid confident false positives:
@@ -424,6 +425,8 @@ the save. It walks:
 - a distribution package version (`OpenSSH_8.9p1 Ubuntu`) is capped at medium unless the CVE is known
   to be exploited, because distributions backport fixes
 - Shodan CVEs on a shared CDN or SaaS address are low: the provider's to fix
+- Shodan CVEs on an address only passive DNS reported, or that live DNS stopped returning before the
+  latest scan, are low: the address may belong to someone else by now
 - a check that failed produces no finding
 
 Each finding has a stable `id`. Because findings are re-derived from scratch each time, a fixed issue

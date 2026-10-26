@@ -48,6 +48,7 @@ EXPOSED = {
     9200: ("high", "Elasticsearch"),
     27017: ("high", "MongoDB"),
     21: ("medium", "FTP (cleartext logins)"),
+    179: ("medium", "BGP (a router's routing sessions)"),
     389: ("medium", "LDAP"),
     636: ("medium", "LDAPS"),
     110: ("low", "POP3 (cleartext)"),
@@ -200,12 +201,16 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
         out.extend(_endpoint_findings(r, vulns, kev, today, https_hosts))
     out.extend(_host_findings(fingerprints, report.get("domains", [])))
     cnames = {h["hostname"]: h.get("cnames", []) for h in report.get("hosts", [])}
+    # an address only passive DNS knows, or that live DNS stopped returning, may belong to someone else by now
+    live = max((ip["last_seen"] for ip in report.get("ips", []) if "dns" in ip.get("sources", []) and ip.get("last_seen")), default="")
     for ip in report.get("ips", []):
         if ip.get("vulns"):
             known = sorted(c for c in ip["vulns"] if c in kev)
             detail = f"Shodan lists {len(ip['vulns'])} CVEs for this address" + (f", {len(known)} known to be exploited" if known else "")
             if shared_address(ip.get("org"), [cnames.get(h, []) for h in ip.get("hostnames", [])], ip.get("tags", [])):
                 level, detail = "low", detail + "; it is a shared CDN/SaaS front end, so they are the provider's to fix"
+            elif "sources" in ip and ("dns" not in ip["sources"] or ip.get("last_seen", live) < live):
+                level, detail = "low", detail + "; its names did not resolve to it in live DNS in the latest scan, so it may no longer be the organisation's"
             else:
                 level = "high" if known else "medium"
             out.append(_finding(level, "shodan-cves", ip["ip"], detail, (known or sorted(ip["vulns"]))[:20]))
@@ -214,8 +219,9 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
             out.append(_finding("high", "subdomain-takeover", d["hostname"], d["reason"]))
         else:
             out.append(_finding("low", "dangling-cname", d["hostname"], d["reason"] + ": broken, but nothing known to make it claimable"))
+    tenant_names = {h["hostname"] for h in report.get("hosts", []) if "m365" in h.get("sources", [])}
     for p in report.get("posture", []):
-        out.extend(_posture_findings(p, today))
+        out.extend(_posture_findings(p, today, tenant_names))
     order = {level: i for i, level in enumerate(LEVELS)}
     return sorted(out, key=lambda f: (order[f["level"]], f["kind"], f["target"]))
 
@@ -306,23 +312,37 @@ def _cve_finding(ep: str, label: str, tech: Mapping, cves: Sequence[Mapping], ke
     return _finding(level, "known-vulnerable-version", ep, detail, evidence, tech["name"])
 
 
+def _root(host: str, domains: Sequence[str]) -> str:
+    """The scan domain `host` is under (its registered domain if none)."""
+    return max((d for d in domains if in_scope(host, d)), key=len, default=None) or registered(host) or host
+
+
 def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str]) -> list[dict]:
     out = []
     for host in sorted({r["hostname"] for r in fingerprints}):
         # only the labels under the organisation's domain
-        root = max((d for d in domains if in_scope(host, d)), key=len, default=None) or registered(host) or host
-        if DEV_NAMES.search(host.removesuffix(root).rstrip(".")):
+        if DEV_NAMES.search(host.removesuffix(_root(host, domains)).rstrip(".")):
             out.append(_finding("medium", "non-production-exposed", host, "a development/test/old system reachable from the internet: usually less patched and monitored"))
+    parked: dict[str, list[str]] = {}
+    for r in fingerprints:
+        if any(t.get("category") == "parking" for t in r.get("tech", [])):
+            parked.setdefault(_root(r["hostname"], domains), []).append(r["endpoint"])
+    for d, endpoints in sorted(parked.items()):
+        out.append(_finding("medium", "parked-domain", d, 'shows a parking page: confirm the organisation still controls it, and publish "v=spf1 -all" and DMARC p=reject so no one can send mail as it', sorted(endpoints)))
     return out
 
 
-def _posture_findings(p: Mapping, today: date) -> list[dict]:
+def _posture_findings(p: Mapping, today: date, tenant_names: set[str] = frozenset()) -> list[dict]:
     d = p["domain"]
     out = []
     spf_all = p.get("spf_all")
     policy = p.get("dmarc_policy")
     failed = {e.split(":", 1)[0] for e in p.get("check_errors", [])}
-    if "spf" in failed:
+    undelegated = p.get("ns") == [] and "dns" not in failed and registered(d) == d  # a subdomain has no NS of its own
+    if undelegated:  # no zone to publish SPF or DMARC in: whoever registers the name is the risk
+        listed = "; it is still listed in the organisation's Microsoft 365 tenant" if d in tenant_names else ""
+        out.append(_finding("high", "domain-unregistered", d, f"has no nameservers, so it is not in DNS: if it is unregistered, anyone can register it and receive its mail{listed}"))
+    if "spf" in failed or undelegated:
         pass  # unknown, not missing
     elif not p.get("spf"):
         out.append(_finding("high", "spf-missing", d, "no SPF record: anyone can send mail as this domain"))
@@ -338,7 +358,7 @@ def _posture_findings(p: Mapping, today: date) -> list[dict]:
         out.append(_finding("high", "spf-include-unregistered", d, f"SPF includes {inc}, whose domain is not registered: whoever registers it can send as this domain"))
     for inc in set(p.get("spf_missing_includes", [])) - set(p.get("spf_unregistered_includes", [])):
         out.append(_finding("medium", "spf-include-missing", d, f"SPF includes {inc}, which has no SPF record"))
-    if "dmarc" in failed:
+    if "dmarc" in failed or undelegated:
         pass
     elif not p.get("dmarc"):
         level = "high" if spf_all != "-all" else "medium"

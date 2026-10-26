@@ -1597,6 +1597,15 @@
      "cname": "kinsta\\.cloud$"
     }
    ]
+  },
+  {
+   "name": "Parking page",
+   "category": "parking",
+   "match": [
+    {
+     "title": "^Domain registered\\b|\\bis for sale\\b|\\bparked domain\\b|\\bdomain (name )?(is )?parked\\b"
+    }
+   ]
   }
  ]
 }

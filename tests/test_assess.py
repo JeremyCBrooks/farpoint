@@ -47,6 +47,10 @@ def test_data_services_that_speak_http_are_still_exposed():
     assert ("high", "exposed-service") in kinds(derive({"fingerprints": [endpoint("es.example.com", 9200, service="http")]}, today=TODAY))
 
 
+def test_a_router_answering_bgp_is_exposed():
+    assert ("medium", "exposed-service") in kinds(derive({"fingerprints": [endpoint("gw.example.com", 179, service="tcp")]}, today=TODAY))
+
+
 def test_findings_of_one_kind_on_one_endpoint_stay_distinct():
     report = {"fingerprints": [endpoint("gw.example.com", 443, tech=[{"name": "F5 BIG-IP", "category": "edge"}, {"name": "F5 BIG-IP APM", "category": "edge"}])]}
     ids = [f["id"] for f in derive(report, today=TODAY)]
@@ -121,6 +125,33 @@ def test_spoofable_mail_and_dns_posture():
     assert derive({"posture": [strong]}, today=TODAY) == []
 
 
+def test_a_scan_domain_with_no_nameservers_may_be_free_to_register():
+    gone = {"domain": "example.eu", "mx": [], "ns": [], "spf": None, "dmarc": None, "caa": []}
+    report = {"posture": [gone], "hosts": [{"hostname": "example.eu", "sources": ["input", "m365"]}]}
+
+    found = [f for f in derive(report, today=TODAY) if f["target"] == "example.eu"]
+
+    assert [(f["level"], f["kind"]) for f in found] == [("high", "domain-unregistered")]  # not SPF/DMARC: there is no zone to publish them in
+    assert "Microsoft 365" in found[0]["detail"]
+    unknown = {**gone, "check_errors": ["dns: LifetimeTimeout: timed out"]}
+    assert ("high", "domain-unregistered") not in kinds(derive({"posture": [unknown]}, today=TODAY))
+    subdomain = {**gone, "domain": "eu.example.com"}  # a subdomain has no NS records of its own
+    assert ("high", "domain-unregistered") not in kinds(derive({"posture": [subdomain]}, today=TODAY))
+
+
+def test_a_parked_scan_domain_is_reported_once():
+    parking = [{"name": "Parking page", "category": "parking", "evidence": "title: Domain registered"}]
+    report = {"domains": ["example.net"], "fingerprints": [
+        endpoint("example.net", 80, service="http", tech=parking), endpoint("example.net", 443, tech=parking),
+        endpoint("www.example.net", 443, tech=parking),
+    ]}
+
+    parked = [f for f in derive(report, today=TODAY) if f["kind"] == "parked-domain"]
+
+    assert [(f["level"], f["target"]) for f in parked] == [("medium", "example.net")]
+    assert "www.example.net:443" in parked[0]["evidence"]
+
+
 def test_shodan_cves_on_addresses():
     found = derive({"ips": [{"ip": "192.0.2.1", "vulns": ["CVE-2021-44228", "CVE-2020-1"]}]}, kev={"CVE-2021-44228": {}}, today=TODAY)
     assert found[0]["level"] == "high" and found[0]["evidence"] == ["CVE-2021-44228"]
@@ -137,6 +168,20 @@ def test_shodan_cves_on_a_shared_front_end_are_the_providers():
     }
     levels = {f["target"]: f["level"] for f in derive(report, kev={"CVE-2023-44487": {}}, today=TODAY)}
     assert levels == {"192.0.2.1": "low", "192.0.2.2": "high", "192.0.2.3": "low"}  # an Azure VM is the organisation's
+
+
+def test_shodan_cves_on_addresses_no_longer_in_live_dns_are_not_urgent():
+    latest, older = "2026-10-26T00:19:33Z", "2026-10-19T20:59:28Z"
+    report = {"ips": [
+        {"ip": "192.0.2.1", "sources": ["dns"], "last_seen": latest, "vulns": ["CVE-2023-44487"]},
+        {"ip": "192.0.2.2", "sources": ["bbot", "dns"], "last_seen": older, "vulns": ["CVE-2023-44487"]},  # resolved once, not in the latest scan
+        {"ip": "192.0.2.3", "sources": ["otx"], "last_seen": latest, "vulns": ["CVE-2023-44487"]},  # only ever in passive DNS
+    ]}
+
+    found = {f["target"]: f for f in derive(report, kev={"CVE-2023-44487": {}}, today=TODAY)}
+
+    assert {ip: f["level"] for ip, f in found.items()} == {"192.0.2.1": "high", "192.0.2.2": "low", "192.0.2.3": "low"}
+    assert "live DNS" in found["192.0.2.3"]["detail"]
 
 
 def nvd_page(ids, total=None, per_page=None):
