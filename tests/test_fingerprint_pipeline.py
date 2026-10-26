@@ -170,6 +170,16 @@ def test_a_cdn_address_known_only_from_shodans_tags_gets_web_ports_only():
     assert {port for kind, ip, port in (c for c in prober.calls if c[0] == "connect") if ip == CDN} == {80, 443}
 
 
+def test_godaddy_webmail_on_an_amazon_address_gets_web_ports_only():
+    # GoDaddy's shared webmail sits behind AWS Global Accelerator, so the owner alone says "Amazon",
+    # which is usually the organisation's own machine; the CNAME is what shows it is GoDaddy's.
+    pipeline, prober = scenario()
+    pipeline.enrichers = [TableEnricher({ORIGIN: IpDetails(org="Example Hosting"), CDN: IpDetails(org="Amazon Technologies Inc.")})]
+    pipeline.lookup = dns_table({"cdn.example.com": Resolution(ips=(CDN,), cnames=("email.secureserver.net",))})
+    pipeline.run([D])
+    assert {port for kind, ip, port in (c for c in prober.calls if c[0] == "connect") if ip == CDN} == {80, 443}
+
+
 def test_a_service_that_failed_this_time_keeps_its_old_row(tmp_path):
     pipeline, _ = scenario()
     write_outputs(pipeline.run([D]), tmp_path, "2026-10-01T00:00:00Z")

@@ -234,7 +234,7 @@ SHARED_FRONTENDS = re.compile(
     r"netlify\.(app|com)|vercel-dns\.com|github\.io|myshopify\.com|hubspot\.net|hs-sites\.com|wixdns\.net|"
     r"squarespace\.com|wpengine\.com|pantheonsite\.io|kinsta\.cloud|force\.com|my\.site\.com|zendesk\.com|"
     r"outlook\.com|office\.com|office365\.com|lync\.com|cloud\.microsoft|msappproxy\.net|ghs\.googlehosted\.com|"
-    r"googlehosted\.com|appspot\.com|run\.app)$",
+    r"googlehosted\.com|appspot\.com|run\.app|secureserver\.net)$",
     re.I,
 )
 
