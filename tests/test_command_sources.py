@@ -153,3 +153,19 @@ def test_dnstwist_reports_registered_permutations_as_lookalikes_excluding_origin
         ("examp1e.com", "2001:db8::1"),
         ("examplea.com", None),
     }
+
+
+def test_dnstwist_keeps_mail_and_nameservers_but_not_null_mx_or_failures():
+    from farpoint.pipeline import Pipeline
+
+    rows = [
+        {"fuzzer": "homoglyph", "domain": "examp1e.com", "dns_a": ["198.51.100.1"], "dns_ns": ["ns1.parkingcrew.net"], "dns_mx": ["mx.examp1e.com"]},
+        {"fuzzer": "addition", "domain": "examplea.com", "dns_ns": ["ns1.other.net"], "dns_mx": [""]},  # MX 0 . : no mail
+        {"fuzzer": "omission", "domain": "exampl.com", "dns_ns": ["ns1.other.net"], "dns_mx": ["!ServFail"]},
+    ]
+    inv = Pipeline(sources=[Dnstwist(runner=Recorder(json.dumps(rows)), which=lambda _: "dnstwist")]).run([D])
+
+    assert inv.lookalikes["examp1e.com"].mx == {"mx.examp1e.com"}
+    assert inv.lookalikes["examp1e.com"].ns == {"ns1.parkingcrew.net"}
+    assert inv.lookalikes["examplea.com"].mx == set()
+    assert inv.lookalikes["exampl.com"].mx == set()

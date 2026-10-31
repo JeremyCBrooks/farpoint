@@ -75,7 +75,10 @@ def test_json_report_includes_lookalikes_and_errors(tmp_path):
     report = json.loads((tmp_path / "assets.json").read_text())
 
     assert report["domains"] == ["example.com"]
-    assert [without_seen(r) for r in report["lookalikes"]] == [{"domain": "examp1e.com", "ips": ["198.51.100.1"], "sources": ["dnstwist"]}]
+    assert [without_seen(r) for r in report["lookalikes"]] == [
+        {"domain": "examp1e.com", "ips": ["198.51.100.1"], "current_ips": ["198.51.100.1"], "mx": [], "ns": [], "sources": ["dnstwist"],
+         "registered_on": None, "registrar": None, "registration_checked": None, "last_certificate": None}
+    ]
     assert report["errors"] == [{"source": "hackertarget", "target": "example.com", "message": "SourceFailure: API count exceeded"}]
     assert [h["hostname"] for h in report["hosts"]] == ["example.com", "old.example.com", "www.example.com"]
 
@@ -221,3 +224,45 @@ def test_block_page_addresses_recorded_by_earlier_runs_are_dropped_on_merge():
     merged = merge_reports(prior, run_report(run_of("example.com", Observation("dnstwist", "examp1e.com", lookalike=True))), "T2")
 
     assert merged["lookalikes"][0]["ips"] == ["198.51.100.9"]
+
+
+def test_a_lookalike_reflects_the_latest_run_that_saw_it():
+    def run_with(*observations):
+        inv = Inventory(["example.com"])
+        for obs in observations:
+            inv.add(obs)
+        return run_report(inv)
+
+    first = merge_reports(None, run_with(Observation("dnstwist", "examp1e.com", "192.0.2.1", lookalike=True, mx=("mx.examp1e.com",), ns=("ns1.host.net",))), "T1")
+    second = merge_reports(first, run_with(Observation("dnstwist", "examp1e.com", lookalike=True, ns=("ns1.host.net",))), "T2")
+    row = second["lookalikes"][0]
+    assert row["ips"] == ["192.0.2.1"]  # history kept
+    assert (row["current_ips"], row["mx"], row["ns"]) == ([], [], ["ns1.host.net"])  # but capability is the latest look
+
+    third = merge_reports(second, run_with(), "T3")  # not seen this run (dnstwist missing): keep the last look
+    assert without_seen(third["lookalikes"][0]) == without_seen(row)
+
+
+def test_the_block_list_and_lookalike_columns_come_from_the_findings(tmp_path):
+    from farpoint.output import _write_all
+
+    report = merge_reports(None, run_report(Inventory(["example.com"])), "T1")
+    report["lookalikes"] = [
+        {"domain": d, "ips": ips, "current_ips": ips, "mx": mx, "ns": [], "sources": ["dnstwist"], "registered_on": "2026-09-02"}
+        for d, ips, mx in (("b-parked.com", ["192.0.2.2"], []), ("z-ready.com", ["192.0.2.1"], ["mx.z-ready.com"]), ("a-ready.com", [], ["mx.a.com"]), ("idle.com", [], []))
+    ]
+    _write_all(tmp_path, report, 0o644)
+    assert not (tmp_path / "phishing-block.txt").exists()  # only once --assess has run
+
+    report["findings"] = [
+        {"id": f"{k}|{d}", "level": lvl, "kind": k, "target": d, "detail": "", "evidence": []}
+        for lvl, k, d in (("high", "lookalike-ready", "z-ready.com"), ("medium", "lookalike-parked", "b-parked.com"), ("high", "lookalike-ready", "a-ready.com"))
+    ]
+    _write_all(tmp_path, report, 0o644)
+
+    assert (tmp_path / "phishing-block.txt").read_text() == "a-ready.com\nz-ready.com\nb-parked.com\n"
+    rows = {r["domain"]: r for r in read_csv(tmp_path / "lookalikes.csv")}
+    assert (rows["z-ready.com"]["capable"], rows["z-ready.com"]["flagged"]) == ("mail web", "ready")
+    assert (rows["b-parked.com"]["capable"], rows["b-parked.com"]["flagged"]) == ("web", "parked")
+    assert (rows["idle.com"]["capable"], rows["idle.com"]["flagged"]) == ("", "")
+    assert rows["a-ready.com"]["registered_on"] == "2026-09-02"

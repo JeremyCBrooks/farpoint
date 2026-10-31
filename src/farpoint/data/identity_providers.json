@@ -1,0 +1,13 @@
+{
+  "_comment": "Identity providers Microsoft 365 domains federate to, by the registered domain of the sign-in URL's host. A federated domain whose sign-in URL has an /adfs/ path is self-hosted ADFS whatever its host; one matching none of these is recorded as 'other' (no finding).",
+  "providers": [
+    {"name": "Okta", "domains": ["okta.com", "oktapreview.com", "okta-emea.com"]},
+    {"name": "Ping Identity", "domains": ["pingone.com", "pingidentity.com", "pingone.eu"]},
+    {"name": "OneLogin", "domains": ["onelogin.com"]},
+    {"name": "Duo", "domains": ["duosecurity.com"]},
+    {"name": "Google", "domains": ["google.com"]},
+    {"name": "CyberArk", "domains": ["cyberark.cloud", "idaptive.app"]},
+    {"name": "JumpCloud", "domains": ["jumpcloud.com"]},
+    {"name": "Auth0", "domains": ["auth0.com"]}
+  ]
+}

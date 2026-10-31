@@ -251,3 +251,17 @@ def test_a_null_mx_is_no_shared_mail_host():
     profiles = {n: Profile.of(net, n) for n in ("example.de", "example.com")}
     assert profiles["example.de"].mx == frozenset()
     assert tie("example.de", "example.com", profiles, {"example.com"}) is None
+
+
+def test_an_untied_variant_keeps_its_mail_and_nameservers_as_a_lookalike(monkeypatch):
+    from farpoint import pipeline
+
+    monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: SUFFIXES)
+    net = FakeNet(zones={
+        "example.com": {"NS": ["ns1.example.com"], "MX": ["mx.example.com"]},
+        "example.io": {"NS": ["ns.parking.net"], "MX": ["mx.parking.net"], "A": ["198.51.100.9"]},
+    })
+    inv, _ = run(net)
+
+    assert inv.lookalikes["example.io"].mx == {"mx.parking.net"}
+    assert inv.lookalikes["example.io"].ns == {"ns.parking.net"}

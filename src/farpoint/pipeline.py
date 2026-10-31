@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 from collections import Counter
+from datetime import date, timedelta
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from farpoint.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY,
 from farpoint.posture import Dns, assess_domain, check_mx, hosted
 from farpoint.probe import Prober
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
+from farpoint.identity import SignIn, classify
+from farpoint.lookalikes import RECENT_DAYS, LookalikeConfig
 from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
 from farpoint.related import TIERS as RELATED_TIERS
 from farpoint.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
@@ -55,6 +58,8 @@ class Pipeline:
     prober: Prober | None = None
     dns: Dns | None = None  # records()/txt() for posture and dangling-CNAME checks
     rdap_domain: Callable[[str], Mapping] | None = None  # a registered domain's RDAP record
+    sign_in: SignIn | None = None  # how each scan domain signs in to Microsoft (with `tenants`)
+    lookalikes: LookalikeConfig | None = None  # registration and certificate lookups for lookalikes that can mail or serve
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -76,6 +81,8 @@ class Pipeline:
                     self._guess(inv)
             if self.enrichers:
                 self._enrich(inv)
+            if self.lookalikes:
+                self._lookalikes(inv)
             if self.fingerprint and self.prober and self.dns and self.lookup:
                 self._fingerprint(inv)
         except KeyboardInterrupt:
@@ -251,14 +258,17 @@ class Pipeline:
                 (tier, evidence), domain = max(ties, key=lambda td: RELATED_TIERS.index(td[0][0]))
                 _record_related(inv, variant, domain, tier, evidence)
             elif variant in profiles:
-                for ip in sorted(profiles[variant].a) or [None]:
-                    inv.add(Observation("tld-swap", variant, ip, lookalike=True))
+                profile = profiles[variant]
+                for ip in sorted(profile.a) or [None]:
+                    inv.add(Observation("tld-swap", variant, ip, lookalike=True, mx=tuple(profile.mx), ns=tuple(profile.ns)))
         log.info("related: %d domains", len(inv.related))
 
     def _tenants(self, inv: Inventory) -> None:
         """Tenant patterns from the domains' own TXT/SPF records, their CNAMEs and the bundled table,
         strongest tie first, each checked with random names and then tried, within the budget."""
         config = self.tenants
+        if self.sign_in:
+            self._sign_in(inv)
         txt: dict[str, list[str]] = {}
         for (_, domain), strings in self._fan_out(inv, {("tenants-txt", d): (lambda d=d: self.txt(d)) for d in inv.domains}):
             txt[domain] = strings
@@ -311,6 +321,28 @@ class Pipeline:
             if verified or (bare and tie == "records"):
                 _record_tenant(inv, name, probe.vendor, domain, tie, evidence, verified, res)
         log.info("tenants: %d found", len(inv.tenants))
+
+    def _sign_in(self, inv: Inventory) -> None:
+        """Each scan domain's Microsoft sign-in (farpoint.identity). A self-hosted sign-in server under
+        the scan domains joins the inventory, so later stages see it."""
+        sign_in = self.sign_in
+
+        def look(domain: str) -> tuple[dict, Exception | None]:
+            realm = sign_in.realm(domain)
+            try:
+                return classify(domain, realm, sign_in.openid(domain)), None
+            except Exception as exc:  # the tenant ID is extra: losing it must not lose the sign-in answer
+                return classify(domain, realm, None), exc
+
+        jobs = {("entra", d): (lambda d=d: look(d)) for d in inv.domains}
+        known = set(inv.hosts)
+        for (_, domain), (row, exc) in self._fan_out(inv, jobs):
+            inv.identity[domain] = row
+            if exc is not None:
+                _record_failure(inv, "entra-tenant", domain, exc)
+            if (host := row["sign_in_host"]) and inv.scope_of(host):
+                inv.add(Observation("entra", host))
+        self._resolve(inv, skip=known)
 
     def _guess(self, inv: Inventory) -> None:
         """Rounds of: learn the naming taxonomy from everything known, test the best untried candidates
@@ -462,6 +494,34 @@ class Pipeline:
             inv.enrich(ip, details)
             for hostname in details.hostnames:
                 inv.add(Observation(name, hostname, ip))
+
+    def _lookalikes(self, inv: Inventory) -> None:
+        """When each lookalike that can handle mail or serve a site was registered, and for recent ones
+        the newest certificate (farpoint.lookalikes). Registries and crt.sh only."""
+        config = self.lookalikes
+        wanted = sorted(d for d, r in inv.lookalikes.items() if (r.mx or r.ips) and d not in config.fresh)
+        done, failed, total = [0], [0], [len(wanted)]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("lookalikes", done[0], total[0], failed[0])
+
+        self.reporter.phase("lookalikes", 0, total[0])
+        if self.dns and wanted:  # the organisation's own NS and MX: a lookalike sharing them is its own
+            own = {("scan-dns", d): (lambda d=d: {"domain": d, "ns": self.dns.records(d, "NS") or [], "mx": self.dns.records(d, "MX") or []}) for d in inv.domains}
+            for (_, domain), row in self._fan_out(inv, own):
+                inv.scan_dns[domain] = row
+        jobs = {("rdap-domain", d): (lambda d=d: config.lookups.registration(d)) for d in wanted}
+        recent = (date.today() - timedelta(days=RECENT_DAYS)).isoformat()
+        for (_, domain), reg in self._fan_out(inv, jobs, on_done=tick):
+            record = inv.lookalikes[domain]
+            record.registration, record.checked = reg, True
+        new = [d for d in wanted if (inv.lookalikes[d].registration or {}).get("created") and inv.lookalikes[d].registration["created"] >= recent]
+        total[0] += len(new)
+        jobs = {("crtsh-certificate", d): (lambda d=d: config.lookups.last_certificate(d)) for d in new}
+        for (_, domain), started in self._fan_out(inv, jobs, on_done=tick):
+            inv.lookalikes[domain].last_certificate = started
 
     def _fingerprint(self, inv: Inventory) -> None:
         """Sweep each live host's address for open ports, ask each open port who it is, check every

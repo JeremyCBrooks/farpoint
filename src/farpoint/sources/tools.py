@@ -71,5 +71,6 @@ class Dnstwist(CommandSource):
             if row.get("fuzzer") == "*original":
                 continue
             ips = row.get("dns_a", []) + row.get("dns_aaaa", [])
+            mx, ns = tuple(row.get("dns_mx", [])), tuple(row.get("dns_ns", []))
             for ip in ips or [None]:
-                yield Observation(self.name, row["domain"], ip, lookalike=True)
+                yield Observation(self.name, row["domain"], ip, lookalike=True, mx=mx, ns=ns)

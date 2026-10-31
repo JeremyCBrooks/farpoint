@@ -1,0 +1,82 @@
+{
+  "_comment": "Domain parking services and registrars' default records. A lookalike whose every nameserver and mail host is under one of these domains is parked: on the block list, but called out at lower severity than one with its own mail or website. Don't add hosting or mail that real sites also use (GoDaddy's domaincontrol.com and secureserver.net).",
+  "services": [
+    {
+      "name": "ParkingCrew",
+      "domains": [
+        "parkingcrew.net"
+      ]
+    },
+    {
+      "name": "Sedo",
+      "domains": [
+        "sedoparking.com"
+      ]
+    },
+    {
+      "name": "Bodis",
+      "domains": [
+        "bodis.com"
+      ]
+    },
+    {
+      "name": "Above.com",
+      "domains": [
+        "above.com"
+      ]
+    },
+    {
+      "name": "Afternic",
+      "domains": [
+        "afternic.com"
+      ]
+    },
+    {
+      "name": "Dan.com",
+      "domains": [
+        "dan.com",
+        "undeveloped.com"
+      ]
+    },
+    {
+      "name": "Namecheap (registrar defaults)",
+      "domains": [
+        "registrar-servers.com"
+      ]
+    },
+    {
+      "name": "Dynadot",
+      "domains": [
+        "dyna-ns.net"
+      ]
+    },
+    {
+      "name": "Uniregistry",
+      "domains": [
+        "uniregistrymarket.link"
+      ]
+    }
+  ],
+  "_shared_comment": "Nameservers a registrar or DNS host gives every customer by default: two domains sharing them have nothing else in common, so sharing them is no sign the same owner runs a lookalike.",
+  "shared_nameservers": [
+    "registrar-servers.com",
+    "domaincontrol.com",
+    "googledomains.com",
+    "name-services.com",
+    "dreamhost.com",
+    "bluehost.com",
+    "hostgator.com",
+    "ionos.com",
+    "ui-dns.com",
+    "ui-dns.de",
+    "ui-dns.org",
+    "ui-dns.biz",
+    "porkbun.com",
+    "dynadot.com",
+    "hover.com",
+    "gandi.net",
+    "namebrightdns.com",
+    "wixdns.net",
+    "squarespacedns.com"
+  ]
+}

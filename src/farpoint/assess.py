@@ -22,9 +22,11 @@ import httpx
 
 from farpoint import runtime
 from farpoint.fingerprint import end_of_life, shared_address
+from farpoint.lookalikes import RECENT_DAYS, capable, parking_service, shared_nameservers
 from farpoint.names import in_scope
 from farpoint.sources.base import HttpSource
 from farpoint.suffixes import registered
+from farpoint.tenants import named_after, org_tokens
 
 LEVELS = ("high", "medium", "low")
 CVE_TTL_DAYS = 7
@@ -237,6 +239,14 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
             out.extend(_seen([_finding("low", "dangling-cname", d["hostname"], d["reason"] + ": broken, but nothing known to make it claimable")], d))
     for p in report.get("posture", []):
         out.extend(_seen(_posture_findings(p, today, tenant_names), p))
+    out.extend(_lookalike_findings(report, today))
+    adfs: dict[str, list[Mapping]] = {}  # sign-in host -> the scan domains federated to it
+    for row in report.get("identity", []):
+        if row.get("provider") == "adfs" and row.get("sign_in_host"):
+            adfs.setdefault(row["sign_in_host"], []).append(row)
+    for host, rows in sorted(adfs.items()):
+        detail = "sign-in is federated to a self-hosted ADFS server: a password-spray target outside Entra's lockout protection, and a Golden SAML target if its signing key is stolen"
+        out.extend(_seen([_finding("medium", "self-hosted-federation", host, detail, sorted(r["domain"] for r in rows))], *rows))
     order = {level: i for i, level in enumerate(LEVELS)}
     return sorted(out, key=lambda f: (order[f["level"]], f["kind"], f["target"]))
 
@@ -399,6 +409,43 @@ def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str], tena
         if d in tenant_names:  # whoever holds its DNS can point its mail anywhere, and the tenant still accepts it as the organisation's
             level, detail = "high", detail + "; it is still listed in the organisation's Microsoft 365 tenant"
         out.extend(_seen([_finding(level, "parked-domain", d, detail, sorted(r["endpoint"] for r in rows))], *rows))
+    return out
+
+
+def _lookalike_findings(report: Mapping, today: date) -> list[dict]:
+    """Recently registered lookalikes that can handle mail or serve a site: candidates to block at the
+    mail gateway. Unknown dates, old registrations and the organisation's own variants never count."""
+    domains = report.get("domains", [])
+    own = set(domains) | {r["domain"] for r in report.get("related", [])}
+    tokens = org_tokens(domains)
+    scan_dns = [*report.get("posture", []), *report.get("scan_dns", [])]  # the scan domains' own NS and MX
+    if set(domains) - {p["domain"] for p in scan_dns}:
+        return []  # a scan domain's own DNS is unknown, so its own variants can't be told from others': judge none
+    own_ns = [set(p["ns"]) for p in scan_dns if p.get("ns") and not shared_nameservers(p["ns"])]
+    own_mx = {m for p in scan_dns for m in p.get("mx", []) if named_after(m, tokens) or registered(m) in own}
+
+    def ours(row: Mapping) -> bool:
+        # A mail host named after the organisation counts only when the organisation uses it too:
+        # Microsoft 365 names anyone's (example-nl.mail.protection.outlook.com) after their domain.
+        return (row["domain"] in own or any(registered(h) in own for h in [*row.get("mx", []), *row.get("ns", [])])
+                or bool(own_mx & set(row.get("mx", []))) or set(row.get("ns", [])) in own_ns)
+
+    recent = (today - timedelta(days=RECENT_DAYS)).isoformat()
+    out = []
+    for row in report.get("lookalikes", []):
+        uses, created = capable(row), row.get("registered_on")
+        if not uses or not created or created < recent or ours(row):
+            continue
+        evidence = [f"registered {created}" + (f" with {row['registrar']}" if row.get("registrar") else ""), *row.get("mx", []), *row.get("current_ips", [])]
+        if row.get("last_certificate"):
+            evidence.append(f"newest certificate from {row['last_certificate']}")
+        service = parking_service([*row.get("mx", []), *row.get("ns", [])])
+        if service:
+            finding = _finding("medium", "lookalike-parked", row["domain"], f"registered {created} and parked at {service}: likely a speculator, but it can start sending mail at any time", evidence)
+        else:
+            what = " and ".join({"mail": "send and receive mail", "web": "serve a website"}[u] for u in uses)
+            finding = _finding("high", "lookalike-ready", row["domain"], f"registered {created} and set up to {what}: block it at the mail gateway", evidence)
+        out.extend(_seen([finding], row))
     return out
 
 

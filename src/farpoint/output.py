@@ -139,12 +139,14 @@ def now_stamp() -> str:
 _ROW_LISTS = {
     "hosts": ("hostname", ("ips", "cnames", "sources")),
     "ips": ("ip", ("ports", "vulns", "hostnames", "sources", "tags", "open_ports")),
-    "lookalikes": ("domain", ("ips", "sources")),
+    "lookalikes": ("domain", ("ips", "current_ips", "mx", "ns", "sources")),
     "tenants": ("tenant", ("evidence", "ips", "cnames", "hosts")),
     "related": ("domain", ("evidence",)),
     "fingerprints": ("endpoint", ("tech", "signals", "cookies")),
     "posture": ("domain", ("mx", "ns")),
     "dangling": ("hostname", ()),
+    "identity": ("domain", ()),
+    "scan_dns": ("domain", ("ns", "mx")),
     "findings": ("id", ("evidence",)),
     "vulns": ("cpe", ("cves",)),
 }
@@ -169,7 +171,7 @@ def _validate(report) -> None:
                 raise ValueError(f"{where} has no '{key}'")
             if any(not isinstance(row.get(f, []), list) for f in lists):
                 raise ValueError(f"{where} has a non-list field")
-            for ip in [row[key]] if field == "ips" else row.get("ips", []):
+            for ip in [row[key]] if field == "ips" else [*row.get("ips", []), *row.get("current_ips", [])]:
                 ipaddress.ip_address(ip)  # ValueError names the bad address
 
 
@@ -248,8 +250,14 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
             **({"tags": _union(old.get("tags", []), new.get("tags", []))} if old.get("tags") or new.get("tags") else {}),
         }
 
-    def lookalike(old, new):
-        return {"ips": _ips(set(old.get("ips", [])) | set(new["ips"])), "sources": _union(old.get("sources", []), new["sources"])}
+    def lookalike(old, new):  # addresses accumulate; what it can do now is this run's look
+        looked_up = new.get("registration_checked") == stamp  # else keep the last lookup's answer
+        return {
+            "ips": _ips(set(old.get("ips", [])) | set(new["ips"])),
+            "sources": _union(old.get("sources", []), new["sources"]),
+            **({"last_certificate": new.get("last_certificate") or old.get("last_certificate")} if looked_up else
+               {f: old.get(f) for f in ("registered_on", "registrar", "registration_checked", "last_certificate")}),
+        }
 
     def tenant(old, new):
         stronger = max(old, new, key=lambda row: _TIES.index(row.get("tie")) if row.get("tie") in _TIES else -1)
@@ -263,7 +271,8 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
 
     hosts, new_hosts = _merge_rows(prior.get("hosts", []), current["hosts"], "hostname", host, stamp, prior_stamp)
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
-    lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), current["lookalikes"], "domain", lookalike, stamp, prior_stamp)
+    looked_up = [{**r, "registration_checked": stamp if r.get("registration_checked") is True else None} for r in current["lookalikes"]]
+    lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), looked_up, "domain", lookalike, stamp, prior_stamp)
     def related(old, new):  # this run looked again: its verdict replaces the old one
         return {"related_to": new["related_to"], "tie": new["tie"], "evidence": new["evidence"]}
 
@@ -286,6 +295,8 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     )
     before = {r["domain"]: r for r in prior.get("posture", [])}
     posture, _ = _snapshot_rows(prior.get("posture", []), [_keep_axfr(r, before.get(r["domain"])) for r in current.get("posture", [])], "domain", stamp, prior_stamp)
+    identity, _ = _snapshot_rows(prior.get("identity", []), current.get("identity", []), "domain", stamp, prior_stamp)
+    scan_dns, _ = _snapshot_rows(prior.get("scan_dns", []), current.get("scan_dns", []), "domain", stamp, prior_stamp)
     dangling_now = {r["hostname"] for r in current.get("dangling", [])}
     dangling, _ = _snapshot_rows(
         prior.get("dangling", []), current.get("dangling", []), "hostname", stamp, prior_stamp,
@@ -316,6 +327,8 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         **({"fingerprints": sorted(fingerprints, key=lambda r: (r["hostname"], r.get("port", 0)))} if fingerprints else {}),
         **({"posture": sorted(posture, key=lambda r: r["domain"])} if posture else {}),
         **({"dangling": sorted(dangling, key=lambda r: r["hostname"])} if dangling else {}),
+        **({"identity": sorted(identity, key=lambda r: r["domain"])} if identity else {}),
+        **({"scan_dns": sorted(scan_dns, key=lambda r: r["domain"])} if scan_dns else {}),
         **({"findings": prior["findings"]} if prior.get("findings") else {}),  # re-derived by --assess, kept until then
         **({"vulns": prior["vulns"]} if prior.get("vulns") else {}),
         **({"assessed_at": prior["assessed_at"]} if prior.get("assessed_at") else {}),
@@ -400,7 +413,11 @@ def run_report(inv: Inventory) -> dict:
         "hosts": _host_rows(inv),
         "ips": _ip_rows(inv),
         "lookalikes": [
-            {"domain": r.domain, "ips": _ips(r.ips), "sources": sorted(r.sources)}
+            {
+                "domain": r.domain, "ips": _ips(r.ips), "current_ips": _ips(r.ips), "mx": sorted(r.mx), "ns": sorted(r.ns), "sources": sorted(r.sources),
+                "registered_on": (r.registration or {}).get("created"), "registrar": (r.registration or {}).get("registrar"),
+                "registration_checked": r.checked, "last_certificate": r.last_certificate,
+            }
             for r in sorted(inv.lookalikes.values(), key=lambda r: r.domain)
         ],
         "tenants": _tenant_rows(inv),
@@ -412,6 +429,8 @@ def run_report(inv: Inventory) -> dict:
         **({"posture": [inv.posture[d] for d in sorted(inv.posture)]} if inv.posture else {}),
         **({"dangling": [{"hostname": h, **d} for h, d in sorted(inv.dangling.items())]} if inv.dangling else {}),
         **({"dangling_checked": sorted(inv.dangling_checked)} if inv.dangling_checked else {}),
+        **({"identity": [inv.identity[d] for d in sorted(inv.identity)]} if inv.identity else {}),
+        **({"scan_dns": [inv.scan_dns[d] for d in sorted(inv.scan_dns)]} if inv.scan_dns else {}),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
         "interrupted": inv.interrupted,
@@ -467,7 +486,11 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     write("ips.txt", "".join(f"{r['ip']}\n" for r in report["ips"]))
     write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
     write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "open_ports", "tags", "vulns", "hostnames", "sources", *seen]))
-    write("lookalikes.csv", _csv_text(report["lookalikes"], ["domain", "ips", "sources", *seen]))
+    from farpoint.lookalikes import capable
+
+    flagged = {f["target"]: f["kind"].removeprefix("lookalike-") for f in report.get("findings", []) if f["kind"] in ("lookalike-ready", "lookalike-parked")}
+    lookalike_rows = [{**r, "capable": capable(r), "flagged": flagged.get(r["domain"])} for r in report["lookalikes"]]
+    write("lookalikes.csv", _csv_text(lookalike_rows, ["domain", "ips", "mx", "registered_on", "last_certificate", "capable", "flagged", "sources", *seen]))
     if report.get("related"):  # only once --related has found some
         write("related.csv", _csv_text(report["related"], ["domain", "related_to", "tie", "evidence", *seen]))
     if report.get("tenants"):  # only once --tenants has found some
@@ -477,9 +500,13 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
 
         write("fingerprints.csv", _csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
         write("technologies.csv", _csv_text(technologies(report), ["category", "technology", "version", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
+    if report.get("identity"):  # only once --tenants has run
+        write("identity.csv", _csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
     if report.get("posture"):
         write("posture.csv", _csv_text(_posture_csv_rows(report), [*POSTURE_FIELDS, *seen]))
     if "findings" in report:  # only once --assess has run
+        block = sorted(d for d, k in flagged.items() if k == "ready") + sorted(d for d, k in flagged.items() if k == "parked")
+        write("phishing-block.txt", "".join(f"{d}\n" for d in block))
         write("findings.csv", _csv_text(report["findings"], ["level", "kind", "target", "detail", "evidence", *seen]))
 
 

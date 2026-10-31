@@ -17,6 +17,8 @@ class Observation:
     hostname: str
     ip: str | None = None
     lookalike: bool = False
+    mx: tuple[str, ...] = ()  # a lookalike's mail hosts (only with lookalike=True)
+    ns: tuple[str, ...] = ()  # a lookalike's nameservers (only with lookalike=True)
 
 
 @dataclass
@@ -60,6 +62,11 @@ class LookalikeRecord:
     domain: str
     ips: set[str] = field(default_factory=set)
     sources: set[str] = field(default_factory=set)
+    mx: set[str] = field(default_factory=set)  # no null MX ("MX 0 ."): that means no mail
+    ns: set[str] = field(default_factory=set)
+    registration: dict | None = None  # posture.registration() from RDAP, when looked up this run
+    checked: bool = False  # looked up at the registry this run (registration None then: no record)
+    last_certificate: str | None = None  # when the newest certificate in CT starts (YYYY-MM-DD)
 
 
 @dataclass
@@ -158,6 +165,8 @@ class Inventory:
         self.services: dict[str, ServiceRecord] = {}  # hostname:port -> what --fingerprint found there
         self.closed: set[str] = set()  # hostname:port pairs --fingerprint found closed this run (their old rows go)
         self.posture: dict[str, dict] = {}  # scan domain -> mail/DNS/registration facts (farpoint.posture)
+        self.scan_dns: dict[str, dict] = {}  # scan domain -> its own NS and MX, to tell its lookalikes from others'
+        self.identity: dict[str, dict] = {}  # scan domain -> how it signs in to Microsoft (farpoint.identity)
         self.dangling: dict[str, dict] = {}  # hostname -> {"reason", "claimable"}: a CNAME into nothing
         self.dangling_checked: set[str] = set()  # hostnames checked for that this run
         self.errors: list[SourceError] = []
@@ -177,6 +186,8 @@ class Inventory:
             rec.sources.add(obs.source)
             if ip:
                 rec.ips.add(ip)
+            rec.mx.update(h for raw in obs.mx if (h := normalize_hostname(raw)))  # drops "" (null MX) and "!ServFail"
+            rec.ns.update(h for raw in obs.ns if (h := normalize_hostname(raw)))
             return
         if self.scope_of(hostname) is None:
             return

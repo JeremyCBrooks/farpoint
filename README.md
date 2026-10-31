@@ -61,9 +61,9 @@ A scan runs these phases in order. Each phase works on what the earlier ones fou
 | Discovery | Collects hostnames from certificate logs, passive DNS, archives and other datasets | The data sources | always |
 | Related domains | Finds other registered domains the organisation owns | Registries, the domains found, Microsoft | `--related` |
 | Resolution | Looks up every name's addresses and CNAMEs | Your DNS resolver | always (`--no-resolve` skips) |
-| Tenants | Finds the organisation's accounts on SaaS and cloud platforms | The platforms' nameservers | `--tenants` |
+| Tenants | Finds the organisation's accounts on SaaS and cloud platforms, and how each domain signs in to Microsoft | The platforms' nameservers, Microsoft | `--tenants` |
 | Guessing | Predicts unseen names from the naming patterns found and tests them in DNS | The domain's nameservers | `--guess` |
-| Enrichment | Adds each address's owner, network, and Shodan's port and CVE history | RDAP registries, Shodan | always (`--no-enrich` skips) |
+| Enrichment | Adds each address's owner, network, and Shodan's port and CVE history; when each lookalike that can handle mail or serve a site was registered | RDAP registries, Shodan, crt.sh | always (`--no-enrich` skips) |
 | Fingerprinting | Identifies what each live host runs, and each domain's mail and DNS posture | **The organisation's hosts** | `--fingerprint` |
 | Assessment | Turns the inventory into ranked findings and matches versions to CVEs | NVD, CISA | `--assess` |
 
@@ -81,11 +81,11 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--exclude LIST` | Skip these discovery sources. `dnstwist` is the slowest (several minutes). |
 | `--list-sources` | Show every source and whether it is usable here (key or binary present). |
 | `--no-resolve` | Skip DNS resolution. Cannot be combined with `--guess`, `--tenants`, `--related` or `--fingerprint`. |
-| `--no-enrich` | Skip the RDAP and Shodan InternetDB lookups for addresses. |
+| `--no-enrich` | Skip the RDAP and Shodan InternetDB lookups for addresses, and the registration and certificate lookups for lookalikes. |
 | `--nameserver IP` | DNS resolver to use instead of the system's. Repeat for several. |
 | `--related` | Look for other domains the organisation owns. **Not passive.** |
 | `--related-rate N` | Start at most N `--related` lookups a second (default: no limit). Needs `--related`. |
-| `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms. **Not passive.** |
+| `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms, and ask Microsoft how each domain signs in. **Not passive.** |
 | `--tenant-budget N` | DNS lookups `--tenants` may make in total (default 800). |
 | `--guess` | Predict unseen hostnames and test them in DNS. **Not passive.** |
 | `--guess-budget N` | DNS lookups `--guess` may make per domain (default 2000). |
@@ -168,8 +168,41 @@ SPF), `cname` (its hosts point there), or `name` (a name match only, which may b
 organisation). `verified=no` means the platform answers any name, so DNS can't confirm the tenant
 exists.
 
-**Not passive:** the platforms' nameservers see the lookups, and the organisation's nameservers see
-one TXT query per domain.
+It also asks Microsoft how each scan domain signs in (`identity.csv`): `managed` (passwords in Entra),
+`federated` (to the identity provider in `provider` and `sign_in_host`), or `none` (not in Microsoft),
+with the tenant ID and region. That's two requests per domain to `login.microsoftonline.com`, with a
+made-up username, never a real one. Federation to a self-hosted ADFS server (a sign-in URL under
+`/adfs/`) is a finding; a sign-in host under the scan domains joins the inventory. Identity providers
+are recognised from `src/farpoint/data/identity_providers.json`.
+
+**Not passive:** the platforms' nameservers and Microsoft's sign-in service see the lookups, and the
+organisation's nameservers see one TXT query per domain.
+
+## Lookalike triage
+
+Most registered lookalikes are someone else's business. To find the few worth blocking, enrichment
+looks up when each lookalike that has mail servers (MX) or an address was registered (RDAP), and for
+those registered within the last year, its newest certificate (crt.sh). Registration dates are
+reused for 30 days. MX and nameservers come from dnstwist and `--related`, which already look them up.
+Nothing is sent to the lookalikes' own servers. `--no-enrich` skips the lookups.
+
+With `--assess`, a lookalike registered within the last year that can handle mail or serve a site
+now is `lookalike-ready` (high). One whose every mail server and nameserver belongs to a parking
+service or a registrar's defaults (`src/farpoint/data/parking.json`) is `lookalike-parked` (medium):
+probably a speculator, but able to start sending mail at any time. Both go into `phishing-block.txt`,
+ready ones first, for the mail gateway. Review it before you block: a new, legitimate business with a
+similar name can still appear.
+
+Never flagged: a lookalike with no known registration date (many country registries don't publish
+one), one registered over a year ago, one that only had an address in an earlier scan, and the
+organisation's own variants: in `related.csv`, with mail servers or nameservers under its domains,
+on the same mail server as one of its domains (a host named after the organisation, not a provider's
+shared one), or on the same set of nameservers as one of its domains. The scan domains' own
+nameservers and mail servers are looked up for this (one query each, through your resolver).
+Registrars' and DNS hosts' default nameservers, which every customer shares, don't count
+(`shared_nameservers` in `src/farpoint/data/parking.json`). If a scan domain's own nameservers and
+mail servers couldn't be looked up, no lookalike is flagged, since its own variants can't be told
+apart; the error is in `assets.json`, and the next scan tries again.
 
 ## Guessing (`--guess`)
 
@@ -251,8 +284,8 @@ choosing a soft target, not by CVSS. Assessment sends nothing to the organisatio
 
 | Level | Examples |
 |---|---|
-| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; managed file transfer (MOVEit, GoAnywhere, Cleo, Axway, Kiteworks); Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register); a parked scan domain still listed in the organisation's Microsoft 365 tenant |
-| medium | self-signed or mismatched certificates, certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves), TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups, BGP open to the internet, a parked scan domain |
+| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; managed file transfer (MOVEit, GoAnywhere, Cleo, Axway, Kiteworks); Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register); a parked scan domain still listed in the organisation's Microsoft 365 tenant; a lookalike registered within the last year that can handle mail or serve a site (see Lookalike triage) |
+| medium | self-signed or mismatched certificates, certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves), TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups, BGP open to the internet, a parked scan domain, a recently registered lookalike that is only parked, sign-in federated to a self-hosted ADFS server |
 | low | missing HSTS, wildcard certificates covering the organisation's names (one finding per certificate), a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS), SPF at exactly 10 lookups, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
 
 Each product version fingerprinting identified is checked against NVD for CVEs and against CISA's
@@ -278,7 +311,9 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `hosts.txt`, `ips.txt` | Sorted plain lists, for piping into other tools |
 | `hosts.csv` | hostname, resolves, ips, cnames, sources |
 | `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), tags, vulns, hostnames, sources |
-| `lookalikes.csv` | Registered lookalike domains and their addresses |
+| `lookalikes.csv` | Registered lookalike domains: addresses, mail servers, registration date, newest certificate, `capable` (mail, web: what it can do now), `flagged` (ready, parked) |
+| `phishing-block.txt` | With `--assess`: the flagged lookalikes, one per line, ready ones first, for the mail gateway |
+| `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames |
 | `fingerprints.csv` | With `--fingerprint`: one row per open host and port: service, technologies, status, title, server, redirect, signals, certificate, TLS versions, banner, favicon hash, paths |

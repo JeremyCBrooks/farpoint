@@ -74,7 +74,7 @@ organisation's own hosts.
 flowchart LR
     subgraph P0["Passive: third parties only"]
         S1["Discovery sources<br/>CT logs, passive DNS,<br/>archives, Shodan, VT ..."]
-        S2["Enrichment<br/>RDAP, InternetDB"]
+        S2["Enrichment<br/>RDAP, InternetDB,<br/>crt.sh (lookalikes)"]
         S3["Assessment lookups<br/>NVD, CISA"]
     end
     subgraph P1["DNS: recursive resolver"]
@@ -82,7 +82,7 @@ flowchart LR
     end
     subgraph P2["Not passive: other parties' infrastructure"]
         S5["Related<br/>registries, variants, Microsoft"]
-        S6["Tenants<br/>platforms' nameservers"]
+        S6["Tenants<br/>platforms' nameservers,<br/>Microsoft sign-in"]
         S7["Guessing<br/>the domain's authoritative NS"]
     end
     subgraph P3["Not passive: the organisation's hosts"]
@@ -167,6 +167,8 @@ All network access sits behind small protocols, so the stage logic is tested off
 | `Enricher` | `enrich.InternetDb`, `enrich.Rdap` | enrichment |
 | `related.Probes` | `related.NetworkProbes` | related domains |
 | `probe.Prober` | `probe.NetworkProber` | fingerprinting, posture |
+| `lookalikes.LookalikeLookups` | `lookalikes.NetworkLookalikeLookups` (RDAP, crt.sh) | lookalike triage |
+| `identity.SignIn` | `identity.MicrosoftSignIn` | tenants (sign-in) |
 
 `cli.py` is the only place these are wired together.
 
@@ -182,6 +184,8 @@ All in `src/farpoint/`:
 | `sources/` | One class per discovery source, on `HttpSource` or `CommandSource` |
 | `resolve.py`, `enrich.py` | DNS resolution; RDAP and InternetDB |
 | `related.py`, `tenants.py`, `guess.py` | The discovery opt-ins |
+| `identity.py` | How each scan domain signs in to Microsoft |
+| `lookalikes.py` | Lookalike triage: registration and certificate lookups, parking services |
 | `corpus.py` | Builds the optional cross-organisation naming corpus for `guess.py` |
 | `probe.py` | The only code that connects to the organisation's hosts |
 | `fingerprint.py`, `posture.py` | What fingerprinting asks, and what the answers mean |
@@ -278,6 +282,17 @@ the host, never followed.
 5. **CNAME tenants.** Any out-of-scope CNAME target carrying the organisation's name
    (`example-files.vault.io`) is recorded as a tenant with tie `cname`.
 
+**Sign-in** (`identity.py`, `Pipeline._sign_in`, first in the stage). Each scan domain gets two
+requests to Microsoft: `getuserrealm.srf` with a random local part (never a real user), giving
+`Managed`, `Federated` (with the identity provider's sign-in URL) or `Unknown`; and the tenant's
+OpenID configuration, giving the tenant ID and region. A federated sign-in URL with an `/adfs/` path
+is self-hosted ADFS; otherwise the provider is named from `data/identity_providers.json` by the URL's
+registered domain, or `other`. A sign-in host under the scan domains joins the inventory and is
+resolved. If the sign-in lookup fails, the scan records no row for the domain (unknown, never `none`)
+and the inventory keeps the last one; if only the tenant lookup fails, the sign-in answer is kept
+without tenant ID and region, and the failure is recorded as `entra-tenant`. Rows describe the
+latest look (`identity.csv`).
+
 ### 5. Guessing (`--guess`)
 
 **Goal:** names no dataset has seen, predicted from how this organisation names things.
@@ -327,6 +342,16 @@ and cross-validates the optional corpus from organisation-validated certificates
 network, via the IANA bootstrap registries) and a Shodan InternetDB lookup (historical ports, CVEs,
 hostnames, tags such as `cdn`). In-scope hostnames InternetDB reports join the inventory. Enrichment
 runs after guessing so guessed hosts' addresses are covered.
+
+**Lookalike triage** (`lookalikes.py`, `Pipeline._lookalikes`). A lookalike's MX and nameservers come
+from dnstwist's output and, for TLD swaps, from `--related`'s own lookups; null MX (`MX 0 .`) and
+failed answers don't count. Each lookalike this scan saw with MX or an address gets an RDAP lookup at
+its registry (`rdap-domain`); one registered within `RECENT_DAYS` (365) also gets its newest
+certificate from crt.sh (`crtsh-certificate`). The scan domains' own NS and MX are looked up too
+(`scan-dns`), so assessment can tell the organisation's own lookalikes without `--fingerprint`. A registration date found within `RECHECK_DAYS` (30)
+isn't asked again (`fresh_registrations` reads them from `--out`); an unknown one is asked every scan.
+Merging: addresses accumulate in `ips`, but `current_ips`, `mx` and `ns` are the latest scan that saw
+the lookalike; a failed lookup keeps the last registration answer. `--no-enrich` skips it.
 
 ### 7. Fingerprinting (`--fingerprint`)
 
@@ -438,6 +463,20 @@ the save. It walks:
 - a certificate that lives 100 days or less is renewed by machine weeks ahead, so it is only
   "expiring" with 7 days left, when renewal has evidently failed
 - a check that failed produces no finding
+- a lookalike is `lookalike-ready` (high) when it was registered within 365 days of the assessment and
+  has MX or a current address; `lookalike-parked` (medium) when every MX host and nameserver it has
+  belongs to one service in `data/parking.json`. No finding when the date is unknown or older, when
+  the address is only historic, or when the lookalike is the organisation's: in `related`; MX or
+  nameservers under its or its related domains; an MX host a scan domain also uses that is named
+  after the organisation or under its domains (Microsoft 365 names every customer's MX after their own
+  domain, so a name match alone is no tie); or the same nameserver set as a scan domain, unless those
+  are defaults every customer of a registrar or DNS host shares (`shared_nameservers` in
+  `parking.json`). The scan domains' NS and MX come from posture or, without `--fingerprint`, from
+  the lookalike step's own lookup (`scan_dns` in `assets.json`). While any scan domain has neither,
+  no lookalike is judged: ownership is unknown, and unknown never produces a finding.
+  `phishing-block.txt` lists both kinds, ready first
+- federation to self-hosted ADFS is one medium `self-hosted-federation` finding per sign-in host;
+  managed, `none`, known providers and `other` produce nothing
 
 Each finding has a stable `id`. Because findings are re-derived from scratch each time, a fixed issue
 disappears; `merge_findings` only carries over `first_seen`. Each finding's `last_seen` is the
@@ -457,8 +496,8 @@ under a directory lock:
 
    | Kind | Rows | Rule |
    |---|---|---|
-   | Accumulating facts | hosts, IPs, lookalikes, tenants | sets unioned; `resolves` and owner take the latest answer |
-   | Latest look | fingerprints, posture, related | replaced when looked at again; a refused port removes its row; a timeout keeps it with its old `last_seen` |
+   | Accumulating facts | hosts, IPs, lookalikes, tenants | sets unioned; `resolves` and owner take the latest answer; a lookalike's `current_ips`, `mx` and `ns` are the latest scan that saw it, its registration the latest successful lookup |
+   | Latest look | fingerprints, posture, related, identity | replaced when looked at again; a refused port removes its row; a timeout keeps it with its old `last_seen` |
    | Judgments | findings | re-derived by each `--assess`; kept unchanged by a scan without it |
 
 2. runs the assessment's derivation on the merged report, if requested. If it raises, the scan is saved
@@ -517,6 +556,8 @@ by the lock, not the PID, since PIDs are reused.
 | `dkim_selectors.txt` | posture | the common DKIM selectors checked |
 | `dns_providers.json` | posture | managed DNS services that can't allow a zone transfer, so aren't asked |
 | `eol.json` | assessment | end-of-life dates by product and version |
+| `parking.json` | assessment | parking services and registrar defaults, by nameserver and MX domain |
+| `identity_providers.json` | tenants (sign-in) | identity providers by sign-in host domain |
 | `corpus.json` (optional, not bundled) | guessing | cross-organisation naming statistics |
 
 ### Testing
@@ -549,5 +590,8 @@ against real DNS, `example.com` and NVD.
   names and a `why`. Only list a service when its documentation shows customers can't open a zone
   transfer to the internet (no outbound transfers, or only to individually listed addresses): its
   nameservers aren't asked, so a wrong entry hides a finding.
+- **A parking service or identity provider:** add its domains to `data/parking.json` or
+  `data/identity_providers.json`. Only list a parking domain real sites don't also use for hosting or
+  mail: a wrong entry downgrades a ready lookalike to parked.
 - **A finding:** add it to `assess.derive` or one of its helpers. Keep it a pure function of the report,
   and raise nothing when the underlying check's answer is unknown.

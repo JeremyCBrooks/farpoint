@@ -395,3 +395,111 @@ def test_a_providers_wildcard_certificate_is_not_the_organisations_wildcard():
     theirs = {"not_after": "2027-06-01T00:00:00Z", "matches": False, "wildcard": True, "subject": "*.msappproxy.net"}
     report = {"fingerprints": [endpoint("apps.example.com", 443, tls=theirs)], "hosts": [{"hostname": "apps.example.com", "cnames": ["apps-acme.msappproxy.net"]}]}
     assert "wildcard-certificate" not in {f["kind"] for f in derive(report, today=TODAY)}
+
+
+def lookalike(domain, registered_on="2026-09-02", mx=(), current_ips=(), ns=("ns1.dnshost.net",), ips=None, **extra):
+    return {"domain": domain, "registered_on": registered_on, "mx": list(mx), "ns": list(ns), "current_ips": list(current_ips),
+            "ips": list(current_ips if ips is None else ips), "sources": ["dnstwist"], "last_seen": "2026-10-24T00:00:00Z", **extra}
+
+
+def lookalike_findings(report):
+    known = {"scan_dns": [{"domain": "example.com", "ns": ["ns1.dnshost-own.net"], "mx": []}]}  # the organisation's own DNS was looked up
+    return {f["target"]: f for f in derive({"domains": ["example.com"], **known, **report}, today=TODAY) if f["kind"].startswith("lookalike-")}
+
+
+def test_lookalikes_are_not_flagged_while_the_organisations_own_dns_is_unknown():
+    cloudflare = ["ada.ns.cloudflare.com", "bob.ns.cloudflare.com"]
+    report = {"domains": ["example.com", "example.org"], "lookalikes": [lookalike("examp1e.com", ns=cloudflare, current_ips=["192.0.2.1"])],
+              "scan_dns": [{"domain": "example.com", "ns": ["ns1.dnshost.net"], "mx": []}]}  # example.org's lookup failed
+
+    assert not [f for f in derive(report, today=TODAY) if f["kind"].startswith("lookalike-")]
+    report["posture"] = [{"domain": "example.org", "ns": cloudflare, "mx": []}]  # --fingerprint's posture answers it
+    assert not [f for f in derive(report, today=TODAY) if f["kind"].startswith("lookalike-")]  # and it's the organisation's own
+    report["posture"] = [{"domain": "example.org", "ns": [], "mx": []}]  # known: no nameservers at all
+    assert [f["target"] for f in derive(report, today=TODAY) if f["kind"].startswith("lookalike-")] == ["examp1e.com"]
+
+
+def test_a_recent_lookalike_that_can_send_mail_or_serve_a_site_is_ready():
+    found = lookalike_findings({"lookalikes": [
+        lookalike("examp1e.com", mx=["mx.mailer.net"], last_certificate="2026-09-03"),
+        lookalike("exarnple.com", current_ips=["198.51.100.4"]),
+    ]})
+
+    mail, web = found["examp1e.com"], found["exarnple.com"]
+    assert (mail["level"], mail["kind"]) == (web["level"], web["kind"]) == ("high", "lookalike-ready")
+    assert "registered 2026-09-02" in mail["detail"] and "mail" in mail["detail"]
+    assert "mx.mailer.net" in mail["evidence"] and any("2026-09-03" in e for e in mail["evidence"])
+    assert "website" in web["detail"] and "198.51.100.4" in web["evidence"]
+
+
+def test_old_unknown_or_incapable_lookalikes_are_not_flagged():
+    found = lookalike_findings({"lookalikes": [
+        lookalike("exampel.com", registered_on="2024-01-01", mx=["mx.exampel.com"]),  # an established business
+        lookalike("example.de", registered_on=None, mx=["mx.example.de"]),  # the registry doesn't say when
+        lookalike("gone.com", ips=["198.51.100.9"]),  # had a site once, has none now
+    ]})
+    assert found == {}
+
+
+def test_a_recent_parked_lookalike_is_on_the_list_at_lower_severity():
+    parked_ns = ["ns1.parkingcrew.net", "ns2.parkingcrew.net"]
+    found = lookalike_findings({"lookalikes": [
+        lookalike("examplle.com", ns=parked_ns, mx=["mx.parkingcrew.net"], current_ips=["185.53.177.10"]),
+        lookalike("exampel.com", ns=parked_ns, mx=["mx.mailer.net"]),  # someone set up their own mail
+    ]})
+    assert (found["examplle.com"]["level"], found["examplle.com"]["kind"]) == ("medium", "lookalike-parked")
+    assert "ParkingCrew" in found["examplle.com"]["detail"]
+    assert found["exampel.com"]["kind"] == "lookalike-ready"
+
+
+def test_the_organisations_own_lookalikes_are_never_flagged():
+    found = lookalike_findings({
+        "related": [{"domain": "example.de", "related_to": "example.com", "tie": "weak", "evidence": []}],
+        "posture": [{"domain": "example.com", "ns": ["ns-1.awsdns-1.org", "ns-2.awsdns-2.net"], "mx": ["example-com.mail.protection.outlook.com"]}],
+        "lookalikes": [
+            lookalike("example.de", mx=["mx.mailer.net"]),
+            lookalike("example.io", ns=["ns1.example.com"], current_ips=["192.0.2.1"]),
+            lookalike("example.fr", ns=["ns-2.awsdns-2.net", "ns-1.awsdns-1.org"], current_ips=["192.0.2.2"]),
+            lookalike("example.ch", mx=["example-com.mail.protection.outlook.com"]),  # the organisation's own mail host
+            lookalike("examp1e.com", mx=["aspmx.l.google.com"]),
+        ],
+    })
+    assert set(found) == {"examp1e.com"}
+
+
+def test_a_lookalike_on_the_same_mail_provider_is_still_flagged():
+    found = lookalike_findings({
+        "posture": [{"domain": "example.com", "ns": [], "mx": ["example-com.mail.protection.outlook.com"]}],
+        "lookalikes": [
+            lookalike("example.nl", mx=["example-nl.mail.protection.outlook.com"]),  # Microsoft 365 names it after whoever registered it
+            lookalike("example-login.com", mx=["example-login-com.mail.protection.outlook.com"]),
+        ],
+    })
+    assert set(found) == {"example.nl", "example-login.com"}
+
+
+def test_registrar_default_nameservers_shared_by_everyone_are_no_tie():
+    shared = ["dns1.registrar-servers.com", "dns2.registrar-servers.com"]
+    found = lookalike_findings({
+        "posture": [{"domain": "example.com", "ns": shared, "mx": []}],
+        "lookalikes": [lookalike("exampel.com", ns=shared, current_ips=["192.0.2.3"]), lookalike("exampie.com", ns=shared, current_ips=["192.0.2.4"])],
+    })
+    assert set(found) == {"exampel.com", "exampie.com"}
+
+
+def identity(domain, sign_in="federated", provider="adfs", host="sts.example.com"):
+    return {"domain": domain, "sign_in": sign_in, "provider": provider, "sign_in_host": host, "last_seen": "2026-10-24T00:00:00Z"}
+
+
+def test_federation_to_self_hosted_adfs_is_one_finding_per_host():
+    found = [f for f in derive({"identity": [identity("example.com"), identity("example.de")]}, today=TODAY) if f["kind"] == "self-hosted-federation"]
+
+    assert len(found) == 1
+    assert (found[0]["level"], found[0]["target"], found[0]["evidence"]) == ("medium", "sts.example.com", ["example.com", "example.de"])
+    assert "password-spray" in found[0]["detail"] and "Golden SAML" in found[0]["detail"]
+
+
+def test_other_sign_in_setups_are_not_findings():
+    rows = [identity("a.com", "managed", None, None), identity("b.com", "none", None, None), identity("c.com", provider="Okta", host="x.okta.com"),
+            identity("d.com", provider="other", host="sso.d.com"), identity("e.com", sign_in=None, provider=None, host=None)]
+    assert not [f for f in derive({"identity": rows}, today=TODAY) if f["kind"] == "self-hosted-federation"]

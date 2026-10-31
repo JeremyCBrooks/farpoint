@@ -18,6 +18,8 @@ from farpoint.assess import Kev, Nvd, assessed, lookup_vulns
 from farpoint.enrich import InternetDb, Rdap
 from farpoint.fingerprint import DEFAULT_PATHS, FingerprintConfig, parse_paths, parse_ports
 from farpoint.guess import GuessConfig
+from farpoint.identity import MicrosoftSignIn
+from farpoint.lookalikes import LookalikeConfig, NetworkLookalikeLookups, fresh_registrations
 from farpoint.names import parse_domains
 from farpoint.pipeline import Pipeline
 from farpoint.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
@@ -25,6 +27,7 @@ from farpoint.probe import NetworkProber, user_agent
 from farpoint.progress import LiveReporter, NullReporter
 from farpoint.resolve import DnsResolver
 from farpoint.sources import build_sources, select_sources
+from farpoint.sources.web import CrtSh
 from farpoint.related import NetworkProbes
 from farpoint.tenants import TenantConfig
 
@@ -39,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--only", default="", help="comma-separated sources to run (see --list-sources)")
     p.add_argument("--exclude", default="", help="comma-separated sources to skip")
     p.add_argument("--no-resolve", action="store_true", help="skip DNS resolution of discovered names")
-    p.add_argument("--no-enrich", action="store_true", help="skip InternetDB/RDAP lookups for discovered IPs")
+    p.add_argument("--no-enrich", action="store_true", help="skip InternetDB/RDAP lookups for discovered IPs, and the registration/certificate lookups for lookalikes")
     p.add_argument("--nameserver", action="append", help="DNS resolver to use (repeatable; default: system)")
     p.add_argument(
         "--guess",
@@ -55,8 +58,8 @@ def _parser() -> argparse.ArgumentParser:
         "--tenants",
         action="store_true",
         help="also look for the organisation's tenants on SaaS and cloud platforms (example.sharepoint.com), "
-        "chosen from the domains' TXT/SPF records, their CNAMEs and generic name patterns "
-        "(not passive: the platforms' nameservers see the lookups)",
+        "chosen from the domains' TXT/SPF records, their CNAMEs and generic name patterns; and how each domain signs in "
+        "to Microsoft (not passive: the platforms' nameservers and Microsoft's sign-in service see the lookups)",
     )
     p.add_argument(
         "--related",
@@ -243,12 +246,14 @@ def main(argv: list[str] | None = None) -> int:
         guess=_guess_config(args.guess_budget, prior_report, args.guess_rate) if args.guess else None,
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
+        sign_in=MicrosoftSignIn(http, retries=2) if args.tenants else None,
         related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
         related_rate=args.related_rate,
         fingerprint=fingerprint if args.fingerprint else None,
         prober=NetworkProber(engagement=args.engagement) if args.fingerprint else None,
         dns=resolver,
         rdap_domain=rdap.domain if args.fingerprint else None,
+        lookalikes=None if args.no_enrich else LookalikeConfig(NetworkLookalikeLookups(rdap, CrtSh(http, retries=2)), fresh_registrations(prior_report, now_stamp())),
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):
