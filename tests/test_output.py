@@ -212,3 +212,12 @@ def test_tested_guesses_are_remembered_until_old_enough_to_try_again():
     assert set(later["guessed"]) == {"api-prod.example.com", "files.example.com"}
     much_later = merge_reports(later, run_report(Inventory(["example.com"])), "2026-05-01T00:00:00Z")
     assert set(much_later["guessed"]) == {"files.example.com"}  # api-prod was tested 120 days ago
+
+
+def test_block_page_addresses_recorded_by_earlier_runs_are_dropped_on_merge():
+    prior = {"domains": ["example.com"], "hosts": [], "ips": [], "lookalikes": [
+        {"domain": "examp1e.com", "ips": ["146.112.61.106", "198.51.100.9", "::ffff:9270:3d6a"], "sources": ["dnstwist"], "first_seen": "T1", "last_seen": "T1"}]}
+
+    merged = merge_reports(prior, run_report(run_of("example.com", Observation("dnstwist", "examp1e.com", lookalike=True))), "T2")
+
+    assert merged["lookalikes"][0]["ips"] == ["198.51.100.9"]

@@ -306,3 +306,92 @@ def test_a_scan_domain_named_like_a_test_system_does_not_make_every_host_one():
     flagged = {f["target"] for f in derive(report, today=TODAY) if f["kind"] == "non-production-exposed"}
 
     assert flagged == {"staging.demo-corp.com", "api.dev.test.co.uk"}
+
+
+def test_findings_are_last_seen_when_their_evidence_was_not_when_they_were_assessed():
+    # 2026-10-24 fingerprinted and checked posture; 2026-10-31 a discovery-only run re-assessed
+    report = {"updated_at": "2026-10-31T00:00:00Z",
+              "fingerprints": [{**endpoint("db.example.com", 3389, service="rdp"), "last_seen": "2026-10-24T19:37:39Z"}],
+              "posture": [{"domain": "example.com", "ns": ["ns1.example.net"], "spf": None, "dmarc": "v=DMARC1; p=reject", "dmarc_policy": "reject",
+                           "caa": ["x"], "last_seen": "2026-10-24T20:00:00Z"}]}
+
+    judged = {f["kind"]: f for f in assessed(report, [], {}, "2026-10-31T00:00:00Z")["findings"]}
+
+    assert (judged["exposed-service"]["first_seen"], judged["exposed-service"]["last_seen"]) == ("2026-10-24T19:37:39Z", "2026-10-24T19:37:39Z")
+    assert judged["spf-missing"]["last_seen"] == "2026-10-24T20:00:00Z"
+    undated = assessed({"fingerprints": [endpoint("db.example.com", 3389, service="rdp")]}, [], {}, "2026-10-31T00:00:00Z")["findings"]
+    assert [f["last_seen"] for f in undated] == ["2026-10-31T00:00:00Z"]  # evidence with no date: seen when assessed
+
+
+def test_a_parked_scan_domain_still_in_the_microsoft_365_tenant_is_high():
+    parking = [{"name": "Parking page", "category": "parking", "evidence": "title: Domain registered | Dynadot"}]
+    report = {"domains": ["example.net"], "fingerprints": [endpoint("example.net", 443, tech=parking)],
+              "hosts": [{"hostname": "example.net", "sources": ["input", "m365"]}]}
+
+    parked = [f for f in derive(report, today=TODAY) if f["kind"] == "parked-domain"]
+
+    assert [(f["level"], f["target"]) for f in parked] == [("high", "example.net")]
+    assert "Microsoft 365" in parked[0]["detail"]
+
+
+def test_spf_at_the_lookup_limit_is_one_include_from_breaking():
+    at_limit = {"domain": "example.com", "spf": "v=spf1 include:a include:b ~all", "spf_all": "~all", "spf_lookups": 10,
+                "dmarc": "v=DMARC1; p=reject", "dmarc_policy": "reject"}
+    assert ("low", "spf-at-lookup-limit") in kinds(derive({"posture": [at_limit]}, today=TODAY), "example.com")
+    assert "spf-at-lookup-limit" not in {f["kind"] for f in derive({"posture": [{**at_limit, "spf_lookups": 9}]}, today=TODAY)}
+    over = {f["kind"] for f in derive({"posture": [{**at_limit, "spf_lookups": 11}]}, today=TODAY)}
+    assert "spf-too-many-lookups" in over and "spf-at-lookup-limit" not in over
+
+
+def test_a_providers_certificate_on_a_name_pointed_at_the_provider_is_its_to_renew():
+    intune = {"not_after": "2026-11-10T00:00:00Z", "matches": False, "subject": "NA01.manage.microsoft.com", "sans": ["manage.microsoft.com"]}
+    parked = {"not_after": "2026-11-10T00:00:00Z", "matches": False, "subject": "*.dynadot.com", "sans": ["*.dynadot.com"]}
+    report = {"fingerprints": [endpoint("enterpriseenrollment.example.com", 443, tls=intune), endpoint("example.com", 443, tls=parked)],
+              "hosts": [{"hostname": "enterpriseenrollment.example.com", "cnames": ["enterpriseenrollment-s.manage.microsoft.com"]},
+                        {"hostname": "example.com", "cnames": []}]}
+
+    found = derive(report, today=TODAY)
+
+    assert kinds(found, "enterpriseenrollment.example.com:443") == {("low", "certificate-mismatch")}  # not expiring: the provider renews it
+    assert {("medium", "certificate-mismatch"), ("medium", "certificate-expiring")} <= kinds(found, "example.com:443")
+
+
+def test_a_short_lived_automated_certificate_is_only_expiring_when_renewal_has_failed():
+    def cert(not_before, not_after):
+        return {"not_before": not_before, "not_after": not_after, "matches": True, "subject": "www.example.com"}
+    report = lambda tls: {"fingerprints": [endpoint("www.example.com", 443, tls=tls)]}
+
+    assert derive(report(cert("2026-08-27T00:00:00Z", "2026-11-15T00:00:00Z")), today=TODAY) == []  # 90-day certificate, 22 days left: renews at 30
+    assert ("medium", "certificate-expiring") in kinds(derive(report(cert("2026-08-01T00:00:00Z", "2026-10-29T00:00:00Z")), today=TODAY))
+    assert ("medium", "certificate-expiring") in kinds(derive(report(cert("2025-11-15T00:00:00Z", "2026-11-15T00:00:00Z")), today=TODAY))
+
+
+def test_one_wildcard_certificate_is_one_finding_however_many_names_serve_it():
+    wildcard = {"not_after": "2027-06-01T00:00:00Z", "matches": True, "wildcard": True, "subject": "*.example.com"}
+    report = {"fingerprints": [endpoint(h, 443, tls=wildcard) for h in ("a.example.com", "b.example.com")]}
+
+    found = [f for f in derive(report, today=TODAY) if f["kind"] == "wildcard-certificate"]
+
+    assert [(f["level"], f["target"]) for f in found] == [("low", "*.example.com")]
+    assert found[0]["evidence"] == ["a.example.com:443", "b.example.com:443"]
+
+
+def test_managed_file_transfer_is_a_first_target():
+    mft = [{"name": "Axway SecureTransport", "category": "file-transfer", "evidence": "cname: acme-mft.axwaycloud.co"}]
+    found = derive({"fingerprints": [endpoint("mft.example.com", 443, tech=mft)]}, today=TODAY)
+    assert ("high", "file-transfer") in kinds(found, "mft.example.com:443")
+    rows = technologies({"fingerprints": [endpoint("mft.example.com", 443, tech=mft), endpoint("a.example.com", 443, tech=[{"name": "nginx", "category": "server"}]),
+                                          endpoint("vpn.example.com", 443, tech=[{"name": "FortiGate SSL-VPN", "category": "edge"}])]}, TODAY)
+    assert [r["technology"] for r in rows] == ["FortiGate SSL-VPN", "Axway SecureTransport", "nginx"]
+
+
+def test_a_name_pointed_within_the_organisations_own_domain_still_owns_its_certificate():
+    own = {"not_after": "2026-11-10T00:00:00Z", "matches": True, "wildcard": True, "subject": "*.example.com"}
+    report = {"fingerprints": [endpoint("www.example.com", 443, tls=own)], "hosts": [{"hostname": "www.example.com", "cnames": ["lb.example.com"]}]}
+    assert ("medium", "certificate-expiring") in kinds(derive(report, today=TODAY), "www.example.com:443")
+
+
+def test_a_providers_wildcard_certificate_is_not_the_organisations_wildcard():
+    theirs = {"not_after": "2027-06-01T00:00:00Z", "matches": False, "wildcard": True, "subject": "*.msappproxy.net"}
+    report = {"fingerprints": [endpoint("apps.example.com", 443, tls=theirs)], "hosts": [{"hostname": "apps.example.com", "cnames": ["apps-acme.msappproxy.net"]}]}
+    assert "wildcard-certificate" not in {f["kind"] for f in derive(report, today=TODAY)}

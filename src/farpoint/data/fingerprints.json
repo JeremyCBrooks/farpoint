@@ -267,6 +267,65 @@
    ]
   },
   {
+   "name": "Axway SecureTransport",
+   "category": "file-transfer",
+   "match": [
+    {
+     "cname": "\\.axwaycloud\\.co$"
+    },
+    {
+     "title": "SecureTransport"
+    },
+    {
+     "header": "server",
+     "regex": "SecureTransport"
+    }
+   ]
+  },
+  {
+   "name": "Progress MOVEit Transfer",
+   "category": "file-transfer",
+   "match": [
+    {
+     "title": "^MOVEit Transfer"
+    },
+    {
+     "body": "/human\\.aspx\\b"
+    }
+   ]
+  },
+  {
+   "name": "Fortra GoAnywhere MFT",
+   "category": "file-transfer",
+   "match": [
+    {
+     "location": "/goanywhere/"
+    },
+    {
+     "title": "^GoAnywhere"
+    }
+   ]
+  },
+  {
+   "name": "Cleo Harmony / VLTrader / LexiCom",
+   "category": "file-transfer",
+   "match": [
+    {
+     "header": "server",
+     "regex": "^Cleo (?:Harmony|VLTrader|LexiCom)/([\\d.]+)"
+    }
+   ]
+  },
+  {
+   "name": "Kiteworks",
+   "category": "file-transfer",
+   "match": [
+    {
+     "title": "^kiteworks"
+    }
+   ]
+  },
+  {
    "name": "Microsoft RD Web Access",
    "category": "remote-access",
    "match": [

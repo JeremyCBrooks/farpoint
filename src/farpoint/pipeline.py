@@ -617,8 +617,10 @@ def _mx(lookup: Callable[[str], Resolution], prober: Prober, host: str) -> dict 
 
 def _record_resolution(inv: Inventory, host: str, res: Resolution) -> None:
     record = inv.hosts[host]
-    record.resolves = None if res.timed_out else bool(res.ips)
-    record.resolved_ips.update(normalize_ip(ip) or ip for ip in res.ips)
+    ips = {ip for raw in res.ips if (ip := normalize_ip(raw))}
+    blocked = bool(res.ips) and not ips  # only a filtering resolver's block page: unknown, like a timeout
+    record.resolves = None if res.timed_out or blocked else bool(ips)
+    record.resolved_ips.update(ips)
     record.cnames.update(res.cnames)
     for ip in res.ips:
         inv.add(Observation("dns", host, ip))

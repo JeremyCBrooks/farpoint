@@ -248,7 +248,10 @@ scanned.
 
 **Method** (`resolve.DnsResolver`, `Pipeline._resolve`). Every host gets A and AAAA lookups
 through the recursive resolver, with one retry; CNAMEs are read from the answers' alias chain. The result is three-state: `resolves` is `True`,
-`False`, or `None` on timeout. In-scope CNAME targets are added to the inventory and resolved in the
+`False`, or `None` on timeout. A filtering resolver's block page (Cisco Umbrella's, in `names.BLOCK_PAGES`)
+is not an address: `normalize_ip` drops it, so a name answered only with one is `None` too, and a
+lookalike keeps no address from it. Merging re-normalises stored addresses, which clears block pages
+earlier runs recorded. In-scope CNAME targets are added to the inventory and resolved in the
 next pass; the loop runs until no unresolved hosts remain. CNAME targets outside scope are recorded on
 the host, never followed.
 
@@ -405,9 +408,10 @@ the save. It walks:
 
 - each address's exposed management and data ports, one finding per address and port whatever names
   point at it
-- each fingerprinted endpoint: edge appliances and admin panels by technology category, end-of-life
-  versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals, dev/test hosts, parked
-  scan domains
+- each fingerprinted endpoint: edge appliances, file transfer platforms and admin panels by technology
+  category, end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals,
+  dev/test hosts, parked scan domains (high when the domain is still in the Microsoft 365 tenant)
+- each wildcard certificate that covers the names serving it, once, with those endpoints
 - each address's Shodan CVEs
 - dangling DNS: claimable targets are takeovers (high), the rest broken CNAMEs (low)
 - each domain's posture: SPF, DMARC, DKIM, MTA-STS, STARTTLS, AXFR, DNSSEC, CAA, registration expiry
@@ -418,9 +422,9 @@ the save. It walks:
 
 | Level | Meaning | Examples |
 |---|---|---|
-| high | tried first | RDP/SMB/databases/container APIs open; VPN appliances; Jenkins, GitLab, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git`; takeovers; spoofable mail; zone transfers |
+| high | tried first | RDP/SMB/databases/container APIs open; VPN appliances; file transfer platforms; Jenkins, GitLab, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git`; takeovers; spoofable mail; zone transfers |
 | medium | useful weakness | self-signed or mismatched certificates; TLS 1.0/1.1; HTTP only; directory listings; login prompts; dev/staging hosts; weak DKIM; BGP open; parked domains |
-| low | hygiene | missing HSTS; no DNSSEC or CAA; version-revealing headers; broken CNAMEs |
+| low | hygiene | missing HSTS; no DNSSEC or CAA; version-revealing headers; broken CNAMEs; SPF at the 10-lookup limit; a provider's certificate on a name pointed at it |
 
 **Discounts**, to avoid confident false positives:
 
@@ -429,10 +433,17 @@ the save. It walks:
 - Shodan CVEs on a shared CDN or SaaS address are low: the provider's to fix
 - Shodan CVEs on an address only passive DNS reported, or that live DNS stopped returning before the
   latest scan, are low: the address may belong to someone else by now
+- a provider's own certificate on a name that CNAMEs into that provider (Intune, App Proxy, a hosted
+  file transfer service) is a low mismatch and never "expiring": the provider renews it
+- a certificate that lives 100 days or less is renewed by machine weeks ahead, so it is only
+  "expiring" with 7 days left, when renewal has evidently failed
 - a check that failed produces no finding
 
 Each finding has a stable `id`. Because findings are re-derived from scratch each time, a fixed issue
-disappears; `merge_findings` only carries over `first_seen`. `farpoint --assess -o DIR` with no domains
+disappears; `merge_findings` only carries over `first_seen`. Each finding's `last_seen` is the
+`last_seen` of the rows it was judged from (fingerprints, posture, addresses, dangling records), so
+re-assessing old evidence doesn't make it look freshly observed; evidence with no date takes the
+assessment's time. `farpoint --assess -o DIR` with no domains
 re-judges an existing inventory without scanning (`output.rewrite`).
 
 ### 9. Merge and output

@@ -116,6 +116,11 @@ def test_rules_name_products_versions_and_cpes():
         (Evidence(banner="220 mail.example.com ESMTP Exim 4.94.2 Ubuntu"), "Exim"),
         (Evidence(banner="\x4a\x00\x00\x00\x0a5.5.5-10.6.12-MariaDB-0ubuntu0.22.04.1\x00"), "MariaDB"),
         (Evidence(banner="\x4a\x00\x00\x00\x0a8.0.32\x00"), "MySQL"),
+        (Evidence(cnames=["acme-mft-traffic.axwaycloud.co"]), "Axway SecureTransport"),
+        (Evidence(title="MOVEit Transfer Sign On"), "Progress MOVEit Transfer"),
+        (Evidence(location="https://files.example.com/goanywhere/auth/Login.xhtml"), "Fortra GoAnywhere MFT"),
+        (Evidence(headers={"server": "Cleo Harmony/5.8.0.21 (Linux)"}), "Cleo Harmony / VLTrader / LexiCom"),
+        (Evidence(title="kiteworks"), "Kiteworks"),
     ],
 )
 def test_attack_surface_rules(ev, name):
@@ -281,10 +286,12 @@ def test_unclaimed_platform_pages_are_flagged_for_takeover():
         Evidence(title="Gitlab tips for beginners - Blog"),
         Evidence(title="Barracuda Networks partner page"),
         Evidence(body='<a href="/ecp/">Our ECP programme</a>'),
+        Evidence(title="What the MOVEit Transfer breach taught us - Blog"),
+        Evidence(title="Cleo's guide to EDI"),
     ],
 )
 def test_ordinary_pages_are_not_mistaken_for_products(ev):
-    assert {t.category for t in identify(ev)} & {"edge", "panel", "remote-access", "mail"} == set()
+    assert {t.category for t in identify(ev)} & {"edge", "file-transfer", "panel", "remote-access", "mail"} == set()
 
 
 @pytest.mark.parametrize("title, parked", [

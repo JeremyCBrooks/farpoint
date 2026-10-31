@@ -57,3 +57,13 @@ def test_enrichment_fills_ip_details_without_clobbering_known_values():
     assert (rec.org, rec.network) == ("Example Hosting", "203.0.113.0/24")
     assert rec.ports == {80, 443}
     assert rec.vulns == {"CVE-2021-44228"}
+
+
+def test_a_filtering_resolvers_block_page_is_not_where_a_name_points():
+    inv = Inventory(["example.com"])
+    inv.add(Observation("dnstwist", hostname="examp1e.com", ip="146.112.61.106", lookalike=True))  # Cisco Umbrella's block page
+    inv.add(Observation("dnstwist", hostname="exampel.com", ip="::ffff:146.112.61.106", lookalike=True))
+    inv.add(Observation("dns", hostname="www.example.com", ip="::ffff:192.0.2.7"))
+
+    assert inv.lookalikes["examp1e.com"].ips == set() and inv.lookalikes["exampel.com"].ips == set()
+    assert inv.hosts["www.example.com"].ips == {"192.0.2.7"}  # an IPv4-mapped answer is the IPv4 address

@@ -28,6 +28,7 @@ except ImportError:  # Windows: msvcrt's byte-range locks instead
 
 from farpoint.guess import RETRY_DAYS
 from farpoint.models import Inventory, Observation, describe
+from farpoint.names import normalize_ip
 from farpoint.related import TIERS as _RELATED_TIERS
 from farpoint.tenants import TIES as _TIES
 
@@ -38,7 +39,8 @@ def _ip_key(ip: str) -> tuple[int, int]:
 
 
 def _ips(values: Iterable[str]) -> list[str]:
-    return sorted(values, key=_ip_key)
+    """Sorted, and re-normalised: drops what earlier runs recorded that isn't a real address (a block page)."""
+    return sorted({ip for v in values if (ip := normalize_ip(v))}, key=_ip_key)
 
 
 def _resolves(flag: bool | None) -> str:

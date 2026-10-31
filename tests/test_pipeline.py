@@ -83,6 +83,16 @@ def test_resolution_marks_live_and_dead_hosts():
     assert inv.hosts["old.example.com"].resolves is False
 
 
+
+def test_a_name_the_resolver_blocked_is_unchecked_not_live():
+    src = StaticSource("crtsh", [Observation("crtsh", "blocked.example.com")])
+    lookup = dns_table({"blocked.example.com": Resolution(ips=("146.112.61.106",))})  # Cisco Umbrella's block page
+
+    inv = Pipeline(sources=[src], lookup=lookup).run(["example.com"])
+
+    assert inv.hosts["blocked.example.com"].resolves is None
+    assert inv.hosts["blocked.example.com"].resolved_ips == set() and inv.ips == {}
+
 def test_in_scope_cname_targets_become_hosts_and_get_resolved_too():
     src = StaticSource("crtsh", [Observation("crtsh", "www.example.com")])
     lookup = dns_table({

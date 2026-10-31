@@ -28,7 +28,7 @@ from farpoint.suffixes import registered
 
 LEVELS = ("high", "medium", "low")
 CVE_TTL_DAYS = 7
-CATEGORY_ORDER = ("edge", "remote-access", "panel", "mail", "database", "cms", "cms-plugin", "framework", "language", "server", "waf", "cdn", "platform")
+CATEGORY_ORDER = ("edge", "file-transfer", "remote-access", "panel", "mail", "database", "cms", "cms-plugin", "framework", "language", "server", "waf", "cdn", "platform")
 
 # Ports that should almost never answer from the internet, and what they are.
 EXPOSED = {
@@ -74,6 +74,9 @@ SIGNALS = {
 DEV_NAMES = re.compile(r"(^|[.-])(dev|develop|test|testing|tst|stage|staging|stg|uat|qa|preprod|pre-prod|sandbox|demo|old|legacy|backup|bak|temp|tmp|beta)\d*([.-]|$)")
 INTERNAL_NAMES = re.compile(r"\.(local|internal|corp|lan|intranet|localdomain|home\.arpa)$")
 BACKPORTED = re.compile(r"ubuntu|debian|deb\d|el\d|centos|red ?hat|rhel|amzn|suse", re.I)
+SPF_LOOKUP_LIMIT = 10
+AUTOMATED_CERT_DAYS = 100  # a certificate this short-lived is renewed by machine (ACME) well before it runs out
+AUTOMATED_CERT_WARN_DAYS = 7  # ...so with this little left, renewal has failed
 
 
 # --- lookups (third parties only) ------------------------------------------------------------------
@@ -189,6 +192,16 @@ def _finding(level: str, kind: str, target: str, detail: str, evidence: Iterable
     return {"id": f"{kind}|{target}" + (f"|{about}" if about else ""), "level": level, "kind": kind, "target": target, "detail": detail, "evidence": [e for e in dict.fromkeys(evidence) if e]}
 
 
+def _seen(findings: list[dict], *rows: Mapping) -> list[dict]:
+    """Date `findings` by the latest observation of the rows they were judged from (`seen`, which
+    becomes `last_seen` once merged), so re-assessing old evidence doesn't make it look fresh."""
+    when = max((r.get("last_seen") or "" for r in rows), default="")
+    if when:
+        for f in findings:
+            f["seen"] = when
+    return findings
+
+
 def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date | None = None) -> list[dict]:
     """Every finding the inventory's facts support, most interesting first."""
     today = today or date.today()
@@ -196,12 +209,14 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     vulns = {v["cpe"]: v.get("cves", []) for v in report.get("vulns", [])}
     out: list[dict] = []
     fingerprints = report.get("fingerprints", [])
+    cnames = {h["hostname"]: h.get("cnames", []) for h in report.get("hosts", [])}
+    tenant_names = {h["hostname"] for h in report.get("hosts", []) if "m365" in h.get("sources", [])}
     https_hosts = {r["hostname"] for r in fingerprints if r.get("service") == "https" and (r.get("status") or 0) < 500}
     for r in fingerprints:
-        out.extend(_endpoint_findings(r, vulns, kev, today, https_hosts))
+        out.extend(_seen(_endpoint_findings(r, vulns, kev, today, https_hosts, cnames.get(r["hostname"], [])), r))
+    out.extend(_wildcard_findings(fingerprints))
     out.extend(_exposed_findings(fingerprints))
-    out.extend(_host_findings(fingerprints, report.get("domains", [])))
-    cnames = {h["hostname"]: h.get("cnames", []) for h in report.get("hosts", [])}
+    out.extend(_host_findings(fingerprints, report.get("domains", []), tenant_names))
     # an address only passive DNS knows, or that live DNS stopped returning, may belong to someone else by now
     live = max((ip["last_seen"] for ip in report.get("ips", []) if "dns" in ip.get("sources", []) and ip.get("last_seen")), default="")
     for ip in report.get("ips", []):
@@ -214,20 +229,19 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
                 level, detail = "low", detail + "; its names did not resolve to it in live DNS in the latest scan, so it may no longer be the organisation's"
             else:
                 level = "high" if known else "medium"
-            out.append(_finding(level, "shodan-cves", ip["ip"], detail, (known or sorted(ip["vulns"]))[:20]))
+            out.extend(_seen([_finding(level, "shodan-cves", ip["ip"], detail, (known or sorted(ip["vulns"]))[:20])], ip))
     for d in report.get("dangling", []):
         if d.get("claimable", True):
-            out.append(_finding("high", "subdomain-takeover", d["hostname"], d["reason"]))
+            out.extend(_seen([_finding("high", "subdomain-takeover", d["hostname"], d["reason"])], d))
         else:
-            out.append(_finding("low", "dangling-cname", d["hostname"], d["reason"] + ": broken, but nothing known to make it claimable"))
-    tenant_names = {h["hostname"] for h in report.get("hosts", []) if "m365" in h.get("sources", [])}
+            out.extend(_seen([_finding("low", "dangling-cname", d["hostname"], d["reason"] + ": broken, but nothing known to make it claimable")], d))
     for p in report.get("posture", []):
-        out.extend(_posture_findings(p, today, tenant_names))
+        out.extend(_seen(_posture_findings(p, today, tenant_names), p))
     order = {level: i for i, level in enumerate(LEVELS)}
     return sorted(out, key=lambda f: (order[f["level"]], f["kind"], f["target"]))
 
 
-def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, https_hosts: set[str]) -> list[dict]:
+def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, https_hosts: set[str], cnames: Sequence[str] = ()) -> list[dict]:
     out = []
     ep = r["endpoint"]
     for t in r.get("tech", []):
@@ -235,6 +249,8 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
         label = f"{name} {version}" if version else name
         if t.get("category") == "edge":
             out.append(_finding("high", "edge-device", ep, f"{label}: VPN/firewall/gateway appliances are the most exploited way in", [t.get("evidence", "")], name))
+        elif t.get("category") == "file-transfer":
+            out.append(_finding("high", "file-transfer", ep, f"{label}: file transfer platforms hold bulk data and are a favourite of extortion campaigns (MOVEit, GoAnywhere, Cleo)", [t.get("evidence", "")], name))
         elif name in HIGH_PANELS:
             out.append(_finding("high", "admin-interface", ep, f"{label} is reachable from the internet", [t.get("evidence", "")], name))
         elif name in MEDIUM_PANELS:
@@ -253,12 +269,15 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
     tls = r.get("tls") or {}
     if tls.get("not_after"):
         days = _days_left(tls, today)
+        provider = _provider_certificate(tls, r["hostname"], cnames)
         if days is not None and days < 0:
             out.append(_finding("high", "certificate-expired", ep, f"the certificate expired on {tls['not_after'][:10]}"))
-        elif days is not None and days <= 30:
+        elif days is not None and days <= _warn_days(tls) and not provider:  # a provider's own certificate is its to renew
             out.append(_finding("medium", "certificate-expiring", ep, f"the certificate expires on {tls['not_after'][:10]}"))
         if tls.get("self_signed"):
             out.append(_finding("medium", "certificate-self-signed", ep, f"a self-signed certificate ({tls.get('subject')})"))
+        elif tls.get("matches") is False and provider:
+            out.append(_finding("low", "certificate-mismatch", ep, f"the certificate is {provider}'s ({tls.get('subject')}): {r['hostname']} points at {provider} but isn't set up for HTTPS there"))
         elif tls.get("matches") is False:
             out.append(_finding("medium", "certificate-mismatch", ep, f"the certificate is for {tls.get('subject')}, not {r['hostname']}"))
         if re.match(r"RSA (\d+)", tls.get("key") or "") and int(tls["key"].split()[1]) < 2048:
@@ -267,8 +286,6 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
             out.append(_finding("medium", "weak-certificate-signature", ep, f"the certificate is signed with {tls['signature'].upper()}"))
         if internal := [n for n in tls.get("sans", []) if INTERNAL_NAMES.search(n)]:
             out.append(_finding("low", "internal-names-in-certificate", ep, "the certificate names internal hosts", internal[:10]))
-        if tls.get("wildcard"):
-            out.append(_finding("low", "wildcard-certificate", ep, "a wildcard certificate: its key unlocks every name under the domain"))
     legacy = sorted(v for v, ok in (tls.get("legacy") or {}).items() if ok)
     if legacy:
         out.append(_finding("medium", "legacy-tls", ep, f"accepts {' and '.join(legacy)}"))
@@ -284,18 +301,50 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
     return out
 
 
+def _provider_certificate(tls: Mapping, hostname: str, cnames: Sequence[str]) -> str | None:
+    """The registered domain of the provider whose own certificate this is, when the name is a CNAME
+    into that provider (an Intune or App Proxy endpoint): the mismatch is a name never set up for
+    HTTPS there, not a broken certificate, and renewing it is the provider's job."""
+    theirs = {registered(n.removeprefix("*.")) for n in [tls.get("subject") or "", *tls.get("sans", [])]} - {None, registered(hostname)}
+    return next((d for c in cnames if (d := registered(c)) in theirs), None)
+
+
+def _warn_days(tls: Mapping) -> int:
+    """How close to expiry a certificate is worth a finding. A short-lived certificate is renewed by
+    machine with weeks to spare, so only one about to run out means its renewal failed."""
+    try:
+        start, end = (date.fromisoformat(tls[k][:10]) for k in ("not_before", "not_after"))
+    except (KeyError, TypeError, ValueError):
+        return 30
+    return AUTOMATED_CERT_WARN_DAYS if (end - start).days <= AUTOMATED_CERT_DAYS else 30
+
+
+def _wildcard_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
+    """One finding per wildcard certificate: its key is one secret, however many names serve it."""
+    served: dict[str, list[Mapping]] = {}
+    for r in fingerprints:
+        tls = r.get("tls") or {}
+        if tls.get("not_after") and tls.get("wildcard") and tls.get("matches") is not False:  # one that doesn't cover the name is someone else's
+            served.setdefault(tls.get("subject") or r["endpoint"], []).append(r)
+    out = []
+    for subject, rows in sorted(served.items()):
+        what = "a wildcard certificate: its key unlocks every name under the domain"
+        out.extend(_seen([_finding("low", "wildcard-certificate", subject, what, sorted(r["endpoint"] for r in rows))], *rows))
+    return out
+
+
 def _exposed_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
     """One finding per address and port: the service runs on the machine, whichever names point at it.
     Elasticsearch, Docker, WinRM and Kubernetes answer HTTP and are just as exposed."""
-    names: dict[tuple[str, int], list[str]] = {}
+    rows: dict[tuple[str, int], list[Mapping]] = {}
     for r in fingerprints:
         if r.get("port") in EXPOSED:
-            names.setdefault((r.get("ip") or r["hostname"], r["port"]), []).append(r["hostname"])
+            rows.setdefault((r.get("ip") or r["hostname"], r["port"]), []).append(r)
     out = []
-    for (address, port), hosts in sorted(names.items()):
+    for (address, port), found in sorted(rows.items()):
         level, what = EXPOSED[port]
         target = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
-        out.append(_finding(level, "exposed-service", target, f"{what} answers on port {port} from the internet", sorted(hosts)))
+        out.extend(_seen([_finding(level, "exposed-service", target, f"{what} answers on port {port} from the internet", sorted(r["hostname"] for r in found))], *found))
     return out
 
 
@@ -330,19 +379,26 @@ def _root(host: str, domains: Sequence[str]) -> str:
     return max((d for d in domains if in_scope(host, d)), key=len, default=None) or registered(host) or host
 
 
-def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str]) -> list[dict]:
+def _host_findings(fingerprints: Sequence[Mapping], domains: Sequence[str], tenant_names: set[str] = frozenset()) -> list[dict]:
     out = []
-    for host in sorted({r["hostname"] for r in fingerprints}):
+    by_host: dict[str, list[Mapping]] = {}
+    for r in fingerprints:
+        by_host.setdefault(r["hostname"], []).append(r)
+    for host, rows in sorted(by_host.items()):
         # only the labels under the organisation's domain
         if DEV_NAMES.search(host.removesuffix(_root(host, domains)).rstrip(".")):
-            out.append(_finding("medium", "non-production-exposed", host, "a development/test/old system reachable from the internet: usually less patched and monitored"))
-    parked: dict[str, list[str]] = {}
+            out.extend(_seen([_finding("medium", "non-production-exposed", host, "a development/test/old system reachable from the internet: usually less patched and monitored")], *rows))
+    parked: dict[str, list[Mapping]] = {}
     for r in fingerprints:
         root = _root(r["hostname"], domains)
         if r["hostname"] in (root, f"www.{root}") and any(t.get("category") == "parking" for t in r.get("tech", [])):
-            parked.setdefault(root, []).append(r["endpoint"])  # a parked subdomain is one site, not the domain
-    for d, endpoints in sorted(parked.items()):
-        out.append(_finding("medium", "parked-domain", d, 'shows a parking page: confirm the organisation still controls it, and publish "v=spf1 -all" and DMARC p=reject so no one can send mail as it', sorted(endpoints)))
+            parked.setdefault(root, []).append(r)  # a parked subdomain is one site, not the domain
+    for d, rows in sorted(parked.items()):
+        detail = 'shows a parking page: confirm the organisation still controls it, and publish "v=spf1 -all" and DMARC p=reject so no one can send mail as it'
+        level = "medium"
+        if d in tenant_names:  # whoever holds its DNS can point its mail anywhere, and the tenant still accepts it as the organisation's
+            level, detail = "high", detail + "; it is still listed in the organisation's Microsoft 365 tenant"
+        out.extend(_seen([_finding(level, "parked-domain", d, detail, sorted(r["endpoint"] for r in rows))], *rows))
     return out
 
 
@@ -366,8 +422,10 @@ def _posture_findings(p: Mapping, today: date, tenant_names: set[str] = frozense
         out.append(_finding("medium", "spf-neutral", d, f"SPF does not reject unlisted senders ({spf_all or 'no all mechanism'})", [p["spf"]]))
     if (p.get("spf_records") or 0) > 1:
         out.append(_finding("medium", "spf-multiple-records", d, "more than one SPF record: receivers treat SPF as broken"))
-    if (p.get("spf_lookups") or 0) > 10:
-        out.append(_finding("medium", "spf-too-many-lookups", d, f"SPF needs {p['spf_lookups']} DNS lookups (limit 10): receivers treat it as broken"))
+    if (p.get("spf_lookups") or 0) > SPF_LOOKUP_LIMIT:
+        out.append(_finding("medium", "spf-too-many-lookups", d, f"SPF needs {p['spf_lookups']} DNS lookups (limit {SPF_LOOKUP_LIMIT}): receivers treat it as broken"))
+    elif p.get("spf_lookups") == SPF_LOOKUP_LIMIT:
+        out.append(_finding("low", "spf-at-lookup-limit", d, f"SPF needs {SPF_LOOKUP_LIMIT} DNS lookups, the most allowed: one more include and receivers treat it as broken"))
     for inc in p.get("spf_unregistered_includes", []):
         out.append(_finding("high", "spf-include-unregistered", d, f"SPF includes {inc}, whose domain is not registered: whoever registers it can send as this domain"))
     for inc in set(p.get("spf_missing_includes", [])) - set(p.get("spf_unregistered_includes", [])):
@@ -430,9 +488,14 @@ def transfer_locked(statuses: Sequence[str]) -> bool | None:
 
 
 def merge_findings(prior: Sequence[Mapping], current: Sequence[dict], stamp: str, prior_stamp: str) -> list[dict]:
-    """This assessment's findings, keeping when each was first seen."""
+    """This assessment's findings, keeping when each was first seen; last seen is when its evidence was."""
     first = {f["id"]: f.get("first_seen", prior_stamp) for f in prior}
-    return [{**f, "first_seen": first.get(f["id"], stamp), "last_seen": stamp} for f in current]
+    merged = []
+    for f in current:
+        f = dict(f)
+        seen = f.pop("seen", None) or stamp  # evidence with no date: seen now
+        merged.append({**f, "first_seen": min(first.get(f["id"], seen), seen), "last_seen": seen})
+    return merged
 
 
 def assessed(report: dict, vulns: list[dict], kev: Mapping[str, dict], stamp: str, errors: Sequence[dict] = ()) -> dict:

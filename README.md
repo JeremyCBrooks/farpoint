@@ -251,17 +251,20 @@ choosing a soft target, not by CVSS. Assessment sends nothing to the organisatio
 
 | Level | Examples |
 |---|---|
-| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register) |
-| medium | self-signed or mismatched certificates, TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups, BGP open to the internet, a parked scan domain |
-| low | missing HSTS, wildcard certificates, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
+| high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; managed file transfer (MOVEit, GoAnywhere, Cleo, Axway, Kiteworks); Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register); a parked scan domain still listed in the organisation's Microsoft 365 tenant |
+| medium | self-signed or mismatched certificates, certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves), TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups, BGP open to the internet, a parked scan domain |
+| low | missing HSTS, wildcard certificates covering the organisation's names (one finding per certificate), a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS), SPF at exactly 10 lookups, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
 
 Each product version fingerprinting identified is checked against NVD for CVEs and against CISA's
 Known Exploited Vulnerabilities catalogue. NVD answers are cached in `assets.json` for a week. Without
 a key NVD allows about one request every 6 seconds, so set `NVD_API_KEY` for large inventories.
 Distribution package versions, CVEs on shared CDN addresses, and CVEs on addresses the latest scan
-didn't see in live DNS are discounted.
+didn't see in live DNS are discounted. A provider's own certificate on a name that points at the
+provider is the provider's to renew, so it is never reported as expiring.
 
-`first_seen` records when a finding was first reported. `technologies.csv` lists each product and
+`first_seen` records when a finding was first reported, and `last_seen` when the evidence behind it
+was last observed: a finding from fingerprints or posture keeps the date of the last `--fingerprint`
+run, even when a later scan without it re-assesses the inventory. `technologies.csv` lists each product and
 version with how many hosts run it, its end-of-life date, its CVE count and the known-exploited
 ones, edge devices first.
 

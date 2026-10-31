@@ -21,13 +21,25 @@ def normalize_hostname(raw: str) -> str | None:
     return name
 
 
+# Answers a filtering resolver gives in place of a blocked name's real address (Cisco Umbrella /
+# OpenDNS block pages): they say the resolver refused the name, not where the name points.
+BLOCK_PAGES = (ipaddress.ip_network("146.112.61.104/29"),)
+
+
 def normalize_ip(raw: str | None) -> str | None:
+    """Canonical form of an address (an IPv4-mapped IPv6 one as IPv4); None if it isn't one, or is a
+    filtering resolver's block page."""
     if raw is None:
         return None
     try:
-        return str(ipaddress.ip_address(raw.strip()))
+        ip = ipaddress.ip_address(raw.strip())
     except ValueError:
         return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if any(ip in net for net in BLOCK_PAGES):
+        return None
+    return str(ip)
 
 
 def is_public_ip(ip: str) -> bool:
