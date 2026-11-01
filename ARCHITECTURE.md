@@ -469,8 +469,11 @@ the save. It walks:
   "expiring" with 7 days left, when renewal has evidently failed
 - a check that failed produces no finding
 - a lookalike is `lookalike-ready` (high) when it was registered within 365 days of the assessment and
-  has MX or a current address; `lookalike-parked` (medium) when every MX host and nameserver it has
-  belongs to one service in `data/parking.json`. No finding when the date is unknown or older, when
+  has MX or a current address; `lookalike-parked` (medium) when all its nameservers are one service's
+  parking nameservers in `data/parking.json`, or all its current addresses are that service's
+  parked-page addresses, and any MX host is the service's too (`lookalikes.parked_at`). Registrars'
+  default nameservers and forwarding or website-builder addresses are never parking: they serve
+  live sites as well, and a parked verdict downgrades a lookalike. No finding when the date is unknown or older, when
   the address is only historic, or when the lookalike is the organisation's: in `related`; MX or
   nameservers under its or its related domains; an MX host a scan domain also uses that is named
   after the organisation or under its domains (Microsoft 365 names every customer's MX after their own
@@ -561,7 +564,7 @@ by the lock, not the PID, since PIDs are reused.
 | `dkim_selectors.txt` | posture | the common DKIM selectors checked |
 | `dns_providers.json` | posture | managed DNS services that can't allow a zone transfer, so aren't asked |
 | `eol.json` | assessment | end-of-life dates by product and version |
-| `parking.json` | assessment | parking services and registrar defaults, by nameserver and MX domain |
+| `parking.json` | assessment | parking services by parking nameserver, mail and parked-page address; registrars' and DNS hosts' shared default nameservers |
 | `identity_providers.json` | tenants (sign-in) | identity providers by sign-in host domain |
 | `corpus.json` (optional, not bundled) | guessing | cross-organisation naming statistics |
 
@@ -595,8 +598,8 @@ against real DNS, `example.com` and NVD.
   names and a `why`. Only list a service when its documentation shows customers can't open a zone
   transfer to the internet (no outbound transfers, or only to individually listed addresses): its
   nameservers aren't asked, so a wrong entry hides a finding.
-- **A parking service or identity provider:** add its domains to `data/parking.json` or
-  `data/identity_providers.json`. Only list a parking domain real sites don't also use for hosting or
-  mail: a wrong entry downgrades a ready lookalike to parked.
+- **A parking service or identity provider:** add it to `data/parking.json` or
+  `data/identity_providers.json`. Only list parking nameservers, mail and addresses that serve
+  nothing but parked pages: a wrong entry downgrades a ready lookalike to parked.
 - **A finding:** add it to `assess.derive` or one of its helpers. Keep it a pure function of the report,
   and raise nothing when the underlying check's answer is unknown.

@@ -8,6 +8,7 @@ assess.derive turns the facts into findings.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ import httpx
 from farpoint.enrich import Rdap
 from farpoint.posture import registration
 from farpoint.sources.base import HttpSource
+from farpoint.names import normalize_ip
 from farpoint.suffixes import registered
 
 RECENT_DAYS = 365  # registered within this many days: new enough to be someone's set-up
@@ -77,18 +79,33 @@ def _parking_data() -> dict:
     return json.loads(resources.files("farpoint.data").joinpath("parking.json").read_text(encoding="utf-8"))
 
 
-@cache
-def _parking() -> dict[str, str]:
-    return {d: s["name"] for s in _parking_data()["services"] for d in s["domains"]}
+def _service_of(host: str, kind: str) -> str | None:
+    domain = registered(host) or host
+    return next((s["name"] for s in _parking_data()["services"] if domain in s.get(kind, [])), None)
 
 
 def shared_nameservers(hosts: Iterable[str]) -> bool:
     """Whether `hosts` are nameservers a registrar, parking service or DNS host gives every customer."""
-    shared = set(_parking()) | set(_parking_data().get("shared_nameservers", []))
+    shared = {d for s in _parking_data()["services"] for d in s.get("nameservers", [])} | set(_parking_data().get("shared_nameservers", []))
     return any((registered(h) or h) in shared for h in hosts)
 
 
-def parking_service(hosts: Iterable[str]) -> str | None:
-    """The parking service (or registrar default) every one of `hosts` belongs to, if they all do."""
-    services = {_parking().get(registered(h) or h) for h in hosts}
-    return next(iter(services)) if len(services) == 1 and None not in services else None
+@cache
+def _parking_networks() -> list[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, str]]:
+    return [(ipaddress.ip_network(a), s["name"]) for s in _parking_data()["services"] for a in s.get("addresses", [])]
+
+
+def _one(names: set[str | None]) -> str | None:
+    return next(iter(names)) if len(names) == 1 and None not in names else None
+
+
+def parked_at(mx: Iterable[str], ns: Iterable[str], ips: Iterable[str]) -> str | None:
+    """The parking service a lookalike shows and nothing else: all its nameservers are the service's
+    parking nameservers, or all its addresses are its parked-page addresses; and any mail host is the
+    service's too (data/parking.json)."""
+    ns_service = _one({_service_of(h, "nameservers") for h in ns}) if ns else None
+    ip_service = _one({next((name for net, name in _parking_networks() if (a := normalize_ip(ip)) and ipaddress.ip_address(a) in net), None) for ip in ips}) if ips else None
+    service = ns_service or ip_service
+    if service and all(_service_of(m, "mail") == service or _service_of(m, "nameservers") == service for m in mx):
+        return service
+    return None

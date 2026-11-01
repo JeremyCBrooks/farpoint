@@ -22,7 +22,7 @@ import httpx
 
 from farpoint import runtime
 from farpoint.fingerprint import end_of_life, shared_address
-from farpoint.lookalikes import RECENT_DAYS, capable, parking_service, shared_nameservers
+from farpoint.lookalikes import RECENT_DAYS, capable, parked_at, shared_nameservers
 from farpoint.names import in_scope
 from farpoint.sources.base import HttpSource
 from farpoint.suffixes import registered
@@ -439,7 +439,7 @@ def _lookalike_findings(report: Mapping, today: date) -> list[dict]:
         evidence = [f"registered {created}" + (f" with {row['registrar']}" if row.get("registrar") else ""), *row.get("mx", []), *row.get("current_ips", [])]
         if row.get("last_certificate"):
             evidence.append(f"newest certificate from {row['last_certificate']}")
-        service = parking_service([*row.get("mx", []), *row.get("ns", [])])
+        service = parked_at(row.get("mx", []), row.get("ns", []), row.get("current_ips", []))
         if service:
             finding = _finding("medium", "lookalike-parked", row["domain"], f"registered {created} and parked at {service}: likely a speculator, but it can start sending mail at any time", evidence)
         else:

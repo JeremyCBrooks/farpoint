@@ -503,3 +503,23 @@ def test_other_sign_in_setups_are_not_findings():
     rows = [identity("a.com", "managed", None, None), identity("b.com", "none", None, None), identity("c.com", provider="Okta", host="x.okta.com"),
             identity("d.com", provider="other", host="sso.d.com"), identity("e.com", sign_in=None, provider=None, host=None)]
     assert not [f for f in derive({"identity": rows}, today=TODAY) if f["kind"] == "self-hosted-federation"]
+
+
+def test_a_lookalike_on_a_registrars_parking_address_is_parked_not_ready():
+    found = lookalike_findings({"lookalikes": [
+        lookalike("examp1e.ai", ns=["ns1.worldnic.com", "ns2.worldnic.com"], current_ips=["208.91.197.27"]),  # Network Solutions' parked page
+        lookalike("examp1e.net", ns=["ns1.worldnic.com", "ns2.worldnic.com"], current_ips=["208.91.197.27"], mx=["mx.mailer.net"]),  # but it has its own mail
+    ]})
+
+    assert (found["examp1e.ai"]["level"], found["examp1e.ai"]["kind"]) == ("medium", "lookalike-parked")
+    assert "Network Solutions" in found["examp1e.ai"]["detail"]
+    assert found["examp1e.net"]["kind"] == "lookalike-ready"
+
+
+def test_hosting_and_forwarding_defaults_are_not_parking():
+    found = lookalike_findings({"lookalikes": [
+        lookalike("examp1e.org", ns=["ns1.worldnic.com"], current_ips=["208.91.197.27"], mx=["eforward1.registrar-servers.com"]),  # parked page, another service's mail
+        lookalike("examp1e.io", ns=["ns1.dns-parking.com", "ns2.dns-parking.com"], current_ips=["192.0.2.7"]),  # Hostinger's default nameservers host live sites
+        lookalike("examp1e.co", ns=["ns1.registrar-servers.com"], current_ips=["162.255.119.10"]),  # Namecheap's URL redirect can forward to anything
+    ]})
+    assert {d: f["kind"] for d, f in found.items()} == dict.fromkeys(["examp1e.org", "examp1e.io", "examp1e.co"], "lookalike-ready")

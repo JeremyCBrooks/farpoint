@@ -187,8 +187,10 @@ reused for 30 days. MX and nameservers come from dnstwist and `--related`, which
 Nothing is sent to the lookalikes' own servers. `--no-enrich` skips the lookups.
 
 With `--assess`, a lookalike registered within the last year that can handle mail or serve a site
-now is `lookalike-ready` (high). One whose every mail server and nameserver belongs to a parking
-service or a registrar's defaults (`src/farpoint/data/parking.json`) is `lookalike-parked` (medium):
+now is `lookalike-ready` (high). One that shows a parking service and nothing else (all its nameservers are the
+service's parking nameservers, or all its addresses its parked-page addresses, and any mail server is
+the service's too; see `src/farpoint/data/parking.json`) is `lookalike-parked` (medium). Registrars'
+default nameservers and forwarding addresses don't count, since they serve live sites too:
 probably a speculator, but able to start sending mail at any time. Both go into `phishing-block.txt`,
 ready ones first, for the mail gateway. Review it before you block: a new, legitimate business with a
 similar name can still appear.
