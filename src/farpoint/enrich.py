@@ -36,6 +36,15 @@ class InternetDb(HttpSource):
         )
 
 
+class NoRdapService(Exception):
+    """The domain's TLD has no RDAP service (many ccTLDs only run WHOIS): its registration is unknown,
+    which is not the same as unregistered."""
+
+    def __init__(self, tld: str) -> None:
+        super().__init__(f"no RDAP service for .{tld}")
+        self.tld = tld
+
+
 class Rdap(HttpSource):
     """RDAP network owner/allocation, queried at the RIR chosen by the IANA bootstrap registry.
 
@@ -82,11 +91,20 @@ class Rdap(HttpSource):
                 self._tlds = {tld: next((u for u in urls if u.startswith("https")), urls[0]) for tlds, urls in services for tld in tlds}
             tlds = self._tlds
         tld = domain.rsplit(".", 1)[-1]
-        return tlds[tld].rstrip("/") + "/" if tld in tlds else "https://rdap.org/"
+        if tld in tlds:
+            return tlds[tld].rstrip("/") + "/"
+        if tlds:  # rdap.org redirects by the same registry, so it can't know a TLD the registry lacks
+            raise NoRdapService(tld)
+        return "https://rdap.org/"  # the registry couldn't be fetched
 
     def domain(self, name: str) -> dict:
-        """The registry's RDAP record for a registered domain."""
-        return self.get(f"{self._tld_url(name)}domain/{name}", follow_redirects=True).json()
+        """The registry's RDAP record for a registered domain. Raises NoRdapService when the TLD has none."""
+        try:
+            return self.get(f"{self._tld_url(name)}domain/{name}", follow_redirects=True).json()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404 and exc.response.url.host == "rdap.org":  # rdap.org's own 404: no registry to send us to
+                raise NoRdapService(name.rsplit(".", 1)[-1]) from None
+            raise
 
     def enrich(self, ip: str) -> IpDetails:
         body = self.get(f"{self._base_url(ip)}ip/{ip}", follow_redirects=True).json()

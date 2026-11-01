@@ -344,6 +344,8 @@ def _summarise_assessment(report: dict) -> None:
                 top[row["technology"]] += row["count"]
         shown = ", ".join(f"{name} {n}" for name, n in top.most_common(6))
         print(f"services:   {len(report['fingerprints'])} on {len(hosts)} hosts" + (f" (top: {shown}; see technologies.csv)" if shown else ""))
+        if challenged := sum(1 for r in report["fingerprints"] if "bot-challenge" in r.get("signals", [])):
+            print(f"            {challenged} web service{'s' if challenged != 1 else ''} answered only with a bot challenge: what runs behind {'them' if challenged != 1 else 'it'} wasn't seen")
     if "findings" in report:
         levels = Counter(f["level"] for f in report["findings"])
         print(f"findings:   {levels['high']} high, {levels['medium']} medium, {levels['low']} low (see findings.csv)")

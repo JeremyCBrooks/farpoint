@@ -4,6 +4,7 @@ import json
 import pytest
 
 from farpoint import cli
+from farpoint.enrich import NoRdapService
 from farpoint.fingerprint import FingerprintConfig
 from farpoint.models import IpDetails, Observation
 from farpoint.output import write_outputs
@@ -126,6 +127,19 @@ def test_assess_alone_rejudges_an_existing_inventory_without_scanning(tmp_path, 
     assert "findings:" in capsys.readouterr().out
 
 
+def test_the_summary_says_when_bot_challenges_hid_web_services(tmp_path, capsys):
+    pipeline, prober = scenario()
+    challenge = HttpResult(403, [("server", "cloudflare")], b"<title>Attention Required! | Cloudflare</title>")
+    prober.http_[("http", "www.example.com", 443, "/")] = challenge
+    prober.http_[("http", "app.example.com", 443, "/")] = challenge
+    write_outputs(pipeline.run([D]), tmp_path, "2026-10-01T00:00:00Z")
+
+    assert cli.main(["--assess", "--no-cve", "-o", str(tmp_path)]) == 0
+
+    out = capsys.readouterr().out
+    assert "2 web services answered only with a bot challenge" in out
+
+
 def test_progress_phases_count_their_own_jobs():
     from test_progress import Recorder
 
@@ -195,6 +209,32 @@ def test_a_service_that_failed_this_time_keeps_its_old_row(tmp_path):
 
     row = next(r for r in second["fingerprints"] if r["endpoint"] == "www.example.com:22")
     assert row["last_seen"] == "2026-10-01T00:00:00Z"  # kept, not deleted
+
+
+def test_a_scan_domain_whose_registration_cant_be_looked_up_says_so():
+    pipeline, _ = scenario()
+
+    def no_service(domain):
+        raise NoRdapService("com")
+
+    pipeline.rdap_domain = no_service
+
+    inv = pipeline.run([D])
+
+    assert [(e.source, e.target) for e in inv.errors if "registration" in e.message] == [("posture", D)]
+    assert "no RDAP service for .com" in next(e.message for e in inv.errors if "registration" in e.message)
+    assert inv.posture[D]["spf_all"] == "-all"  # the rest of the posture still counts
+
+
+def test_an_mta_sts_policy_the_scan_was_turned_away_from_is_reported_as_an_error():
+    pipeline, prober = scenario()
+    pipeline.dns.zones["_mta-sts.example.com"] = {"TXT": ["v=STSv1; id=1"]}
+    prober.fetch = lambda url: HttpResult(403, [("cf-mitigated", "challenge")], b"")
+
+    inv = pipeline.run([D])
+
+    assert inv.posture[D]["mta_sts"] == "unknown"
+    assert any(e.source == "posture" and e.target == D and "MTA-STS" in e.message and "403" in e.message for e in inv.errors)
 
 
 def test_a_cname_to_a_lapsed_domain_is_claimable():

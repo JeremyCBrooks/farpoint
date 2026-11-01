@@ -182,3 +182,13 @@ def test_api_keys_in_request_urls_never_reach_saved_errors(status, tmp_path):
     assert all(str(status) in e.message for e in inv.errors)  # still says what went wrong
     saved = (tmp_path / "assets.json").read_text()
     assert "SECRET" not in saved
+
+
+def test_shodan_having_nothing_on_a_domain_is_no_results_not_a_failure():
+    from farpoint.pipeline import Pipeline
+
+    http = fake_http({"api.shodan.io/dns/domain/example.com": httpx.Response(404, json={"error": "No information available for that domain."})})
+
+    inv = Pipeline(sources=[Shodan(http, api_key="sk", retries=0)]).run([D])
+
+    assert inv.errors == [] and set(inv.hosts) == {D}

@@ -14,12 +14,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from farpoint import runtime
-from farpoint.enrich import Enricher
+from farpoint.enrich import Enricher, NoRdapService
 from farpoint.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, FingerprintConfig, fingerprint_service, for_host, shared_address, takeover_platform
 from farpoint.posture import Dns, assess_domain, check_mx, hosted
 from farpoint.probe import Prober
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
-from farpoint.identity import SignIn, classify
+from farpoint.identity import SignIn, classify, m365_tenant_name, tenant_id
 from farpoint.lookalikes import RECENT_DAYS, LookalikeConfig
 from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
 from farpoint.related import TIERS as RELATED_TIERS
@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 Key = tuple[str, str]
 
-WILDCARD_PROBES = 3  # random names looked up per parent before guessing under it
+WILDCARD_PROBES = 3  # random names looked up per parent to tell a wildcard (guesses, split lookalikes)
 RELATED_WORKERS = 8  # concurrent lookups for --related, whose ~1,800 per domain mostly go to registries
 MIN_SHARE = 1 + WILDCARD_PROBES  # a round's share always covers a guess under a parent not yet probed
 IMPLAUSIBLE_MIN, IMPLAUSIBLE_SHARE = 10, 0.5  # this many guesses under a parent, more than this share resolving
@@ -320,7 +320,32 @@ class Pipeline:
             tie, evidence = probe.tie_for(domain)
             if verified or (bare and tie == "records"):
                 _record_tenant(inv, name, probe.vendor, domain, tie, evidence, verified, res)
+        if self.sign_in:
+            self._check_m365_names(inv)
         log.info("tenants: %d found", len(inv.tenants))
+
+    def _check_m365_names(self, inv: Inventory) -> None:
+        """A Microsoft 365 tenant found by its name alone is compared with the tenant the scan domains sign
+        in to (one OpenID request per tenant name): someone else's is dropped, the organisation's is tied."""
+        ours = {row["tenant_id"]: domain for domain, row in sorted(inv.identity.items(), reverse=True) if row.get("tenant_id")}  # the first domain wins
+        if not ours:
+            return  # nothing to compare with: name matches stay as they are
+        by_tenant: dict[str, list[str]] = {}
+        for host, record in inv.tenants.items():
+            if record.tie == "name" and (tenant := m365_tenant_name(host)):
+                by_tenant.setdefault(tenant, []).append(host)
+        jobs = {("entra-tenant", t): (lambda t=t: tenant_id(self.sign_in.openid(t))) for t in sorted(by_tenant)}
+        for (_, tenant), found in self._fan_out(inv, jobs):
+            if found is None:
+                continue  # no answer about it: unknown, left as it is
+            for host in by_tenant[tenant]:
+                if found in ours:
+                    record = inv.tenants[host]
+                    record.tie = "records"
+                    record.evidence.add(f"same Microsoft 365 tenant as {ours[found]}'s sign-in")
+                else:
+                    log.info("tenants: %s is Microsoft 365 tenant %s, not the organisation's; dropped", host, found)
+                    del inv.tenants[host]
 
     def _sign_in(self, inv: Inventory) -> None:
         """Each scan domain's Microsoft sign-in (farpoint.identity). A self-hosted sign-in server under
@@ -456,10 +481,12 @@ class Pipeline:
         return {p for p, n in hits.items() if per_parent[p] >= IMPLAUSIBLE_MIN and n / per_parent[p] > IMPLAUSIBLE_SHARE}
 
     def _probe_wildcards(
-        self, inv: Inventory, parents: Iterable[str], wildcards: dict[str, Resolution | None], lookup: Callable[[str], Resolution]
+        self, inv: Inventory, parents: Iterable[str], wildcards: dict[str, Resolution | None], lookup: Callable[[str], Resolution],
+        stage: str = "guess", unknown: str = "no guesses tested there",
     ) -> None:
         """Look up random names under each parent. If any resolves, everything there does: record what
-        it answers. If a probe gets no answer either way, the parent is unknown and not guessed under."""
+        it answers. If a probe gets no answer either way, the parent is unknown: an error from `stage`
+        says what that means for it (`unknown`)."""
 
         def probe(parent: str) -> Resolution | None:
             answers = [lookup(f"{secrets.token_hex(8)}.{parent}") for _ in range(WILDCARD_PROBES)]
@@ -473,11 +500,11 @@ class Pipeline:
         for (_, parent), res in self._fan_out(inv, jobs):
             wildcards[parent] = res
             if res and not res.timed_out:
-                log.info("wildcard DNS under %s: guesses there must answer differently", parent)
+                log.info("%s: wildcard DNS under %s", stage, parent)
         for parent in parents - set(wildcards):  # the probe raised (recorded as an error)
             wildcards[parent] = Resolution(timed_out=True)
         for parent in sorted(p for p in parents if (w := wildcards[p]) and w.timed_out):
-            inv.errors.append(SourceError("guess", parent, "wildcard check got no answer; no guesses tested there"))
+            inv.errors.append(SourceError(stage, parent, f"wildcard check got no answer; {unknown}"))
 
     def _enrich(self, inv: Inventory) -> None:
         public = [ip for ip in inv.ips if is_public_ip(ip)]
@@ -497,7 +524,8 @@ class Pipeline:
 
     def _lookalikes(self, inv: Inventory) -> None:
         """When each lookalike that can handle mail or serve a site was registered, and for recent ones
-        the newest certificate (farpoint.lookalikes). Registries and crt.sh only."""
+        the newest certificate (farpoint.lookalikes). Registries and crt.sh, plus a wildcard DNS check
+        under the parent of each split name (ex.ample.com)."""
         config = self.lookalikes
         wanted = sorted(d for d, r in inv.lookalikes.items() if (r.mx or r.ips) and d not in config.fresh)
         done, failed, total = [0], [0], [len(wanted)]
@@ -508,20 +536,58 @@ class Pipeline:
             self.reporter.phase("lookalikes", done[0], total[0], failed[0])
 
         self.reporter.phase("lookalikes", 0, total[0])
+        under_wildcards = self._under_a_wildcard(inv, wanted)
+        wanted = [d for d in wanted if d not in under_wildcards]
+        total[0] = len(wanted)
         if self.dns and wanted:  # the organisation's own NS and MX: a lookalike sharing them is its own
             own = {("scan-dns", d): (lambda d=d: {"domain": d, "ns": self.dns.records(d, "NS") or [], "mx": self.dns.records(d, "MX") or []}) for d in inv.domains}
             for (_, domain), row in self._fan_out(inv, own):
                 inv.scan_dns[domain] = row
-        jobs = {("rdap-domain", d): (lambda d=d: config.lookups.registration(d)) for d in wanted}
+        def look(domain: str) -> dict | None | NoRdapService:
+            try:
+                return config.lookups.registration(domain)
+            except NoRdapService as exc:  # unknown, not a failure: one note for all of them below
+                return exc
+
+        jobs = {("rdap-domain", d): (lambda d=d: look(d)) for d in wanted}
         recent = (date.today() - timedelta(days=RECENT_DAYS)).isoformat()
+        unsupported: dict[str, int] = {}  # TLD -> lookalikes under it whose registration is unknown
         for (_, domain), reg in self._fan_out(inv, jobs, on_done=tick):
+            if isinstance(reg, NoRdapService):  # left unchecked, so its date stays unknown and it is asked again next run
+                unsupported[reg.tld] = unsupported.get(reg.tld, 0) + 1
+                continue
             record = inv.lookalikes[domain]
             record.registration, record.checked = reg, True
+        if unsupported:
+            n = sum(unsupported.values())
+            tlds = " ".join(f".{t}" for t in sorted(unsupported))
+            inv.errors.append(SourceError("rdap-domain", tlds, f"no RDAP service for these TLDs: registration dates unknown for {n} lookalike{'s' if n != 1 else ''}"))
         new = [d for d in wanted if (inv.lookalikes[d].registration or {}).get("created") and inv.lookalikes[d].registration["created"] >= recent]
         total[0] += len(new)
         jobs = {("crtsh-certificate", d): (lambda d=d: config.lookups.last_certificate(d)) for d in new}
         for (_, domain), started in self._fan_out(inv, jobs, on_done=tick):
             inv.lookalikes[domain].last_certificate = started
+
+    def _under_a_wildcard(self, inv: Inventory, lookalikes: Sequence[str]) -> set[str]:
+        """Lookalikes under someone else's registered domain (dnstwist's ex.ample.com) whose parent answers
+        any name the same way: a wildcard's answer, not a name set up to look like the organisation, so
+        the parent's registration date says nothing about it. Random names are looked up under each parent;
+        without an answer either way the lookalike is left undated too."""
+        split = {d: d.split(".", 1)[1] for d in lookalikes if (reg := registered_domain(d)) and reg != d}
+        if not split:
+            return set()
+        if self.lookup is None:
+            for domain in sorted(split):
+                inv.errors.append(SourceError("lookalikes", domain, "no DNS lookups (--no-resolve): its wildcard check couldn't run, so it is left undated"))
+            return set(split)
+        wildcards: dict[str, Resolution | None] = {}
+        self._probe_wildcards(inv, set(split.values()), wildcards, self.lookup, "lookalikes", "its lookalikes are left undated")
+        skipped = set()
+        for domain, parent in split.items():
+            wildcard = wildcards[parent]
+            if (wildcard and wildcard.timed_out) or _wildcard_answer(Resolution(tuple(sorted(inv.lookalikes[domain].ips))), wildcard):
+                skipped.add(domain)
+        return skipped
 
     def _fingerprint(self, inv: Inventory) -> None:
         """Sweep each live host's address for open ports, ask each open port who it is, check every
@@ -621,6 +687,10 @@ class Pipeline:
                 inv.posture[target] = result
                 for message in result.get("check_errors", []):
                     inv.errors.append(SourceError("posture", target, message))
+                if result.get("mta_sts_error"):
+                    inv.errors.append(SourceError("posture", target, result["mta_sts_error"]))
+                if result.get("registration_error"):
+                    inv.errors.append(SourceError("posture", target, f"registration unknown: {result['registration_error']}"))
                 for rdtype, key in (("DS", "dnssec"), ("CAA", "caa")):
                     if result.get(key) is None and result.get("ns"):
                         inv.errors.append(SourceError("posture", target, f"the resolver failed {rdtype} queries, so {key} is unknown (try --nameserver 1.1.1.1)"))

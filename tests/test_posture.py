@@ -1,5 +1,8 @@
 import base64
 
+import pytest
+
+from farpoint.assess import derive
 from farpoint.posture import assess_domain, check_dkim, check_dmarc, check_spf, dkim_key_bits, hosted, mail_provider, registration
 from farpoint.probe import HttpResult
 
@@ -134,6 +137,45 @@ def test_a_whole_domain():
     assert row["axfr"] == ["ns1.example.com"]
     assert row["ns_providers"] == ["dnshost.net", "example.com"] and row["dnssec"] is False and row["wildcard"] is False
     assert row["status"] == ["active"]
+
+
+def mta_sts_answer(policy):
+    """The posture and findings of a domain whose MTA-STS policy host answers `policy`."""
+    dns = FakeDns({D: {"MX": ["mx.example.net"], "TXT": ["v=spf1 -all"]}, "_dmarc.example.com": {"TXT": ["v=DMARC1; p=reject"]}, "_mta-sts.example.com": {"TXT": ["v=STSv1; id=1"]}})
+
+    class Prober(FakeProber):
+        def fetch(self, url):
+            return policy
+
+    row = assess_domain(dns, Prober(), D, lambda h: False, selectors=[])
+    return row, {f["kind"] for f in derive({"posture": [row]})}
+
+
+CHALLENGE = b"<html><head><title>Attention Required! | Cloudflare</title></head></html>"
+
+
+@pytest.mark.parametrize("policy", [
+    HttpResult(403, [("server", "cloudflare")], CHALLENGE),  # a bot challenge page
+    HttpResult(403, [("cf-mitigated", "challenge")], b""),  # a bot challenge, by its header
+    HttpResult(429, [], b""),  # a rate limit
+    HttpResult(503, [], b""),  # an outage
+])
+def test_an_mta_sts_policy_host_that_turns_the_scan_away_leaves_mta_sts_unknown(policy):
+    row, kinds = mta_sts_answer(policy)
+
+    assert row["mta_sts"] == "unknown" and str(policy.status) in row["mta_sts_error"]
+    assert not kinds & {"mta-sts-broken", "mta-sts-missing"}
+
+
+@pytest.mark.parametrize("policy", [
+    HttpResult(404, [], b"not found"),
+    HttpResult(403, [("server", "AmazonS3")], b"<Error><Code>AccessDenied</Code></Error>"),  # sending servers are refused too
+    HttpResult(401, [], b""),
+])
+def test_an_mta_sts_policy_no_sender_can_fetch_is_broken(policy):
+    row, kinds = mta_sts_answer(policy)
+
+    assert row["mta_sts"] == "broken" and "mta-sts-broken" in kinds
 
 
 def test_zone_transfers_are_only_tried_against_nameservers_the_organisation_runs():

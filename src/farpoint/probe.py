@@ -56,6 +56,15 @@ class HttpResult:
         return [v for k, v in self.headers if k == name]
 
 
+# A bot-management page instead of what was asked for: an answer about the asker, not the site.
+_BOT_CHALLENGE_TITLES = re.compile(rb"<title>\s*(?:Attention Required! \| Cloudflare|Just a moment\.\.\.)\s*</title>", re.I)
+
+
+def bot_challenge(resp: HttpResult) -> bool:
+    """Whether `resp` is a bot challenge (Cloudflare's header or challenge page) rather than the content."""
+    return (resp.header("cf-mitigated") or "").lower() == "challenge" or bool(_BOT_CHALLENGE_TITLES.search(resp.body[:65536]))
+
+
 @dataclass
 class SmtpResult:
     banner: str = ""

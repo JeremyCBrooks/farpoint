@@ -419,7 +419,7 @@ def test_lookalikes_are_not_flagged_while_the_organisations_own_dns_is_unknown()
     assert [f["target"] for f in derive(report, today=TODAY) if f["kind"].startswith("lookalike-")] == ["examp1e.com"]
 
 
-def test_a_recent_lookalike_that_can_send_mail_or_serve_a_site_is_ready():
+def test_a_recent_lookalike_that_can_receive_mail_or_serve_a_site_is_ready():
     found = lookalike_findings({"lookalikes": [
         lookalike("examp1e.com", mx=["mx.mailer.net"], last_certificate="2026-09-03"),
         lookalike("exarnple.com", current_ips=["198.51.100.4"]),
@@ -427,7 +427,8 @@ def test_a_recent_lookalike_that_can_send_mail_or_serve_a_site_is_ready():
 
     mail, web = found["examp1e.com"], found["exarnple.com"]
     assert (mail["level"], mail["kind"]) == (web["level"], web["kind"]) == ("high", "lookalike-ready")
-    assert "registered 2026-09-02" in mail["detail"] and "mail" in mail["detail"]
+    assert "registered 2026-09-02" in mail["detail"] and "receive mail" in mail["detail"]
+    assert "send" not in mail["detail"]  # an MX says it takes mail in; nothing in DNS says it sends
     assert "mx.mailer.net" in mail["evidence"] and any("2026-09-03" in e for e in mail["evidence"])
     assert "website" in web["detail"] and "198.51.100.4" in web["evidence"]
 
@@ -523,3 +524,18 @@ def test_hosting_and_forwarding_defaults_are_not_parking():
         lookalike("examp1e.co", ns=["ns1.registrar-servers.com"], current_ips=["162.255.119.10"]),  # Namecheap's URL redirect can forward to anything
     ]})
     assert {d: f["kind"] for d, f in found.items()} == dict.fromkeys(["examp1e.org", "examp1e.io", "examp1e.co"], "lookalike-ready")
+
+
+def test_a_shared_front_end_disclosing_its_version_is_the_providers_not_the_organisations():
+    def report(cnames, org="Example Hosting", headers=None):
+        return {
+            "fingerprints": [endpoint("autodiscover.example.com", 80, service="http", signals=["version-disclosure"], status=301, headers=headers or {"server": "Microsoft-IIS/10.0"})],
+            "hosts": [{"hostname": "autodiscover.example.com", "cnames": cnames}],
+            "ips": [{"ip": "192.0.2.1", "org": org, "tags": []}],
+        }
+
+    assert ("low", "version-disclosure") not in kinds(derive(report(["autodiscover.outlook.com"]), today=TODAY))
+    assert ("low", "version-disclosure") not in kinds(derive(report([], org="Cloudflare, Inc."), today=TODAY))
+    assert ("low", "version-disclosure") in kinds(derive(report([]), today=TODAY))  # the organisation's own server
+    origin = {"server": "cloudflare", "x-powered-by": "PHP/5.6.40"}  # passed through the CDN from the organisation's origin
+    assert ("low", "version-disclosure") in kinds(derive(report([], org="Cloudflare, Inc.", headers=origin), today=TODAY))

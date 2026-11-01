@@ -290,7 +290,11 @@ the host, never followed.
 **Sign-in** (`identity.py`, `Pipeline._sign_in`, first in the stage). Each scan domain gets two
 requests to Microsoft: `getuserrealm.srf` with a random local part (never a real user), giving
 `Managed`, `Federated` (with the identity provider's sign-in URL) or `Unknown`; and the tenant's
-OpenID configuration, giving the tenant ID and region. A federated sign-in URL with an `/adfs/` path
+OpenID configuration, giving the tenant ID and region. After the tenant search,
+`Pipeline._check_m365_names` asks for the tenant ID of each Microsoft 365 tenant found by name alone
+(`identity.m365_tenant_name` maps SharePoint and OneDrive names to it): one that differs from every
+scan domain's tenant is dropped, a match gets tie `records`; with no scan domain on Microsoft 365, or
+no answer, it stays as it was. A federated sign-in URL with an `/adfs/` path
 is self-hosted ADFS; otherwise the provider is named from `data/identity_providers.json` by the URL's
 registered domain, or `other`. A sign-in host under the scan domains joins the inventory and is
 resolved. If the sign-in lookup fails, the scan records no row for the domain (unknown, never `none`)
@@ -351,7 +355,13 @@ runs after guessing so guessed hosts' addresses are covered.
 **Lookalike triage** (`lookalikes.py`, `Pipeline._lookalikes`). A lookalike's MX and nameservers come
 from dnstwist's output and, for TLD swaps, from `--related`'s own lookups; null MX (`MX 0 .`) and
 failed answers don't count. Each lookalike this scan saw with MX or an address gets an RDAP lookup at
-its registry (`rdap-domain`); one registered within `RECENT_DAYS` (365) also gets its newest
+its registry (`rdap-domain`), for its registered domain (`ex.ample.com` is `ample.com`'s). Such a split
+name is first checked for a wildcard under its parent (`Pipeline._under_a_wildcard`, the same random-name
+probe as `--guess`): if the parent answers any name as it answers this one, or gives no answer, the name
+is left undated. A TLD with no
+RDAP service in IANA's bootstrap, or one rdap.org itself answers 404 for, raises `enrich.NoRdapService`:
+the date stays unknown (asked again next scan, without a request while the bootstrap lacks the TLD),
+and the run records one `rdap-domain` error naming those TLDs; one registered within `RECENT_DAYS` (365) also gets its newest
 certificate from crt.sh (`crtsh-certificate`). The scan domains' own NS and MX are looked up too
 (`scan-dns`), so assessment can tell the organisation's own lookalikes without `--fingerprint`. A registration date found within `RECHECK_DAYS` (30)
 isn't asked again (`fresh_registrations` reads them from `--out`); an unknown one is asked every scan.
@@ -394,15 +404,19 @@ address.
    `Evidence` (headers, cookies, title, body, redirect, banner, CNAMEs, generator, certificate) and
    matched against the rules in `data/fingerprints.json`. A rule's first capture group is its version,
    which fills the rule's CPE template. WordPress plugins and themes are read from asset URLs. Signals
-   such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too.
+   such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too,
+   and `bot-challenge` for a CDN's challenge page in place of the site (judged as nothing, counted in
+   the run summary).
 4. **Domain posture** (`posture.assess_domain`), per scan domain, almost all through DNS:
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
      exist or sit on unregistered domains); DMARC `p`, `sp`, `pct`; DKIM key sizes under 32 common
-     selectors; MTA-STS (the policy is fetched over verified HTTPS), TLS-RPT, BIMI
+     selectors; MTA-STS (the policy is fetched over verified HTTPS; a bot challenge
+     (`probe.bot_challenge`), HTTP 429 or 5xx leaves it `unknown` with an error, since those answer
+     about the asker or the moment, not the policy; a plain 401 or 403 refuses sending servers too), TLS-RPT, BIMI
    - DNS: nameservers, one `AXFR` request to each nameserver (third-party services such as
      Cloudflare included), except managed services that can't allow one, listed in
      `data/dns_providers.json`, and none with `--no-axfr`; DNSSEC, CAA, wildcard
-   - registration: registrar, dates and transfer lock from RDAP
+   - registration: registrar, dates and transfer lock from RDAP; a failed lookup is recorded as an error
 
    Each part fails independently. A failed check is recorded as an error and its value left unknown.
 5. **Mail servers** (`posture.check_mx`). MX hosts under the organisation's own domains get one SMTP
@@ -439,7 +453,9 @@ the save. It walks:
 - each address's exposed management and data ports, one finding per address and port whatever names
   point at it
 - each fingerprinted endpoint: edge appliances, file transfer platforms and admin panels by technology
-  category, end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals,
+  category, end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals
+  (`version-disclosure` not on a shared front end whose own `Server` header is the only one; an
+  origin's `X-Powered-By` or `X-AspNet-Version` passes through and still counts),
   dev/test hosts, parked scan domains (high when the domain is still in the Microsoft 365 tenant)
 - each wildcard certificate that covers the names serving it, once, with those endpoints
 - each address's Shodan CVEs

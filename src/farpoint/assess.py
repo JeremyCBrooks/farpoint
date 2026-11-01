@@ -214,8 +214,11 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     cnames = {h["hostname"]: h.get("cnames", []) for h in report.get("hosts", [])}
     tenant_names = {h["hostname"] for h in report.get("hosts", []) if "m365" in h.get("sources", [])}
     https_hosts = {r["hostname"] for r in fingerprints if r.get("service") == "https" and (r.get("status") or 0) < 500}
+    ip_rows = {ip["ip"]: ip for ip in report.get("ips", [])}
     for r in fingerprints:
-        out.extend(_seen(_endpoint_findings(r, vulns, kev, today, https_hosts, cnames.get(r["hostname"], [])), r))
+        ip = ip_rows.get(r.get("ip"), {})
+        shared = shared_address(ip.get("org"), [cnames.get(r["hostname"], [])], ip.get("tags", []))
+        out.extend(_seen(_endpoint_findings(r, vulns, kev, today, https_hosts, cnames.get(r["hostname"], []), shared), r))
     out.extend(_wildcard_findings(fingerprints))
     out.extend(_exposed_findings(fingerprints))
     out.extend(_host_findings(fingerprints, report.get("domains", []), tenant_names))
@@ -251,7 +254,13 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     return sorted(out, key=lambda f: (order[f["level"]], f["kind"], f["target"]))
 
 
-def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, https_hosts: set[str], cnames: Sequence[str] = ()) -> list[dict]:
+def _origin_versions(r: Mapping) -> bool:
+    """Whether a response names its software in headers that come from behind a shared front end."""
+    headers = r.get("headers") or {}
+    return bool(headers.get("x-powered-by") or headers.get("x-aspnet-version"))
+
+
+def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, https_hosts: set[str], cnames: Sequence[str] = (), shared: bool = False) -> list[dict]:
     out = []
     ep = r["endpoint"]
     for t in r.get("tech", []):
@@ -273,6 +282,8 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
         if t.get("category") == "cms-plugin" and version:
             out.append(_finding("low", "plugin-version", ep, f"{label} discloses its version (check it against the plugin's advisories)", about=name))
     for sig in r.get("signals", []):
+        if sig == "version-disclosure" and shared and not _origin_versions(r):
+            continue  # only the CDN's or SaaS front end's own Server header: the provider's to change
         if sig in SIGNALS:
             level, what = SIGNALS[sig]
             out.append(_finding(level, sig, ep, what))
@@ -443,7 +454,7 @@ def _lookalike_findings(report: Mapping, today: date) -> list[dict]:
         if service:
             finding = _finding("medium", "lookalike-parked", row["domain"], f"registered {created} and parked at {service}: likely a speculator, but it can start sending mail at any time", evidence)
         else:
-            what = " and ".join({"mail": "send and receive mail", "web": "serve a website"}[u] for u in uses)
+            what = " and ".join({"mail": "receive mail", "web": "serve a website"}[u] for u in uses)
             finding = _finding("high", "lookalike-ready", row["domain"], f"registered {created} and set up to {what}: block it at the mail gateway", evidence)
         out.extend(_seen([finding], row))
     return out

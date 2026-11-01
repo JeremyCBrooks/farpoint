@@ -6,7 +6,7 @@ from farpoint.models import Observation
 from farpoint.output import write_outputs
 from farpoint.pipeline import Pipeline
 from farpoint.resolve import Resolution
-from farpoint.tenants import TenantConfig
+from farpoint.tenants import TenantConfig, Vendor
 
 from test_output import read_csv
 from test_pipeline import StaticSource, dns_table
@@ -127,3 +127,49 @@ def test_a_failed_tenant_lookup_keeps_the_sign_in_answer():
     row = inv.identity["example.com"]
     assert (row["provider"], row["sign_in_host"], row["tenant_id"]) == ("adfs", "sts.example.com", None)
     assert [(e.source, e.target) for e in inv.errors] == [("entra-tenant", "example.com")]
+
+
+OTHER = "99999999-8888-7777-6666-555555555555"
+M365 = [Vendor("Microsoft 365", ("{org}.sharepoint.com", "{org}.onmicrosoft.com"))]
+
+
+def tenant_scan(openids):
+    """example.com signs in to TENANT; the platform has example.onmicrosoft.com and example.sharepoint.com,
+    found by name alone. `openids` says which tenant each onmicrosoft.com name is."""
+    sign_in = FakeSignIn({"example.com": realm("Managed")}, openids={"example.com": {"issuer": f"https://login.microsoftonline.com/{TENANT}/v2.0"}, **openids})
+    found = {"example.onmicrosoft.com": Resolution(("192.0.2.20",)), "example.sharepoint.com": Resolution(("192.0.2.21",))}
+    pipeline = Pipeline(
+        sources=[StaticSource("crtsh")], lookup=lambda h: found.get(h, Resolution()), txt=lambda d: [],
+        tenants=TenantConfig(budget=50, vendors=M365), sign_in=sign_in,
+    )
+    return pipeline.run(["example.com"]), sign_in
+
+
+def issuer(tenant):
+    return {"issuer": f"https://login.microsoftonline.com/{tenant}/v2.0"}
+
+
+def test_a_tenant_found_by_name_that_is_someone_elses_is_dropped():
+    inv, _ = tenant_scan({"example.onmicrosoft.com": issuer(OTHER)})
+
+    assert "example.onmicrosoft.com" not in inv.tenants
+    assert "example.sharepoint.com" not in inv.tenants  # the same tenant's SharePoint
+
+
+def test_a_tenant_found_by_name_that_is_the_organisations_is_tied_by_its_id():
+    inv, _ = tenant_scan({"example.onmicrosoft.com": issuer(TENANT)})
+
+    for name in ("example.onmicrosoft.com", "example.sharepoint.com"):
+        assert inv.tenants[name].tie == "records"
+        assert "same Microsoft 365 tenant as example.com's sign-in" in inv.tenants[name].evidence
+
+
+def test_a_tenant_found_by_name_stays_as_it_is_when_the_organisations_tenant_is_unknown():
+    sign_in = FakeSignIn({"example.com": realm("Unknown")})  # not on Microsoft 365: nothing to compare with
+    found = {"example.onmicrosoft.com": Resolution(("192.0.2.20",))}
+    pipeline = Pipeline(sources=[StaticSource("crtsh")], lookup=lambda h: found.get(h, Resolution()), txt=lambda d: [],
+                        tenants=TenantConfig(budget=50, vendors=M365), sign_in=sign_in)
+
+    inv = pipeline.run(["example.com"])
+
+    assert inv.tenants["example.onmicrosoft.com"].tie == "name"

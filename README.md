@@ -171,7 +171,10 @@ exists.
 It also asks Microsoft how each scan domain signs in (`identity.csv`): `managed` (passwords in Entra),
 `federated` (to the identity provider in `provider` and `sign_in_host`), or `none` (not in Microsoft),
 with the tenant ID and region. That's two requests per domain to `login.microsoftonline.com`, with a
-made-up username, never a real one. Federation to a self-hosted ADFS server (a sign-in URL under
+made-up username, never a real one. A Microsoft 365 tenant found by its name alone
+(`example.onmicrosoft.com`, `example.sharepoint.com`) gets one more request for its tenant ID: if it
+is not the tenant a scan domain signs in to, it is someone else's and is dropped; if it is, its tie
+becomes `records`. Federation to a self-hosted ADFS server (a sign-in URL under
 `/adfs/`) is a finding; a sign-in host under the scan domains joins the inventory. Identity providers
 are recognised from `src/farpoint/data/identity_providers.json`.
 
@@ -182,12 +185,18 @@ organisation's nameservers see one TXT query per domain.
 
 Most registered lookalikes are someone else's business. To find the few worth blocking, enrichment
 looks up when each lookalike that has mail servers (MX) or an address was registered (RDAP), and for
-those registered within the last year, its newest certificate (crt.sh). Registration dates are
-reused for 30 days. MX and nameservers come from dnstwist and `--related`, which already look them up.
-Nothing is sent to the lookalikes' own servers. `--no-enrich` skips the lookups.
+those registered within the last year, its newest certificate (crt.sh). A name under someone else's
+domain (`ex.ample.com`, dnstwist's dot insertion) is dated by that registered domain, unless the domain
+answers any name the same way (wildcard DNS: three lookups of random names under it), when its date
+says nothing about the organisation and the name is left undated (also with `--no-resolve`, with an
+error per name, since the check needs DNS). Registration dates are
+reused for 30 days. Many country registries (`.io`, `.de`, `.eu`, `.me`, `.us` and others) run no RDAP
+service: their lookalikes' dates are unknown, and the run records one error naming those TLDs. MX and nameservers come from dnstwist and `--related`, which already look them up.
+Nothing is sent to the lookalikes' own servers except those wildcard DNS lookups, which their
+nameservers see. `--no-enrich` skips the lookups.
 
-With `--assess`, a lookalike registered within the last year that can handle mail or serve a site
-now is `lookalike-ready` (high). One that shows a parking service and nothing else (all its nameservers are the
+With `--assess`, a lookalike registered within the last year that can receive mail (it has MX) or serve
+a site now is `lookalike-ready` (high). One that shows a parking service and nothing else (all its nameservers are the
 service's parking nameservers, or all its addresses its parked-page addresses, and any mail server is
 the service's too; see `src/farpoint/data/parking.json`) is `lookalike-parked` (medium). Registrars'
 default nameservers and forwarding addresses don't count, since they serve live sites too:
@@ -265,6 +274,10 @@ had in the past. It never logs in, guesses passwords or sends exploits.
   transfers to whole address ranges. In `posture.csv`, `axfr` lists the nameservers that handed over the zone, `no` if
   none did, and is blank when it's unknown: none was asked (`--no-axfr`, or only such services) or one
   didn't answer. A scan that gets no answer keeps the last one while the nameservers stay the same.
+  `mta_sts` is the policy's mode, `broken` when it's advertised but missing or invalid, and `unknown`
+  when its host turned the scan away (a bot challenge, HTTP 429 or 5xx): no MTA-STS finding is made
+  then, and the error says what it answered. A plain 401 or 403 refuses sending servers too, so it is
+  `broken`.
 - **Dangling DNS**: CNAMEs pointing at names that don't exist, flagged as takeover risks where the
   name could be claimed.
 
@@ -274,6 +287,11 @@ checks aren't paced. Web requests identify themselves with the user agent
 `farpoint/0.1 (host fingerprinting)`, or `farpoint/0.1 (host fingerprinting; engagement ID)` with
 `--engagement`. A scan of about 100 hosts makes a few thousand connections over a
 few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.csv`.
+
+A CDN's bot management may answer the scan with a challenge page instead of the site (Cloudflare's
+"Attention Required!" or "Just a moment..."). Such a service gets the signal `bot-challenge`, no
+finding is made from it, and the run summary counts them: what runs behind them wasn't seen. To
+fingerprint them, let the scan's address past the challenge for the run.
 
 **Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request
 may be logged as reconnaissance (`--ports none` and `--no-axfr` drop both). Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then
@@ -288,7 +306,7 @@ choosing a soft target, not by CVSS. Assessment sends nothing to the organisatio
 |---|---|
 | high | RDP, SMB, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; managed file transfer (MOVEit, GoAnywhere, Cleo, Axway, Kiteworks); Jenkins, GitLab, Grafana, Kibana, phpMyAdmin, Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); expired certificates; subdomain takeovers; no SPF; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register); a parked scan domain still listed in the organisation's Microsoft 365 tenant; a lookalike registered within the last year that can handle mail or serve a site (see Lookalike triage) |
 | medium | self-signed or mismatched certificates, certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves), TLS 1.0/1.1, plain HTTP with no HTTPS, directory listings, default server pages, Basic or NTLM login prompts, stack traces, dev/test/staging hosts on the internet, DMARC `pct` below 100 or `sp=none`, mail servers without STARTTLS, weak DKIM keys, SPF over 10 lookups, BGP open to the internet, a parked scan domain, a recently registered lookalike that is only parked, sign-in federated to a self-hosted ADFS server |
-| low | missing HSTS, wildcard certificates covering the organisation's names (one finding per certificate), a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS), SPF at exactly 10 lookups, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers, SSH open |
+| low | missing HSTS, wildcard certificates covering the organisation's names (one finding per certificate), a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS), SPF at exactly 10 lookups, internal names in certificates, broken CNAMEs, no DNSSEC, no CAA, no MTA-STS, no transfer lock, version-revealing headers (not on a CDN's or SaaS front end: those are the provider's), SSH open |
 
 Each product version fingerprinting identified is checked against NVD for CVEs and against CISA's
 Known Exploited Vulnerabilities catalogue. NVD answers are cached in `assets.json` for a week. Without

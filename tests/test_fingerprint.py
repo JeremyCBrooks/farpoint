@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from farpoint.assess import derive
 from farpoint.fingerprint import (
     DEFAULT_PORTS,
     Evidence,
@@ -180,6 +181,27 @@ HOME = HttpResult(
     b'<link rel="icon" href="/static/fav.png"><script src="/wp-content/plugins/contact-form-7/x.js?ver=5.7.1"></script></head>'
     b'<form><input type="password" name="p"></form></html>',
 )
+
+
+@pytest.mark.parametrize("challenge", [
+    HttpResult(403, [("server", "cloudflare")], b"<html><title>Attention Required! | Cloudflare</title></html>"),
+    HttpResult(403, [("server", "cloudflare"), ("cf-mitigated", "challenge")], b"<html><title>Just a moment...</title></html>"),
+])
+def test_a_bot_challenge_is_marked_and_judged_as_nothing(challenge):
+    prober = FakeProber(http={("http", HOST, 80, "/"): challenge})
+
+    rec = fingerprint_service(prober, HOST, IP, 80)
+
+    assert "bot-challenge" in rec.signals
+    row = {"endpoint": f"{HOST}:80", "hostname": HOST, "ip": IP, "port": 80, "service": "http", "status": 403, "signals": rec.signals, "tech": []}
+    assert derive({"fingerprints": [row]}) == []
+
+
+def test_a_plain_403_is_not_a_bot_challenge():
+    prober = FakeProber(http={("http", HOST, 80, "/"): HttpResult(403, [("server", "nginx")], b"<title>403 Forbidden</title>")})
+
+    rec = fingerprint_service(prober, HOST, IP, 80)
+    assert rec.status == 403 and "bot-challenge" not in rec.signals
 
 
 def test_a_web_service_is_read_from_headers_page_favicon_and_paths():

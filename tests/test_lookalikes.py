@@ -1,13 +1,15 @@
 from datetime import date, timedelta
 
 import httpx
+import pytest
 
 from conftest import fake_http, when_params
-from farpoint.enrich import Rdap
+from farpoint.enrich import NoRdapService, Rdap
 from farpoint.lookalikes import LookalikeConfig, NetworkLookalikeLookups, fresh_registrations
 from farpoint.models import Observation
 from farpoint.output import merge_reports, run_report
-from farpoint.pipeline import Pipeline
+from farpoint.pipeline import WILDCARD_PROBES, Pipeline
+from farpoint.resolve import Resolution
 from farpoint.sources.web import CrtSh
 
 from test_pipeline import StaticSource
@@ -17,14 +19,16 @@ OLD = "2001-01-01"
 
 
 class FakeLookups:
-    def __init__(self, created=None, certificates=None, failing=()):
-        self.created, self.certificates, self.failing = created or {}, certificates or {}, set(failing)
+    def __init__(self, created=None, certificates=None, failing=(), unknown=()):
+        self.created, self.certificates, self.failing, self.unknown = created or {}, certificates or {}, set(failing), set(unknown)
         self.registrations, self.certificate_calls = [], []
 
     def registration(self, domain):
         self.registrations.append(domain)
         if domain in self.failing:
             raise httpx.ConnectError("registry unreachable")
+        if domain in self.unknown:
+            raise NoRdapService(domain.rsplit(".", 1)[-1])
         created = self.created.get(domain)
         return None if created is None else {"registrar": "Example Registrar", "created": created, "expires": None, "status": []}
 
@@ -37,10 +41,10 @@ def lookalike(domain, ip=None, mx=()):
     return Observation("dnstwist", domain, ip, lookalike=True, mx=mx, ns=("ns1.host.net",))
 
 
-def scan(lookups, *observations, fresh=frozenset()):
+def scan(lookups, *observations, fresh=frozenset(), lookup=None):
     source = StaticSource("dnstwist", list(observations))
     source.collect = lambda domain: list(observations)
-    return Pipeline(sources=[source], lookalikes=LookalikeConfig(lookups, fresh)).run(["example.com"])
+    return Pipeline(sources=[source], lookalikes=LookalikeConfig(lookups, fresh), lookup=lookup).run(["example.com"])
 
 
 def test_only_lookalikes_that_can_mail_or_serve_are_looked_up():
@@ -97,6 +101,90 @@ def test_network_lookups_read_rdap_and_crtsh():
     assert lookups.registration("a.com")["created"] == "2026-09-01"
     assert lookups.registration("gone.com") is None  # the registry has no record
     assert lookups.last_certificate("a.com") == "2026-09-02"
+
+
+def test_a_tld_without_an_rdap_service_is_unknown_not_unregistered():
+    asked = []
+    http = fake_http({
+        "data.iana.org/rdap/dns.json": httpx.Response(200, json={"services": [[["com"], ["https://rdap.example/"]]]}),
+        "rdap.org/domain/example.io": lambda request: asked.append(request.url) or httpx.Response(404),
+    })
+    lookups = NetworkLookalikeLookups(Rdap(http, retries=0), CrtSh(http, retries=0))
+
+    with pytest.raises(NoRdapService) as caught:
+        lookups.registration("example.io")
+    assert caught.value.tld == "io"
+    assert asked == []  # rdap.org has nothing the IANA registry lacks: don't ask it
+
+
+def test_rdap_orgs_own_404_is_unknown_but_a_registrys_404_means_no_record():
+    http = fake_http({
+        "data.iana.org/rdap/dns.json": httpx.Response(503),  # the bootstrap is down: everything goes to rdap.org
+        "rdap.org/domain/example.io": httpx.Response(404),  # rdap.org knows no registry for .io
+        "rdap.org/domain/gone.com": httpx.Response(302, headers={"location": "https://rdap.example/domain/gone.com"}),
+        "rdap.example/domain/gone.com": httpx.Response(404),  # the registry has no such domain
+    })
+    lookups = NetworkLookalikeLookups(Rdap(http, retries=0), CrtSh(http, retries=0))
+
+    with pytest.raises(NoRdapService):
+        lookups.registration("example.io")
+    assert lookups.registration("gone.com") is None
+
+
+def test_a_name_under_someone_elses_domain_is_looked_up_by_that_registered_domain():
+    http = fake_http({
+        "data.iana.org/rdap/dns.json": httpx.Response(200, json={"services": [[["com"], ["https://rdap.example/"]]]}),
+        "rdap.example/domain/ample.com": httpx.Response(200, json={"events": [{"eventAction": "registration", "eventDate": "2026-09-01T10:00:00Z"}]}),
+    })
+    lookups = NetworkLookalikeLookups(Rdap(http, retries=0), CrtSh(http, retries=0))
+
+    assert lookups.registration("ex.ample.com")["created"] == "2026-09-01"  # dnstwist's dot insertion of example.com
+
+
+def test_lookalikes_under_tlds_without_rdap_get_one_error_and_stay_unknown():
+    lookups = FakeLookups(created={"ok.com": OLD}, unknown={"examp1e.io", "exampel.io", "example.de"})
+    inv = scan(lookups, *(lookalike(d, "192.0.2.1") for d in ("examp1e.io", "exampel.io", "example.de", "ok.com")))
+
+    assert [(e.source, e.target) for e in inv.errors] == [("rdap-domain", ".de .io")]
+    assert "3 lookalikes" in inv.errors[0].message
+    rows = {r["domain"]: r for r in run_report(inv)["lookalikes"]}
+    assert rows["examp1e.io"]["registered_on"] is None and not rows["examp1e.io"]["registration_checked"]  # asked again next run
+    assert rows["ok.com"]["registration_checked"]
+
+
+def test_a_name_under_someone_elses_wildcard_is_not_dated_by_that_domain():
+    asked = []
+
+    def lookup(host):  # ample.com answers every name; ampel.com only its own
+        asked.append(host)
+        if host.endswith(".ample.com"):
+            return Resolution(ips=("192.0.2.5",))
+        return Resolution(ips=("192.0.2.6",)) if host == "ex.ampel.com" else Resolution()
+
+    lookups = FakeLookups(created={"ex.ampel.com": RECENT, "examp1e.com": RECENT})
+    inv = scan(lookups, lookalike("ex.ample.com", "192.0.2.5"), lookalike("ex.ampel.com", "192.0.2.6"), lookalike("examp1e.com", "192.0.2.7"), lookup=lookup)
+
+    assert sorted(lookups.registrations) == ["ex.ampel.com", "examp1e.com"]  # not ex.ample.com: any name there answers the same
+    rows = {r["domain"]: r for r in run_report(inv)["lookalikes"]}
+    assert rows["ex.ample.com"]["registered_on"] is None and inv.errors == []
+    wildcard_checks = [h for h in asked if h.count(".") == 2 and h.endswith((".ample.com", ".ampel.com")) and not h.startswith("ex.")]
+    assert sorted(h.split(".", 1)[1] for h in wildcard_checks) == ["ampel.com"] * WILDCARD_PROBES + ["ample.com"] * WILDCARD_PROBES  # none for examp1e.com
+
+
+def test_a_split_name_whose_wildcard_check_gets_no_answer_stays_undated():
+    lookups = FakeLookups(created={"ex.ample.com": RECENT})
+    inv = scan(lookups, lookalike("ex.ample.com", "192.0.2.5"), lookup=lambda host: Resolution(timed_out=True))
+
+    assert lookups.registrations == []
+    assert [(e.source, e.target) for e in inv.errors] == [("lookalikes", "ample.com")]
+
+
+def test_split_names_left_undated_without_dns_lookups_are_reported():
+    lookups = FakeLookups(created={"ex.ample.com": RECENT, "examp1e.com": RECENT})
+    inv = scan(lookups, lookalike("ex.ample.com", "192.0.2.5"), lookalike("examp1e.com", "192.0.2.7"))  # no lookup: --no-resolve
+
+    assert lookups.registrations == ["examp1e.com"]
+    assert [(e.source, e.target) for e in inv.errors] == [("lookalikes", "ex.ample.com")]
 
 
 def test_merge_keeps_the_last_known_registration():

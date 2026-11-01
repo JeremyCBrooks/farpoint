@@ -6,6 +6,8 @@ import re
 from collections.abc import Iterator
 from urllib.parse import urlsplit
 
+import httpx
+
 from farpoint.models import Observation
 from farpoint.names import extract_hostnames
 from farpoint.sources.base import HttpSource, SourceFailure
@@ -128,7 +130,12 @@ class Shodan(HttpSource):
 
     def collect(self, domain: str) -> Iterator[Observation]:
         for page in range(1, self.max_pages + 1):
-            body = self.get(f"https://api.shodan.io/dns/domain/{domain}", params={"key": self.api_key, "page": str(page)}).json()
+            try:
+                body = self.get(f"https://api.shodan.io/dns/domain/{domain}", params={"key": self.api_key, "page": str(page)}).json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:  # "No information available for that domain."
+                    return
+                raise
             for sub in body.get("subdomains", []):
                 yield self.observe(f"{sub}.{domain}")
             for rec in body.get("data", []):

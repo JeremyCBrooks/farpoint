@@ -2,7 +2,9 @@
 
 A lookalike that can handle mail (MX) or serve a website (an address) is looked up at its registry
 (RDAP: when it was registered) and, if that was recent, in certificate transparency (crt.sh: its
-newest certificate). Both are third parties: nothing is sent to the lookalike's own servers.
+newest certificate). Both are third parties: nothing is sent to the lookalike's own servers, except
+that a name under someone else's domain (ex.ample.com) is dated by that domain only if a wildcard DNS
+check of random names under it (Pipeline._under_a_wildcard) shows it isn't answering every name.
 assess.derive turns the facts into findings.
 """
 
@@ -30,7 +32,7 @@ RECHECK_DAYS = 30  # a known registration date is looked up again after this (a 
 
 
 class LookalikeLookups(Protocol):
-    def registration(self, domain: str) -> dict | None: ...  # posture.registration() shape; None: no record at the registry
+    def registration(self, domain: str) -> dict | None: ...  # posture.registration() shape; None: no record at the registry; raises NoRdapService: unknown
 
     def last_certificate(self, domain: str) -> str | None: ...  # YYYY-MM-DD the newest certificate starts
 
@@ -41,7 +43,7 @@ class NetworkLookalikeLookups:
 
     def registration(self, domain: str) -> dict | None:
         try:
-            return registration(self.rdap.domain(domain))
+            return registration(self.rdap.domain(registered(domain) or domain))  # x.ample.com is ample.com's to register
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 return None

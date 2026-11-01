@@ -24,7 +24,7 @@ from urllib.parse import urljoin, urlsplit
 
 from farpoint import runtime
 from farpoint.models import ServiceRecord, Tech
-from farpoint.probe import HttpResult, Prober, UnsupportedHere, _name_matches, cert_summary
+from farpoint.probe import HttpResult, Prober, UnsupportedHere, _name_matches, bot_challenge, cert_summary
 
 # Management and data services attackers scan for first, plus the common web and appliance ports.
 DEFAULT_PORTS = (
@@ -535,6 +535,8 @@ def _path_note(path: str, got: HttpResult, home: HttpResult) -> str | None:
 def _web_signals(rec: ServiceRecord, resp: HttpResult, ev: Evidence) -> list[str]:
     signals = []
     title = rec.title or ""
+    if bot_challenge(resp):  # the scan was turned away: nothing behind it was seen
+        signals.append("bot-challenge")
     if re.match(r"Index of /", title) or "<h1>Index of /" in ev.body:
         signals.append("directory-listing")
     if _DEFAULT_PAGES.match(title.strip()):

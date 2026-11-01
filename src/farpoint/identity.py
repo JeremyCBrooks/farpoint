@@ -57,6 +57,21 @@ def _providers() -> dict[str, str]:
     return {d: p["name"] for p in data["providers"] for d in p["domains"]}
 
 
+_M365_NAMES = re.compile(r"^([a-z0-9-]+?)(?:-my\.sharepoint|\.sharepoint|\.onmicrosoft)\.com$")  # -my: OneDrive
+
+
+def m365_tenant_name(host: str) -> str | None:
+    """The onmicrosoft.com name of the Microsoft 365 tenant a SharePoint or onmicrosoft.com name belongs to."""
+    match = _M365_NAMES.match(host.lower())
+    return f"{match.group(1)}.onmicrosoft.com" if match else None
+
+
+def tenant_id(openid: Mapping | None) -> str | None:
+    """The tenant ID in an OpenID configuration's issuer."""
+    tenant = _GUID.search((openid or {}).get("issuer") or "")
+    return tenant.group(0).lower() if tenant else None
+
+
 def classify(domain: str, realm: Mapping, openid: Mapping | None) -> dict:
     """One identity row for a scan domain from Microsoft's two answers."""
     sign_in = _SIGN_IN.get(str(realm.get("NameSpaceType", "")).lower())
@@ -68,13 +83,12 @@ def classify(domain: str, realm: Mapping, openid: Mapping | None) -> dict:
             provider = "adfs"
         else:
             provider = _providers().get(registered(host or "") or host or "", "other")
-    tenant = _GUID.search((openid or {}).get("issuer") or "")
     return {
         "domain": domain,
         "sign_in": sign_in,
         "provider": provider,
         "sign_in_host": host,
         "brand": realm.get("FederationBrandName") or None,
-        "tenant_id": tenant.group(0).lower() if tenant else None,
+        "tenant_id": tenant_id(openid),
         "region": (openid or {}).get("tenant_region_scope"),
     }
