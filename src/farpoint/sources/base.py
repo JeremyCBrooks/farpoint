@@ -229,11 +229,17 @@ class CommandSource:
 
     def collect(self, domain: str) -> Iterator[Observation]:
         output = self.runner(self.argv(domain))
+        observations, failure = [], None
         try:
-            observations = list(self.parse(output, domain))
+            for obs in self.parse(output, domain):
+                observations.append(obs)
+        except SourceFailure as exc:  # the tool's output was partly unusable: keep the rest
+            failure = exc
         except Exception:
             if runtime.cancelled():  # cut off mid-output (e.g. truncated JSON): nothing usable
                 raise runtime.Cancelled() from None
             raise
         yield from observations
         runtime.check()  # interrupted part-way: the caller keeps these, and the job shows as interrupted
+        if failure:
+            raise failure

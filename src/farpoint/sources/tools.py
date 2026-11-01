@@ -54,6 +54,16 @@ class Bbot(CommandSource):
             raise SourceFailure("bbot printed no events: its scan never started (run bbot without --silent to see why)")
 
 
+# Permutations with only DNS failures are dropped as resolver overload when there are at least
+# OVERLOAD_MIN of them and they are more than OVERLOAD_SHARE of the rows dnstwist reported.
+OVERLOAD_MIN, OVERLOAD_SHARE = 10, 0.5
+
+
+def _answers(row: dict, *keys: str) -> list[str]:
+    """A dnstwist row's records under `keys`, without its "!ServFail" failure markers."""
+    return [v for k in keys for v in row.get(k, []) if not v.startswith("!")]
+
+
 class Dnstwist(CommandSource):
     """Registered typosquat/lookalike domains (DNS lookups only, no web/SMTP probing)."""
 
@@ -67,10 +77,16 @@ class Dnstwist(CommandSource):
         return [sys.executable, "-m", "dnstwist", "--registered", "--format", "json", domain]
 
     def parse(self, output: str, domain: str) -> Iterator[Observation]:
-        for row in json.loads(output or "[]"):
-            if row.get("fuzzer") == "*original":
+        rows = [r for r in json.loads(output or "[]") if r.get("fuzzer") != "*original"]
+        # A failed query is recorded as "!ServFail", which --registered counts as an answer. A few such
+        # rows are registered lookalikes with dead nameservers; many mean the resolver was overloaded.
+        answered = [(row, *(_answers(row, *keys) for keys in (("dns_a", "dns_aaaa"), ("dns_mx",), ("dns_ns",)))) for row in rows]
+        failed = sum(1 for _, ips, mx, ns in answered if not (ips or mx or ns))
+        overloaded = failed >= OVERLOAD_MIN and failed > len(rows) * OVERLOAD_SHARE
+        for row, ips, mx, ns in answered:
+            if overloaded and not (ips or mx or ns):
                 continue
-            ips = row.get("dns_a", []) + row.get("dns_aaaa", [])
-            mx, ns = tuple(row.get("dns_mx", [])), tuple(row.get("dns_ns", []))
             for ip in ips or [None]:
-                yield Observation(self.name, row["domain"], ip, lookalike=True, mx=mx, ns=ns)
+                yield Observation(self.name, row["domain"], ip, lookalike=True, mx=tuple(mx), ns=tuple(ns))
+        if overloaded:
+            raise SourceFailure(f"{failed} of {len(rows)} permutations reported as registered got only DNS failures, so whether they exist is unknown; not reported (is the resolver overloaded?)")

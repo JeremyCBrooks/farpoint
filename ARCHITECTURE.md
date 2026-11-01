@@ -213,7 +213,12 @@ observations. Unavailable sources are listed as skipped, not as failures.
   can't start is a `SourceFailure`. bbot exits 0 when it can't set up its modules, so a bbot run that
   prints no JSON events is a failure too.
 - dnstwist's results are marked `lookalike=True`: registered typosquats belong to anyone, so they are
-  recorded but never treated as the organisation's.
+  recorded but never treated as the organisation's. `--registered` counts a failed query (`!ServFail`)
+  as an answer, so an overloaded resolver makes non-existent permutations look registered. A
+  registered lookalike with dead nameservers also gets only failures, so a few such permutations are
+  kept. When at least 10 of them make up more than half of what dnstwist reported, they are treated as
+  resolver overload: they are dropped, and the number dropped is recorded as a `SourceFailure` that
+  keeps the rest of the output (a tool's parser can raise one after yielding).
 
 **Partial results.** Each job collects into a list the pipeline can read mid-run (`_drain`). A source
 that fails on page 3 keeps pages 1 and 2. On Ctrl-C, pages already fetched by sources still running are

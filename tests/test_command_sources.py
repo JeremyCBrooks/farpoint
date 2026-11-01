@@ -169,3 +169,36 @@ def test_dnstwist_keeps_mail_and_nameservers_but_not_null_mx_or_failures():
     assert inv.lookalikes["examp1e.com"].ns == {"ns1.parkingcrew.net"}
     assert inv.lookalikes["examplea.com"].mx == set()
     assert inv.lookalikes["exampl.com"].mx == set()
+
+
+def _dnstwist_run(rows):
+    from farpoint.pipeline import Pipeline
+
+    return Pipeline(sources=[Dnstwist(runner=Recorder(json.dumps(rows)), which=lambda _: "dnstwist")]).run([D])
+
+
+def test_dnstwist_drops_permutations_that_only_got_dns_failures_when_the_resolver_looks_overloaded():
+    # dnstwist --registered counts a resolver failure as an answer: an overloaded resolver makes
+    # thousands of non-existent permutations look registered.
+    failures = [{"fuzzer": "addition", "domain": f"example{c}.com", "dns_ns": ["!ServFail"], "dns_a": ["!ServFail"]} for c in "abcdefghijkl"]
+    good = {"fuzzer": "homoglyph", "domain": "examp1e.com", "dns_a": ["198.51.100.1"], "dns_ns": ["!ServFail"]}
+    inv = _dnstwist_run([good, *failures])
+
+    assert set(inv.lookalikes) == {"examp1e.com"}
+    assert inv.lookalikes["examp1e.com"].ips == {"198.51.100.1"}
+    [error] = [e for e in inv.errors if e.source == "dnstwist"]
+    assert "12 of 13" in error.message and "registered" in error.message and "resolver" in error.message
+
+
+def test_dnstwist_keeps_a_few_permutations_with_broken_dns_as_lookalikes():
+    # A registered lookalike whose own nameservers are dead (lame delegation) also gets only SERVFAIL.
+    rows = [
+        {"fuzzer": "homoglyph", "domain": "examp1e.com", "dns_a": ["198.51.100.1"]},
+        {"fuzzer": "addition", "domain": "examplea.com", "dns_ns": ["!ServFail"]},
+        {"fuzzer": "omission", "domain": "exampl.com", "dns_ns": ["!ServFail"], "dns_a": ["!ServFail"], "dns_aaaa": ["!ServFail"]},
+    ]
+    inv = _dnstwist_run(rows)
+
+    assert set(inv.lookalikes) == {"examp1e.com", "examplea.com", "exampl.com"}
+    assert inv.lookalikes["exampl.com"].ips == set()
+    assert not [e for e in inv.errors if e.source == "dnstwist"]
