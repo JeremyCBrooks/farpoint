@@ -122,6 +122,9 @@ def test_rules_name_products_versions_and_cpes():
         (Evidence(location="https://files.example.com/goanywhere/auth/Login.xhtml"), "Fortra GoAnywhere MFT"),
         (Evidence(headers={"server": "Cleo Harmony/5.8.0.21 (Linux)"}), "Cleo Harmony / VLTrader / LexiCom"),
         (Evidence(title="kiteworks"), "Kiteworks"),
+        (Evidence(cnames=["wp.wpenginepowered.com"]), "WP Engine"),
+        (Evidence(cnames=["acme.wpengine.com"]), "WP Engine"),
+        (Evidence(cnames=["wp.wpenginepowered.com"]), "WordPress"),
     ],
 )
 def test_attack_surface_rules(ev, name):

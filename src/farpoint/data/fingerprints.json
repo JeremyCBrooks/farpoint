@@ -1125,6 +1125,9 @@
     {
      "header": "x-redirect-by",
      "regex": "^WordPress"
+    },
+    {
+     "cname": "(^|\\.)wpengine(powered)?\\.com$"
     }
    ]
   },
@@ -1609,7 +1612,7 @@
      "regex": "WP Engine"
     },
     {
-     "cname": "wpengine\\.com$"
+     "cname": "(^|\\.)wpengine(powered)?\\.com$"
     }
    ]
   },
