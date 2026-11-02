@@ -290,8 +290,11 @@ few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.c
 
 A CDN's bot management may answer the scan with a challenge page instead of the site (Cloudflare's
 "Attention Required!" or "Just a moment..."). Such a service gets the signal `bot-challenge`, no
-finding is made from it, and the run summary counts them: what runs behind them wasn't seen. To
-fingerprint them, let the scan's address past the challenge for the run.
+finding is made from it, and the run summary counts them: what runs behind them wasn't seen. The
+scan's TLS handshake leaves out session tickets, because Cloudflare challenges Python's default
+handshake on that alone. Some sites block whole networks instead, such as cloud providers' (a 403
+"Attention Required!" for every client, browsers included). No client change gets past that: scan
+from a network the site accepts, or ask the organisation to allowlist the scan's address for the run.
 
 **Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request
 may be logged as reconnaissance (`--ports none` and `--no-axfr` drop both). Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then

@@ -187,6 +187,58 @@ def test_requests_to_the_organisations_hosts_carry_the_engagement_id(routes, htt
     assert agents == ["farpoint/0.1 (host fingerprinting; engagement ACME-2026-Q4)", "farpoint/0.1 (host fingerprinting)"]
 
 
+def client_hello_extensions() -> tuple[int, list[set[int]]]:
+    """A loopback port that reads each TLS ClientHello sent to it and hangs up: (port, extension types per hello)."""
+    listener = socket.create_server(("127.0.0.1", 0))
+    hellos: list[set[int]] = []
+
+    def serve():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                data = b""
+                while len(data) < 5 or len(data) < 5 + int.from_bytes(data[3:5], "big"):
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+                p = 5 + 4 + 2 + 32  # record header, handshake header, version, random
+                p += 1 + data[p]  # session id
+                p += 2 + int.from_bytes(data[p:p + 2], "big")  # cipher suites
+                p += 1 + data[p]  # compression methods
+                end, p = p + 2 + int.from_bytes(data[p:p + 2], "big"), p + 2
+                types = set()
+                while p < end:
+                    types.add(int.from_bytes(data[p:p + 2], "big"))
+                    p += 4 + int.from_bytes(data[p + 2:p + 4], "big")
+                hellos.append(types)
+
+    threading.Thread(target=serve, daemon=True).start()
+    return listener.getsockname()[1], hellos
+
+
+SESSION_TICKET = 35
+
+
+def test_https_probes_do_not_offer_session_tickets(routes):
+    # Cloudflare challenges the handshake Python sends by default (seen on a WordPress site behind it, 2026-11-01), and the
+    # session_ticket extension is the part it keys on: with it the scan got "Just a moment...", without it the site.
+    table, _ = routes
+    port, hellos = client_hello_extensions()
+    table[("203.0.113.44", 443)] = port
+
+    prober = NetworkProber(timeout=2)
+    prober.http("https", "www.example.com", "203.0.113.44", 443)
+    prober.tls("www.example.com", "203.0.113.44", 443)
+
+    assert len(hellos) == 2
+    assert all(SESSION_TICKET not in hello for hello in hellos)
+
+
 @pytest.mark.parametrize("bad", ["ACME\r\nX-Injected: 1", "a(b)c", "x" * 65, "   ", " ACME", "ACME ", ""])
 def test_an_engagement_id_that_cannot_go_in_a_header_is_refused(bad):
     with pytest.raises(ValueError):

@@ -93,6 +93,9 @@ class Prober(Protocol):
 
 def _context(verify: bool = False, version: str | None = None) -> ssl.SSLContext:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # No session_ticket extension: Cloudflare challenges the handshake Python sends by default, and this
+    # extension is what it keys on (curl leaves it out). Every connection is fresh, so nothing is lost.
+    ctx.options |= ssl.OP_NO_TICKET
     if not verify:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
