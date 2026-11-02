@@ -197,3 +197,74 @@ def test_recovering_only_credential_evidence_says_so(tmp_path, capsys):
     assert cli.main(["--credential-import", str(path), "-o", str(out)]) == 0
     err = capsys.readouterr().err
     assert "recovered 1 credential exposure from an interrupted run at 2026-10-02T00:00:00Z" in err and "hosts)" not in err
+
+
+@pytest.mark.parametrize("bad_inventory", [False, True])
+def test_failed_sidecar_and_fallback_saves_keep_a_recoverable_checkpoint(tmp_path, monkeypatch, bad_inventory):
+    from farpoint import credential_store
+    from farpoint.models import Observation
+    from farpoint.output import recover_checkpoints
+
+    class SeedSource:
+        name = "seed"
+
+        def available(self):
+            return True
+
+        def collect(self, domain):
+            yield Observation(self.name, domain)
+            if bad_inventory:
+                # The inventory becomes unreadable after startup, before the final merge.
+                (out / "assets.json").write_text("{", encoding="utf-8")
+
+    out = tmp_path / "out"
+    path = write_import(tmp_path / "e.json", [exposure_row()])
+    monkeypatch.setattr(cli, "build_sources", lambda http, env: [SeedSource()])
+    out.mkdir()
+    real = credential_store.write_atomic
+
+    def fail(path, *args, **kwargs):
+        if path.name == "credentials.json" or path.name.startswith("credentials.unmerged-"):
+            raise PermissionError("injected credential write failure")
+        return real(path, *args, **kwargs)
+
+    with monkeypatch.context() as failing:
+        failing.setattr(credential_store, "write_atomic", fail)
+        assert cli.main(["example.com", "--no-resolve", "--no-enrich", "--credential-import", str(path), "-o", str(out)]) == 1
+    assert not (out / "credentials.json").exists()
+    assert not list(out.glob("credentials.unmerged-*"))
+    assert len(list(out.glob(".credential-checkpoint-*.json"))) == 1
+    if bad_inventory:
+        (out / "assets.json").unlink()
+    recover_checkpoints(out)
+    assert credential_store.load_credentials(out).data["exposures"][0]["identity"] == "alice@example.com"
+    assert not list(out.glob(".credential-checkpoint-*.json"))
+
+
+def test_assess_recreates_missing_credential_exports(tmp_path):
+    out = tmp_path / "out"
+    write_outputs(sample_inventory(), out, STAMP)
+    path = write_import(tmp_path / "e.json", [exposure_row()])
+    assert cli.main(["--credential-import", str(path), "-o", str(out)]) == 0
+    for name in ("credential-exposures.csv", "credential-summary.csv", "credential-checks.csv"):
+        (out / name).unlink()
+    assert cli.main(["--assess", "--no-cve", "-o", str(out)]) == 0
+    assert read_csv(out / "credential-exposures.csv")[0]["identity"] == "alice@example.com"
+    assert read_csv(out / "credential-checks.csv")[0]["status"] == "partial"
+    assert read_csv(out / "credential-summary.csv") == []
+
+
+def test_assess_clears_exports_after_sidecar_is_emptied(tmp_path):
+    import json
+
+    from farpoint.credential_store import merge_credentials
+    from farpoint.credentials import CredentialBatch
+
+    out = tmp_path / "out"
+    write_outputs(sample_inventory(), out, STAMP)
+    path = write_import(tmp_path / "e.json", [exposure_row()])
+    assert cli.main(["--credential-import", str(path), "-o", str(out)]) == 0
+    (out / "credentials.json").write_text(json.dumps(merge_credentials(None, CredentialBatch(STAMP))), encoding="utf-8")
+    assert cli.main(["--assess", "--no-cve", "-o", str(out)]) == 0
+    assert read_csv(out / "credential-exposures.csv") == []
+    assert read_csv(out / "credential-checks.csv") == []

@@ -14,6 +14,19 @@ from farpoint.credentials import (
 )
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("newer_status,older_status", [("complete", "failed"), ("failed", "complete")])
+def test_multi_file_checks_follow_time_and_keep_last_success(tmp_path, reverse, newer_status, older_status):
+    newer = write_import(tmp_path / "newer.json", checks=[check_row(status=newer_status, checked_at="2026-10-30T00:00:00Z")])
+    older = write_import(tmp_path / "older.json", checks=[check_row(status=older_status, checked_at="2026-10-01T00:00:00Z")])
+    paths = [older, newer] if reverse else [newer, older]
+    imported, _ = load_imports(paths, ["example.com"], {"email"}, AT)
+    [check] = imported.checks
+    assert check["status"] == newer_status
+    assert check["completed_at"] == "2026-10-30T00:00:00Z"
+    assert check["last_complete_at"] == ("2026-10-30T00:00:00Z" if newer_status == "complete" else "2026-10-01T00:00:00Z")
+
+
 def test_unknown_fields_reject_the_whole_import_without_echoing_values(tmp_path):
     path = write_import(tmp_path / "e.json", [exposure_row(), exposure_row(password="SENTINEL-PW")])
     with pytest.raises(CredentialImportError) as exc:

@@ -95,6 +95,20 @@ def normalise_time(value: Any) -> str | None:
     return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def merge_check(old: Mapping, new: Mapping) -> dict:
+    """Keep the latest observed attempt and the latest successful completion, independent of import/save order."""
+    def observed(check: Mapping) -> str:
+        return check.get("completed_at") or check["started_at"]
+
+    winner = dict(new if observed(new) >= observed(old) else old)
+    complete = [stamp for check in (old, new)
+                for stamp in (check.get("last_complete_at"),
+                              check.get("completed_at") if check["status"] == "complete" else None) if stamp]
+    if complete:
+        winner["last_complete_at"] = max(complete)
+    return winner
+
+
 def normalise_service(value: str | None, port: int | None = None) -> tuple[str | None, int | None]:
     """A service given as a URL or `host[:port]` becomes (hostname, port). Userinfo, path, query and fragment
     are dropped; a port is kept only when one was written (in the value or as `port`)."""

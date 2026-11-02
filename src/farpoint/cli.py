@@ -494,12 +494,13 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
     try:
         report = write_outputs(inv, out, stamp, assess=judge, credentials=batch)
     except ReportError as exc:  # this run was saved to an assets.unmerged-*.json instead
-        checkpoint.clear()
+        checkpoint.clear(keep_credentials=True)  # credential persistence may also have failed
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    checkpoint.clear()  # only once saved: any other failure leaves it for the next run to recover
-
     this_run = _this_run(report, stamp)
+    credential_run = this_run.get("credentials", {})
+    checkpoint.clear(keep_credentials=bool(credential_run.get("error") and not credential_run.get("fallback")))
+
     new = this_run["new"]
     new_credentials = this_run.get("credentials", {}).get("new", 0)
     live = sum(1 for h in report["hosts"] if h["resolves"])

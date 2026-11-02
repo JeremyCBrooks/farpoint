@@ -56,7 +56,31 @@ def test_a_missing_port_never_becomes_443(tmp_path):
 def test_a_reported_port_that_was_not_observed_is_not_the_host(tmp_path):
     f = level_for(tmp_path, service_host="vpn.example.com", service_port=8443)
     assert f["target"] == "vpn.example.com:8443"
-    assert "reported port not observed (other services seen on the host)" in f["detail"]
+    assert "reported port not observed" in f["detail"]
+
+
+@pytest.mark.parametrize("host", ["sts.example.com", "example.okta.com"])
+def test_host_only_identity_or_tenant_evidence_does_not_confirm_an_explicit_port(tmp_path, host):
+    f = level_for(tmp_path, service_host=host, service_port=8443)
+    assert f["level"] == "medium"
+    assert f["target"] == f"{host}:8443"
+    assert "reported port not observed" in f["detail"]
+
+
+def test_a_closed_federation_endpoint_is_not_high_after_merge(tmp_path):
+    from farpoint.models import ServiceRecord
+
+    inv = sample_inventory()
+    inv.identity["example.com"] = {"domain": "example.com", "provider": "adfs", "sign_in_host": "sts.example.com"}
+    inv.services["sts.example.com:8443"] = ServiceRecord("sts.example.com", "93.184.216.34", 8443, service="https")
+    evidence = batch(tmp_path, [exposure_row(service_host="sts.example.com", service_port=8443)], AT)
+    first = write_outputs(inv, tmp_path, AT, credentials=evidence, assess=judge)
+    assert creds(first["findings"])[0]["level"] == "high"
+    closed = sample_inventory()
+    closed.closed.add("sts.example.com:8443")
+    report = write_outputs(closed, tmp_path, LATER, assess=judge)
+    [finding] = creds(report["findings"])
+    assert finding["level"] == "medium" and finding["target"] == "sts.example.com:8443"
 
 
 def test_a_shared_provider_sign_in_page_is_context_even_when_federated(tmp_path):

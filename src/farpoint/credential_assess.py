@@ -91,9 +91,13 @@ class Correlator:
             return self._positive("host-port-unobserved", endpoint, self.by_host[host])
         shared = registered(host) in _shared_sign_in()  # a provider's own sign-in page is context, even when federated to
         if host in self.sign_in and not shared:
+            if port is not None:
+                return self._positive("host-port-unobserved", endpoint, self.sign_in[host])
             return self._positive("sign-in", host, self.sign_in[host])
         if host in self.tenants:
             row = self.tenants[host]
+            if port is not None:
+                return self._positive("host-port-unobserved", endpoint, [row])
             return self._positive("tenant" if row.get("tie") in _STRONG_TIES else "tentative-tenant", host, [row])
         if shared:
             return Match("provider-context", "", None, False)
@@ -143,7 +147,7 @@ def credential_findings(report: Mapping, credentials: Mapping, today: date, rece
         m = len(rows)
         detail = f"{n} {relationship} identit{'y' if n == 1 else 'ies'} ({m} record{'s'[:m != 1]}) for {scope}"
         if match and match.kind == "host-port-unobserved":
-            detail += "; reported port not observed (other services seen on the host)"
+            detail += "; reported port not observed (host-only evidence)"
         if match and match.kind == "dns-only":
             detail += "; --fingerprint could confirm the service"
         if kind == "credential-theft":

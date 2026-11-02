@@ -19,6 +19,7 @@ from .credentials import (
     CollectionProblem,
     CredentialBatch,
     has_schema_version,
+    merge_check,
     normalise_exposure,
     normalise_time,
     validate_collections,
@@ -106,9 +107,11 @@ def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collectio
                 continue
             at = normalise_time(raw.get("checked_at")) or when
             status = raw["status"]
-            declared[_key(raw)] = _ordered(
+            check = _ordered(
                 STORED_CHECK_ORDER, raw, started_at=at, completed_at=at,
                 last_complete_at=at if status == "complete" else None, origin="import")
+            key = _key(raw)
+            declared[key] = merge_check(declared[key], check) if key in declared else check
     counts: dict[tuple, int] = {}
     for row in exposures.values():
         counts[_key(row)] = counts.get(_key(row), 0) + 1

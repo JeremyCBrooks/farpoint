@@ -575,8 +575,10 @@ keeps only a secret *type*, and strips paths, queries and user information from 
 is never merged into or overwritten (new evidence goes to an owner-only fallback).
 
 **Merge.** Exposures union by stable ID: re-fetching updates `last_seen` but not event dates. Summaries
-replace the previous value for their metric. Checks are latest-wins snapshots, except that
-`last_complete_at` carries forward. Absence from a later import is not remediation.
+replace the previous value for their metric. Checks are latest-wins snapshots by observation time,
+except that `last_complete_at` carries forward. The importer and sidecar use the same `merge_check`
+helper, so multiple files in one import follow the same rules regardless of file order. Absence from
+a later import is not remediation.
 
 **Scope.** `load_imports` keeps only rows for the scan domains (with no domains given, the existing
 inventory's), and rejects the whole import when a row uses a query kind that `--credential-queries`
@@ -595,7 +597,7 @@ them. `assess.derive` stays pure: it is handed the state and never produces a fi
 |---|---|
 | Exact host and port | Endpoint association |
 | Exact host, no port | Host association |
-| Exact host with other fingerprints, but the reported port wasn't observed | `host-port-unobserved` on `host:port`: not strong (the port may be closed or never probed) |
+| Exact host with fingerprints, sign-in or tenant evidence, but the reported port wasn't observed | `host-port-unobserved` on `host:port`: not strong (the port may be closed or never probed) |
 | A federation sign-in host, unless on a shared login domain | Sign-in association |
 | A tenant with records/CNAME evidence or a confirmed tenant ID | Tenant association |
 | A name-only tenant | Tentative lead; no severity change |
@@ -616,8 +618,9 @@ phishing log's name can embed a victim's user or machine). They take their obser
 evidence's retrieval, not the assessment's.
 
 **Exports and CSVs.** `credential-exposures.csv` (first column the exposure's stable `id`),
-`credential-summary.csv` and `credential-checks.csv` are written whenever the sidecar exists, owner-only. Every CSV farpoint writes neutralises formula
-prefixes.
+`credential-summary.csv` and `credential-checks.csv` are written whenever a valid sidecar is available,
+owner-only. Reassessment regenerates all three too, recreating missing exports and replacing stale rows
+after a sidecar replacement. Every CSV farpoint writes neutralises formula prefixes.
 
 **CLI.** With domains, the import is validated first and saved with the scan. With none, `_credentials_only`
 reads the inventory (read-only), validates the import against its domains, prints the scope, recovers
@@ -653,6 +656,11 @@ checkpoint's `.lock` for liveness, including when only the credential member exi
 the directory lock, saves credentials first, removes a member only after its content is saved, and leaves
 an invalid member in place with a value-free warning. Replaying a member is idempotent: the sidecar's
 revision doesn't change.
+
+If the final sidecar save and credential fallback both fail, the CLI keeps the credential checkpoint
+and releases its liveness lock, so a later run can recover it. An infrastructure merge error also keeps
+any credential checkpoint conservatively; replay remains idempotent. Infrastructure checkpoints whose
+results reached the inventory or its fallback can still be cleared.
 
 ### Rate limits and politeness
 

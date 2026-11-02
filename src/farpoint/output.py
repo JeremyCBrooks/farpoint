@@ -516,6 +516,8 @@ def rewrite(out_dir: Path, change: Callable[[dict, CredentialState], dict]) -> d
         state = load_credentials(out_dir)
         report = change(report, state)
         _write_all(out_dir, report, _FILE_MODE, state)
+        if state.data is not None:
+            write_credential_exports(out_dir, state.data, report, _stamp_date(report.get("assessed_at") or now_stamp()))
     return report
 
 
@@ -562,13 +564,16 @@ class Checkpointer:
         files.write_atomic(self.path, json.dumps({**run_report(inv), "at": self.started, "interrupted": True}), _FILE_MODE)
         self._last = time.monotonic()
 
-    def clear(self) -> None:
+    def clear(self, *, keep_credentials: bool = False) -> None:
+        """Release the run's lock, retaining unsaved credential evidence for later recovery when needed."""
         self.path.unlink(missing_ok=True)
-        self.credential_path.unlink(missing_ok=True)
+        if not keep_credentials:
+            self.credential_path.unlink(missing_ok=True)
         if self._lock_fh is not None:
             self._lock_fh.close()  # first: Windows can't delete an open file
             self._lock_fh = None
-            self.lock_path.unlink(missing_ok=True)
+            if not self.credential_path.exists():
+                self.lock_path.unlink(missing_ok=True)
 
 
 def _owner_alive(lock_path: Path) -> bool:

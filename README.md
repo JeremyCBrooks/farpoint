@@ -384,7 +384,7 @@ is correlated with the inventory (exact host and port, a sign-in host, a tenant 
 evidence); a shared IP, a common SaaS provider or a name resemblance is not a match. A shared identity
 provider's own sign-in page (such as `accounts.google.com`) is context, never a strong match, even when
 the organisation's sign-in is federated to it. When the provider names a port that no fingerprint saw
-open on a host that has other services, the match is `host-port-unobserved`: the finding names
+open, other services or hostname-only sign-in/tenant evidence cannot confirm that port. The match is `host-port-unobserved`: the finding names
 `host:port`, says "reported port not observed", and stays medium. Infostealer and phishing log names
 are left out of findings, since they can name a victim's user or machine; breach names are kept.
 
@@ -399,6 +399,8 @@ Breach publication dates never count as theft dates. The theft-date clauses ("th
 proof that an account can be accessed now, that a password is still valid or that the organisation is
 compromised, and absence from a later import does not mean remediation. A check that was partial or
 failed is shown next to the finding and never reads as a clean result.
+When several imported files contain checks for the same operation, the newest check wins by its
+observation time, regardless of file order, and the latest successful completion is retained.
 
 ### Freshness
 
@@ -407,12 +409,16 @@ evidence, or an unreadable `credentials.json`, makes them **stale** or **unavail
 left out of `findings.csv` and the terminal totals (the stored snapshot stays in `assets.json`) until
 you run `--assess`. The terminal prints `assessment: current`, `stale (run --assess to update)` or the
 reason it is unavailable.
+Reassessment also regenerates the three credential CSVs from the current valid sidecar, recreating
+missing exports and removing stale rows if the sidecar was replaced with empty evidence.
 
 If the evidence can't be saved to `credentials.json` (it is unreadable, read-only or the disk is
 full), the batch is kept in an owner-only `credentials.unmerged-<time>.json`, the terminal prints
 `warning: credential evidence not saved (<reason>); kept in <file>` and farpoint exits with status 1.
 The rest of the scan is saved as usual. To recover, fix `credentials.json` (or move it aside) and re-run
 the original import; then delete the `credentials.unmerged-*.json` file.
+If both the sidecar and fallback writes fail, an existing credential checkpoint is retained for
+automatic recovery on the next run after the write problem is fixed.
 
 ### Sensitive data
 

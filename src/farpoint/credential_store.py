@@ -21,6 +21,7 @@ from .credentials import (
     CollectionProblem,
     CredentialBatch,
     has_schema_version,
+    merge_check,
     normalise_time,
     validate_collections,
 )
@@ -107,19 +108,6 @@ def _newer_wins(old: dict, new: dict, seen: str) -> dict:
             "last_seen": max(old["last_seen"], new["last_seen"])}
 
 
-def _observed(check: dict) -> str:
-    return check.get("completed_at") or check["started_at"]
-
-
-def _merge_check(old: dict, new: dict) -> dict:
-    winner = dict(new if _observed(new) >= _observed(old) else old)
-    complete = [t for t in (old.get("last_complete_at"), new.get("last_complete_at"),
-                            new.get("completed_at") if new["status"] == "complete" else None) if t]
-    if complete:
-        winner["last_complete_at"] = max(complete)
-    return winner
-
-
 def _canonical(content: dict[str, list[dict]]) -> str:
     return json.dumps({n: sorted(content[n], key=lambda r: _key(n, r)) for n in COLLECTIONS}, sort_keys=True)
 
@@ -135,7 +123,7 @@ def merge_credentials(prior: dict | None, batch: CredentialBatch) -> dict:
             if old is None:
                 table[key] = new
             elif name == "checks":
-                table[key] = _merge_check(old, new)
+                table[key] = merge_check(old, new)
             else:
                 table[key] = _newer_wins(old, new, batch.retrieved_at)
         merged[name] = sorted(table.values(), key=lambda r: _key(name, r))
