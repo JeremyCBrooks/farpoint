@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from .credentials import (
@@ -22,7 +24,7 @@ from .credentials import (
     normalise_time,
     validate_collections,
 )
-from .files import OWNER_MODE, write_atomic
+from .files import OWNER_MODE, csv_text, write_atomic
 
 SIDECAR = "credentials.json"
 _ENVELOPE = frozenset({"schema_version", "revision", "updated_at", *COLLECTIONS})
@@ -186,3 +188,29 @@ def attempt_summary(batch: CredentialBatch) -> list[dict]:
     """What a batch tried and got, per check, with no identities."""
     names = ("provider", "scope_domain", "query_kind", "operation", "status", "records", "origin")
     return [{n: c.get(n) for n in names} for c in batch.checks]
+
+
+_EXPOSURE_FIELDS = ["provider", "scope_domain", "query_kind", "operation", "identity", "relationship", "provider_relationship",
+                    "service_host", "service_port", "match", "matched_asset", "exposure_type", "source_name", "malware_family",
+                    "secret_types", "secret_evidence", "event_at", "event_date_basis", "provider_discovered_at", "reference",
+                    "first_seen", "last_seen"]
+_SUMMARY_FIELDS = ["provider", "scope_domain", "query_kind", "operation", "metric", "population", "count", "window_start",
+                   "window_end", "reference", "first_seen", "last_seen"]
+_CHECK_FIELDS = ["provider", "scope_domain", "query_kind", "operation", "status", "error", "limit_hit", "pages", "records",
+                 "started_at", "completed_at", "last_complete_at", "origin"]
+
+
+def write_credential_exports(out_dir: Path, data: Mapping, report: Mapping | None, today: date) -> None:
+    """Regenerate the three owner-only credential CSVs from the sidecar `data`, matching exposures to `report`."""
+    from .credential_assess import Correlator  # credential_assess imports this module
+
+    out_dir = Path(out_dir)
+    correlator = Correlator(report or {}, today)
+    exposures = []
+    for row in data["exposures"]:
+        found = correlator.match(row)
+        exposures.append({**row, "match": found.kind if found else None, "matched_asset": found.asset if found else None})
+    for name, rows, fields in (("credential-exposures.csv", exposures, _EXPOSURE_FIELDS),
+                               ("credential-summary.csv", data["summaries"], _SUMMARY_FIELDS),
+                               ("credential-checks.csv", data["checks"], _CHECK_FIELDS)):
+        write_atomic(out_dir / name, csv_text(list(rows), fields), OWNER_MODE)

@@ -2,11 +2,11 @@ import json
 import os
 
 import pytest
-from conftest import AT, LATER, batch, check_row as check, exposure_row, sample_inventory
+from conftest import AT, LATER, batch, check_row as check, exposure_row, read_csv, sample_inventory
 
 from farpoint.credential_store import CredentialState, load_credentials, merge_credentials, save_credentials
 from farpoint.credentials import CredentialBatch
-from farpoint.files import locked
+from farpoint.files import FILE_MODE, OWNER_MODE, locked, write_atomic
 from farpoint.models import Inventory
 from farpoint.output import ReportError, write_outputs
 
@@ -208,3 +208,39 @@ def test_the_assessment_is_handed_the_sidecar_state(tmp_path):
                   assess=lambda report, credentials: seen.append(credentials) or report)
     write_outputs(sample_inventory(), tmp_path, LATER, assess=lambda report, credentials: seen.append(credentials) or report)
     assert seen[0].revision and seen[0].revision == seen[1].revision
+
+
+def test_exports_carry_identities_matches_and_coverage(tmp_path):
+    write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row(service_host="www.example.com")], AT))
+    [row] = read_csv(tmp_path / "credential-exposures.csv")
+    assert (row["identity"], row["match"], row["matched_asset"]) == ("alice@example.com", "dns-only", "www.example.com")
+    assert read_csv(tmp_path / "credential-checks.csv")[0]["status"] == "partial"
+    assert read_csv(tmp_path / "credential-summary.csv") == []
+
+
+def test_formula_like_identities_are_quoted_in_exports(tmp_path):
+    write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row(identity='=HYPERLINK("x")@example.com')], AT))
+    assert read_csv(tmp_path / "credential-exposures.csv")[0]["identity"].startswith("'=")
+    assert load_credentials(tmp_path).data["exposures"][0]["identity"].startswith("=")
+
+
+def test_an_emptied_sidecar_rewrites_exports_rather_than_leaving_stale_ones(tmp_path):
+    write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row()], AT))
+    assert len(read_csv(tmp_path / "credential-exposures.csv")) == 1
+    empty = merge_credentials(None, CredentialBatch(AT))
+    write_atomic(tmp_path / "credentials.json", json.dumps(empty), OWNER_MODE)
+    write_outputs(sample_inventory(), tmp_path, LATER)
+    assert read_csv(tmp_path / "credential-exposures.csv") == []
+    assert "identity" in (tmp_path / "credential-exposures.csv").read_text(encoding="utf-8").splitlines()[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_exports_are_owner_only(tmp_path):
+    old = os.umask(0)
+    try:
+        write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row()], AT))
+    finally:
+        os.umask(old)
+    for name in ("credential-exposures.csv", "credential-summary.csv", "credential-checks.csv"):
+        assert (tmp_path / name).stat().st_mode & 0o777 == OWNER_MODE
+    assert (tmp_path / "hosts.csv").stat().st_mode & 0o777 == FILE_MODE

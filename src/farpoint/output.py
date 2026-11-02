@@ -14,12 +14,12 @@ import os
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from farpoint import files
 from farpoint.credential_assess import current_findings
-from farpoint.credential_store import CredentialState, attempt_summary, load_credentials, save_credentials
+from farpoint.credential_store import CredentialState, attempt_summary, load_credentials, save_credentials, write_credential_exports
 from farpoint.credentials import CredentialBatch
 from farpoint.files import now_stamp, stamp as _stamp
 from farpoint.guess import RETRY_DAYS
@@ -476,7 +476,16 @@ def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None,
         if assess:
             report = _judged(report, assess, state)
         _write_all(out_dir, report, mode, state)
+        if state.data is not None:
+            write_credential_exports(out_dir, state.data, report, _stamp_date(stamp))
     return report
+
+
+def _stamp_date(stamp: str) -> date:
+    try:
+        return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").date()
+    except ValueError:
+        return date.today()
 
 
 def _judged(report: dict, assess: Callable[[dict, CredentialState], dict], credentials: CredentialState) -> dict:
