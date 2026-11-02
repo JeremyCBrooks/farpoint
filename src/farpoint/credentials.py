@@ -43,12 +43,25 @@ IMPORT_SUMMARY_FIELDS = frozenset({
 })
 IMPORT_CHECK_FIELDS = frozenset({"provider", "scope_domain", "query_kind", "operation", "status", "error", "checked_at"})
 
-# What Farpoint adds when it stores a row.
-STORED_EXPOSURE_FIELDS = IMPORT_EXPOSURE_FIELDS | {"id", "identity_domain", "relationship", "first_seen", "last_seen"}
-STORED_SUMMARY_FIELDS = IMPORT_SUMMARY_FIELDS | {"retrieved_at", "first_seen", "last_seen"}
-STORED_CHECK_FIELDS = IMPORT_CHECK_FIELDS | {
-    "started_at", "completed_at", "last_complete_at", "pages", "records", "limit_hit", "origin",
-}
+# What a stored row holds, in the order its keys are written (so equal rows serialise identically). A stored
+# check keeps started_at/completed_at, not the import's raw checked_at.
+STORED_EXPOSURE_ORDER = (
+    "id", "provider", "provider_record_id", "reference", "scope_domain", "query_kind", "operation", "identity",
+    "identity_domain", "provider_relationship", "relationship", "service_host", "service_port", "exposure_type",
+    "source_name", "source_event_id", "malware_family", "secret_types", "secret_evidence", "event_at",
+    "event_date_basis", "provider_discovered_at", "source_observed_at", "first_seen", "last_seen",
+)
+STORED_SUMMARY_ORDER = (
+    "provider", "scope_domain", "query_kind", "operation", "metric", "population", "count", "window_start",
+    "window_end", "reference", "retrieved_at", "first_seen", "last_seen",
+)
+STORED_CHECK_ORDER = (
+    "provider", "scope_domain", "query_kind", "operation", "status", "error", "started_at", "completed_at",
+    "last_complete_at", "pages", "records", "limit_hit", "origin",
+)
+STORED_EXPOSURE_FIELDS = frozenset(STORED_EXPOSURE_ORDER)
+STORED_SUMMARY_FIELDS = frozenset(STORED_SUMMARY_ORDER)
+STORED_CHECK_FIELDS = frozenset(STORED_CHECK_ORDER)
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]")
@@ -103,9 +116,12 @@ _USERINFO = re.compile(r"(?<=//)[^/?#]*@")
 
 
 def safe_reference(value: str) -> str:
-    """A URL loses userinfo, query and fragment; any other string is returned unchanged."""
+    """A URL loses userinfo, query and fragment. A string without a scheme loses any `?...`/`#...` suffix and
+    any `userinfo@` before its first `/`, so a secret is never stored."""
     if "://" not in value:
-        return value
+        head = value.split("?")[0].split("#")[0]
+        first, slash, rest = head.partition("/")
+        return first.rpartition("@")[2] + slash + rest
     try:
         parts = urlsplit(value)
         host = parts.netloc.rpartition("@")[2]
@@ -143,7 +159,7 @@ def normalise_exposure(raw: Mapping, *, domains: Sequence[str], kinds: Collectio
     scope = normalize_hostname(raw["scope_domain"])
     if kind not in kinds or scope is None or scope not in domains:
         return None
-    row = dict.fromkeys(STORED_EXPOSURE_FIELDS) | raw  # every model field; None where the import had none
+    row = dict.fromkeys(STORED_EXPOSURE_ORDER) | raw  # every model field, in a fixed order; None where the import had none
     row["scope_domain"] = scope
     host, port = normalise_service(raw.get("service_host"), raw.get("service_port"))
     for name, value in (("service_host", host), ("service_port", port)):
@@ -250,7 +266,7 @@ _STORED_EXPOSURE = _IMPORT_EXPOSURE | {
     "first_seen": _time, "last_seen": _time,
 }
 _STORED_SUMMARY = _IMPORT_SUMMARY | {"retrieved_at": _time, "first_seen": _time, "last_seen": _time}
-_STORED_CHECK = _IMPORT_CHECK | {
+_STORED_CHECK = {k: v for k, v in _IMPORT_CHECK.items() if k != "checked_at"} | {
     "started_at": _time, "completed_at": _time, "last_complete_at": _time, "pages": _count, "records": _count,
     "limit_hit": _enum(LIMIT_HITS), "origin": _text,
 }

@@ -5,7 +5,13 @@ import pytest
 from conftest import AT, batch, check_row, exposure_row, write_import
 
 from farpoint.credential_import import CredentialImportError, load_imports
-from farpoint.credentials import IMPORT_CHECK_FIELDS, IMPORT_EXPOSURE_FIELDS, IMPORT_SUMMARY_FIELDS, CredentialBatch
+from farpoint.credentials import (
+    IMPORT_CHECK_FIELDS,
+    IMPORT_EXPOSURE_FIELDS,
+    IMPORT_SUMMARY_FIELDS,
+    STORED_EXPOSURE_ORDER,
+    CredentialBatch,
+)
 
 
 def test_unknown_fields_reject_the_whole_import_without_echoing_values(tmp_path):
@@ -200,3 +206,18 @@ def test_batches_set_seen_times_dedupe_by_id_and_validate_retrieved_at(tmp_path)
 def test_declared_checks_for_other_domains_are_dropped(tmp_path):
     b = batch(tmp_path, [exposure_row()], checks=[check_row(), check_row(scope_domain="example.org")])
     assert [c["scope_domain"] for c in b.checks] == ["example.com"]
+
+
+def test_a_reference_without_a_scheme_never_keeps_a_secret(tmp_path):
+    refs = ["intel.example.net/case/9?apikey=SENTINEL", "intel.example.net/case/9#SENTINEL", "user:SENTINEL@intel.example.net/case/9"]
+    for ref in refs:
+        b = batch(tmp_path, [exposure_row(reference=ref)])
+        assert "SENTINEL" not in json.dumps(b.exposures[0]) and b.exposures[0]["reference"] == "intel.example.net/case/9"
+
+
+def test_stored_rows_have_a_fixed_key_order_and_no_raw_checked_at(tmp_path):
+    b = batch(tmp_path, [exposure_row()], checks=[check_row(checked_at="2026-10-30")])
+    [row], [chk] = b.exposures, b.checks
+    assert list(row)[0] == "id" and list(row) == [k for k in STORED_EXPOSURE_ORDER]
+    assert "checked_at" not in chk and chk["completed_at"] == "2026-10-30"
+    CredentialBatch.from_json(b.to_json())  # the stored form is accepted back

@@ -14,6 +14,8 @@ from .credentials import (
     COLLECTIONS,
     IMPORT_SPECS,
     SCHEMA_VERSION,
+    STORED_CHECK_ORDER,
+    STORED_SUMMARY_ORDER,
     CollectionProblem,
     CredentialBatch,
     has_schema_version,
@@ -60,6 +62,12 @@ def _in_domains(row: dict, domains: Sequence[str]) -> bool:
     return True
 
 
+def _ordered(order: Sequence[str], row: dict, **added) -> dict:
+    """A stored row with its keys in `order` (None where absent), so equal rows serialise identically."""
+    merged = row | added
+    return {name: merged.get(name) for name in order}
+
+
 def _key(row: dict) -> tuple:
     return (row["provider"], row["scope_domain"], row["query_kind"], row["operation"])
 
@@ -89,7 +97,7 @@ def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collectio
     for rows in loaded:
         for raw in rows["summaries"]:
             if _in_domains(raw, domains):
-                summaries.append({**raw, "retrieved_at": when, "first_seen": when, "last_seen": when})
+                summaries.append(_ordered(STORED_SUMMARY_ORDER, raw, retrieved_at=when, first_seen=when, last_seen=when))
             else:
                 rejected += 1
         for raw in rows["checks"]:
@@ -98,20 +106,17 @@ def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collectio
                 continue
             at = normalise_time(raw.get("checked_at")) or when
             status = raw["status"]
-            declared[_key(raw)] = {
-                **raw, "limit_hit": None, "pages": None, "started_at": at, "completed_at": at,
-                "last_complete_at": at if status == "complete" else None, "origin": "import",
-            }
+            declared[_key(raw)] = _ordered(
+                STORED_CHECK_ORDER, raw, started_at=at, completed_at=at,
+                last_complete_at=at if status == "complete" else None, origin="import")
     counts: dict[tuple, int] = {}
     for row in exposures.values():
         counts[_key(row)] = counts.get(_key(row), 0) + 1
     for key in ({_key(r) for r in summaries} | counts.keys()) - declared.keys():
         provider, scope, kind, operation = key
-        declared[key] = {
-            "provider": provider, "scope_domain": scope, "query_kind": kind, "operation": operation,
-            "status": "partial", "limit_hit": None, "pages": None, "started_at": when, "completed_at": when,
-            "last_complete_at": None, "origin": "import",
-        }
+        declared[key] = _ordered(
+            STORED_CHECK_ORDER, {"provider": provider, "scope_domain": scope, "query_kind": kind, "operation": operation},
+            status="partial", started_at=when, completed_at=when, origin="import")
     for key, check in declared.items():
         check["records"] = counts.get(key, 0)
     batch = CredentialBatch(when, tuple(exposures.values()), tuple(summaries), tuple(declared.values()))
