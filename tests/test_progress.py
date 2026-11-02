@@ -284,7 +284,7 @@ def test_checkpoints_from_dead_runs_are_merged_and_live_ones_left_alone(tmp_path
 
     recovered = recover_checkpoints(tmp_path)
 
-    assert recovered == [{"at": dead.started, "domains": [D], "hosts": 1}]
+    assert recovered == [{"at": dead.started, "domains": [D], "hosts": 1, "exposures": 0}]
     report = json.loads((tmp_path / "assets.json").read_text())
     assert {h["hostname"] for h in report["hosts"]} == {"killed.example.com"}
     assert report["runs"][-1]["interrupted"] is True

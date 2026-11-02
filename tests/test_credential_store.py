@@ -8,7 +8,7 @@ from farpoint.credential_store import CredentialState, load_credentials, merge_c
 from farpoint.credentials import CredentialBatch
 from farpoint.files import FILE_MODE, OWNER_MODE, locked, write_atomic
 from farpoint.models import Inventory
-from farpoint.output import ReportError, write_outputs
+from farpoint.output import Checkpointer, ReportError, recover_checkpoints, write_outputs
 
 
 def test_refetching_updates_retrieval_but_not_event_age(tmp_path):
@@ -244,3 +244,55 @@ def test_exports_are_owner_only(tmp_path):
     for name in ("credential-exposures.csv", "credential-summary.csv", "credential-checks.csv"):
         assert (tmp_path / name).stat().st_mode & 0o777 == OWNER_MODE
     assert (tmp_path / "hosts.csv").stat().st_mode & 0o777 == FILE_MODE
+
+
+def _die(cp):
+    cp._lock_fh.close()  # the process died: its lock is free
+
+
+def test_a_killed_run_leaves_credentials_that_the_next_run_recovers(tmp_path):
+    dead = Checkpointer(tmp_path, credentials=batch(tmp_path, [exposure_row()], AT))
+    dead(sample_inventory())
+    _die(dead)
+    [run] = recover_checkpoints(tmp_path)
+    assert run["exposures"] == 1 and load_credentials(tmp_path).data["exposures"]
+    assert not list(tmp_path.glob(".credential-checkpoint-*")) and not list(tmp_path.glob(".checkpoint-*"))
+
+
+def test_a_lone_credential_member_uses_the_paired_lock(tmp_path):
+    live = Checkpointer(tmp_path, credentials=batch(tmp_path, [exposure_row()], AT))
+    live(sample_inventory())
+    next(tmp_path.glob(".checkpoint-*.json")).unlink()
+    assert recover_checkpoints(tmp_path) == []
+    assert len(list(tmp_path.glob(".credential-checkpoint-*.json"))) == 1
+    live.clear()
+
+
+def test_replaying_a_recovered_member_does_not_duplicate_or_change_the_revision(tmp_path):
+    dead = Checkpointer(tmp_path, credentials=batch(tmp_path, [exposure_row()], AT))
+    dead(sample_inventory())
+    _die(dead)
+    member = next(tmp_path.glob(".credential-checkpoint-*.json"))
+    saved = member.read_bytes()
+    recover_checkpoints(tmp_path)
+    first = load_credentials(tmp_path)
+    member.write_bytes(saved)  # a crash before cleanup left the member behind
+    recover_checkpoints(tmp_path)
+    again = load_credentials(tmp_path)
+    assert len(again.data["exposures"]) == 1 and again.revision == first.revision
+
+
+def test_an_invalid_credential_member_stays_with_a_value_free_warning(tmp_path):
+    member = tmp_path / ".credential-checkpoint-1-ab.json"
+    member.write_text(json.dumps({"schema_version": 1, "retrieved_at": AT, "exposures": [{"identity": "SENTINEL"}]}))
+    result = recover_checkpoints(tmp_path)
+    assert member.exists()
+    assert result and "warning" in result[0] and "SENTINEL" not in json.dumps(result)
+
+
+def test_the_namespaces_do_not_match_each_others_globs(tmp_path):
+    cp = Checkpointer(tmp_path, credentials=batch(tmp_path, [exposure_row()], AT))
+    cp(sample_inventory())
+    assert len(list(tmp_path.glob(".checkpoint-*.json"))) == 1 and len(list(tmp_path.glob(".credential-checkpoint-*.json"))) == 1
+    cp.clear()
+    assert not list(tmp_path.glob(".*checkpoint-*"))

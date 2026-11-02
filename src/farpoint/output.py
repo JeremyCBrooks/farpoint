@@ -333,6 +333,8 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
 
 
 _FILE_MODE = files.FILE_MODE
+_INFRA_PREFIX = ".checkpoint-"
+_CREDENTIAL_PREFIX = ".credential-checkpoint-"
 
 
 def run_report(inv: Inventory) -> dict:
@@ -522,14 +524,20 @@ class Checkpointer:
     matching .lock file while alive; the next run into the directory merges any checkpoint whose lock
     is free (see recover_checkpoints). Locks, not PIDs, decide liveness, since PIDs get reused (a
     container's farpoint is always PID 1). A finished run calls clear().
+
+    Credential evidence, when the run has any, goes once into an owner-only
+    .credential-checkpoint-<token>.json beside it; the two share the one lock.
     """
 
-    def __init__(self, out_dir: Path, interval: float = 5.0) -> None:
+    def __init__(self, out_dir: Path, interval: float = 5.0, credentials: CredentialBatch | None = None) -> None:
         token = f"{os.getpid()}-{secrets.token_hex(4)}"
-        self.path = out_dir / f".checkpoint-{token}.json"
-        self.lock_path = out_dir / f".checkpoint-{token}.lock"
+        self.path = out_dir / f"{_INFRA_PREFIX}{token}.json"
+        self.credential_path = out_dir / f"{_CREDENTIAL_PREFIX}{token}.json"
+        self.lock_path = out_dir / f"{_INFRA_PREFIX}{token}.lock"
         self.started = now_stamp()
         self.interval = interval
+        self.credentials = credentials
+        self._credentials_written = False
         self._last: float | None = None
         self._lock_fh = None
 
@@ -541,6 +549,9 @@ class Checkpointer:
         if self._lock_fh is None:
             self._lock_fh = open(self.lock_path, "w")
             files.lock(self._lock_fh)
+        if self.credentials is not None and not self._credentials_written:
+            files.write_atomic(self.credential_path, json.dumps(self.credentials.to_json()), files.OWNER_MODE)
+            self._credentials_written = True
         extra = [obs for observations in list((pending or {}).values()) for obs in list(observations)]
         if extra:
             inv = copy.deepcopy(inv)
@@ -551,37 +562,86 @@ class Checkpointer:
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)
+        self.credential_path.unlink(missing_ok=True)
         if self._lock_fh is not None:
             self._lock_fh.close()  # first: Windows can't delete an open file
             self._lock_fh = None
             self.lock_path.unlink(missing_ok=True)
 
 
-def _owner_alive(checkpoint: Path) -> bool:
-    """Whether the run that wrote `checkpoint` is still running: it holds the lock on its .lock file."""
-    with open(checkpoint.with_suffix(".lock"), "a") as fh:
+def _owner_alive(lock_path: Path) -> bool:
+    """Whether the run that owns `lock_path` is still running: it holds the lock on that file."""
+    with open(lock_path, "a") as fh:
         return not files.lock(fh, wait=False)  # closing the file releases the lock we took
+
+
+def _recover_credentials(out_dir: Path, member: Path) -> tuple[CredentialBatch | None, str | None]:
+    """Save the credential member into the sidecar and remove it; (batch, None) on success, else (None, reason)."""
+    try:
+        batch = CredentialBatch.from_json(json.loads(member.read_text(encoding="utf-8")))
+    except OSError:
+        return None, "unreadable"
+    except json.JSONDecodeError:
+        return None, "not valid JSON"
+    except ValueError as exc:  # from_json's messages never include values
+        return None, str(exc)
+    save = save_credentials(out_dir, batch, batch.retrieved_at)  # its own time: replaying is idempotent
+    if save.error:
+        return None, save.error
+    member.unlink()
+    return batch, None
 
 
 def recover_checkpoints(out_dir: Path) -> list[dict]:
     """Merge checkpoints left by runs that were killed before they could save.
 
-    Returns a summary (at, domains, hosts) of each recovered run."""
-    recovered = []
+    Returns a summary (at, domains, hosts, exposures) of each recovered run, and {"warning": ...} for
+    credential evidence that couldn't be recovered (it stays on disk)."""
+    recovered: list[dict] = []
     if not out_dir.is_dir():
         return recovered
+    tokens = {p.name[len(_INFRA_PREFIX):-len(".json")] for p in out_dir.glob(f"{_INFRA_PREFIX}*.json")}
+    tokens |= {p.name[len(_CREDENTIAL_PREFIX):-len(".json")] for p in out_dir.glob(f"{_CREDENTIAL_PREFIX}*.json")}
+    saved_credentials = None
     with files.locked(out_dir):
-        for path in sorted(out_dir.glob(".checkpoint-*.json")):
-            if _owner_alive(path):
+        for token in sorted(tokens):
+            lock_path = out_dir / f"{_INFRA_PREFIX}{token}.lock"
+            if _owner_alive(lock_path):
                 continue
-            try:
-                checkpoint = json.loads(path.read_text(encoding="utf-8"))
-                _validate(checkpoint)
-            except (OSError, ValueError) as exc:
-                raise ReportError(f"can't recover {path}: {exc}. Move or delete it to continue.") from exc
-            stamp = checkpoint.get("at") or now_stamp()
-            _write_all(out_dir, merge_reports(load_report(out_dir), checkpoint, stamp), _FILE_MODE, load_credentials(out_dir))
-            path.unlink()
-            path.with_suffix(".lock").unlink(missing_ok=True)
-            recovered.append({"at": stamp, "domains": checkpoint.get("domains", []), "hosts": len(checkpoint.get("hosts", []))})
+            member = out_dir / f"{_CREDENTIAL_PREFIX}{token}.json"
+            batch = None
+            if member.exists():
+                batch, reason = _recover_credentials(out_dir, member)
+                if batch is not None:
+                    saved_credentials = batch
+                else:
+                    recovered.append({"warning": f"can't recover {member.name}: {reason}"})
+            path = out_dir / f"{_INFRA_PREFIX}{token}.json"
+            exposures = len(batch.exposures) if batch else 0
+            if path.exists():
+                try:
+                    checkpoint = json.loads(path.read_text(encoding="utf-8"))
+                    _validate(checkpoint)
+                except (OSError, ValueError) as exc:
+                    raise ReportError(f"can't recover {path}: {exc}. Move or delete it to continue.") from exc
+                stamp = checkpoint.get("at") or now_stamp()
+                _write_all(out_dir, merge_reports(load_report(out_dir), checkpoint, stamp), _FILE_MODE, load_credentials(out_dir))
+                path.unlink()
+                recovered.append({"at": stamp, "domains": checkpoint.get("domains", []), "hosts": len(checkpoint.get("hosts", [])), "exposures": exposures})
+            elif batch is not None:
+                recovered.append({"at": batch.retrieved_at, "domains": [], "hosts": 0, "exposures": exposures})
+            if not member.exists():
+                lock_path.unlink(missing_ok=True)
+        if saved_credentials is not None:
+            _refresh_credential_outputs(out_dir, _stamp_date(saved_credentials.retrieved_at))
     return recovered
+
+
+def _refresh_credential_outputs(out_dir: Path, today: date) -> None:
+    """Rewrite the outputs that show the sidecar, after a recovery changed it."""
+    report = load_report(out_dir)
+    state = load_credentials(out_dir)
+    if report is not None:
+        _write_all(out_dir, report, _FILE_MODE, state)
+    if state.data is not None:
+        write_credential_exports(out_dir, state.data, report, today)

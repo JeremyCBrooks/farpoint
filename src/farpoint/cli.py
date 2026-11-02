@@ -225,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         for run in recover_checkpoints(args.out):  # from runs that were killed before they could save
+            if "warning" in run:
+                print(f"warning: {run['warning']}", file=sys.stderr)
+                continue
             print(f"recovered an interrupted run from {run['at']} ({', '.join(run['domains'])}: {run['hosts']} hosts)", file=sys.stderr)
         prior_report = load_report(args.out)  # fail before a long scan, not after it
     except ReportError as exc:
