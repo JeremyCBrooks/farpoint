@@ -173,3 +173,13 @@ def test_a_tenant_found_by_name_stays_as_it_is_when_the_organisations_tenant_is_
     inv = pipeline.run(["example.com"])
 
     assert inv.tenants["example.onmicrosoft.com"].tie == "name"
+
+
+def test_a_tenant_later_found_to_be_someone_elses_leaves_the_running_inventory(tmp_path):
+    first, _ = tenant_scan({})  # no answer about it this time: kept
+    write_outputs(first, tmp_path, "2026-10-01T00:00:00Z")
+
+    later, _ = tenant_scan({"example.onmicrosoft.com": issuer(OTHER)})
+    report = write_outputs(later, tmp_path, "2026-10-02T00:00:00Z")
+
+    assert not {t["tenant"] for t in report["tenants"]} & {"example.onmicrosoft.com", "example.sharepoint.com"}

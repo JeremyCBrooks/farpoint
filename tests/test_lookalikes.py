@@ -171,6 +171,14 @@ def test_a_name_under_someone_elses_wildcard_is_not_dated_by_that_domain():
     assert sorted(h.split(".", 1)[1] for h in wildcard_checks) == ["ampel.com"] * WILDCARD_PROBES + ["ample.com"] * WILDCARD_PROBES  # none for examp1e.com
 
 
+def test_a_split_name_with_mail_servers_and_no_address_is_dated_despite_an_address_wildcard():
+    # The wildcard check looks at addresses only, so it says nothing about a name set up to receive mail.
+    lookups = FakeLookups(created={"ex.ample.com": RECENT})
+    inv = scan(lookups, lookalike("ex.ample.com", mx=("mx.ex.ample.com",)), lookup=lambda host: Resolution(ips=("192.0.2.5",)))
+
+    assert lookups.registrations == ["ex.ample.com"]
+
+
 def test_a_split_name_whose_wildcard_check_gets_no_answer_stays_undated():
     lookups = FakeLookups(created={"ex.ample.com": RECENT})
     inv = scan(lookups, lookalike("ex.ample.com", "192.0.2.5"), lookup=lambda host: Resolution(timed_out=True))

@@ -18,13 +18,15 @@ def wayback(cdx_rows, page=None):
 
 
 def test_the_newest_archived_homepage_comes_back_with_the_sites_own_headers():
-    page = httpx.Response(200, headers={"server": "Archive.org", "x-archive-orig-server": "nginx/1.14.0", "x-archive-orig-x-powered-by": "PHP/7.2.1"},
+    page = httpx.Response(200, headers=[("server", "Archive.org"), ("x-archive-orig-server", "nginx/1.14.0"), ("x-archive-orig-x-powered-by", "PHP/7.2.1"),
+                                        ("x-archive-orig-set-cookie", "PHPSESSID=a; path=/"), ("x-archive-orig-set-cookie", "wordpress_test_cookie=b")],
                           content=b"<title>Home</title>")
 
     got = wayback([["timestamp", "original"], ["20260830101500", "https://www.example.com/"]], page).capture("www.example.com")
 
     assert (got.captured, got.url) == ("2026-08-30", "https://www.example.com/")
-    assert dict(got.page.headers) == {"server": "nginx/1.14.0", "x-powered-by": "PHP/7.2.1"}  # never the archive's own
+    assert got.page.headers == [("server", "nginx/1.14.0"), ("x-powered-by", "PHP/7.2.1"),  # never the archive's own
+                                ("set-cookie", "PHPSESSID=a; path=/"), ("set-cookie", "wordpress_test_cookie=b")]  # each cookie apart
     assert got.page.status == 200 and got.page.body == b"<title>Home</title>"
 
 

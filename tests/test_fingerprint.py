@@ -220,6 +220,22 @@ def test_a_bot_defence_says_whose_it_is_and_whether_a_browser_could_pass(resp, s
     assert derive({"fingerprints": [row]}) == []  # what the defence said is about the scan, not the site
 
 
+def test_nothing_on_a_bot_defences_page_is_taken_as_the_sites():
+    # An AWS WAF challenge from the organisation's own load balancer: its Server header and the captcha
+    # form are the defence's, not the site's. Its favicon and paths would be the defence's too.
+    page = b'<html><title>Human Verification</title><form><input type="password" name="p"></form>Traceback (most recent call last)</html>'
+    resp = HttpResult(202, [("server", "awselb/2.0"), ("x-amzn-waf-action", "challenge")], page)
+    prober = FakeProber(http={("http", HOST, 80, "/"): resp})
+
+    rec = fingerprint_service(prober, HOST, IP, 80, config=FingerprintConfig(paths=("/robots.txt",)))
+
+    assert rec.signals == ["bot-challenge:aws-waf"]
+    assert [c[4] for c in prober.calls if c[0] == "http"] == ["/"]
+    row = {"endpoint": f"{HOST}:80", "hostname": HOST, "ip": IP, "port": 80, "service": "http", "status": 202, "signals": rec.signals,
+           "headers": rec.headers, "tech": [t.row() for t in rec.tech]}
+    assert derive({"fingerprints": [row], "ips": [{"ip": IP, "org": "Amazon.com, Inc."}]}) == []
+
+
 @pytest.mark.parametrize("resp", [
     HttpResult(403, [("server", "nginx")], b"<title>403 Forbidden</title>"),
     # the site itself, with the vendor's script on it: protected, but the scan saw it

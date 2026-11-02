@@ -239,9 +239,12 @@ def check_mta_sts(dns: Dns, prober: Prober, domain: str) -> dict:
         policy = prober.fetch(f"https://mta-sts.{domain}/.well-known/mta-sts.txt")
         # A bot defence, rate limit or outage is about the asker or the moment. A plain 401/403 refuses
         # sending servers too, so that policy is broken.
-        if policy is not None and policy.status != 200 and (turned_away(policy) or policy.status == 429 or policy.status >= 500):
+        # A defence's page can come with any status, 200 included.
+        defence = turned_away(policy) if policy is not None else None
+        if policy is not None and (defence or policy.status == 429 or policy.status >= 500):
             out["mta_sts"] = "unknown"  # a bot defence, rate limit or outage: the policy itself wasn't seen
-            out["mta_sts_error"] = f"the MTA-STS policy host answered HTTP {policy.status}, so mta_sts is unknown"
+            who = f"a bot defence ({defence[1]}) answered for the MTA-STS policy host" if defence else "the MTA-STS policy host answered"
+            out["mta_sts_error"] = f"{who} with HTTP {policy.status}, so mta_sts is unknown"
         elif policy is None or policy.status != 200:
             out["mta_sts"] = "broken"  # advertised, but the policy can't be fetched with a valid certificate
         else:

@@ -409,7 +409,8 @@ address.
    which fills the rule's CPE template. WordPress plugins and themes are read from asset URLs. Signals
    such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too,
    and `bot-challenge:<vendor>` or `bot-block:<vendor>` when a bot defence answered in place of the
-   site (`fingerprint.turned_away`, rules in `data/bot_defences.json`; judged as nothing, counted per
+   site (`fingerprint.turned_away`, rules in `data/bot_defences.json`; only its headers and cookies are
+   matched, no favicon or path is asked for, and the service is judged as nothing, counted per
    vendor in the run summary and by `python -m farpoint.visibility OUT_DIR`). A challenge could be
    passed by a browser; a block can't be passed by any client, only from another network. The TLS
    handshake leaves out session tickets (`probe._context`), since Cloudflare challenges Python's

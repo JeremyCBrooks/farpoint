@@ -162,6 +162,7 @@ class Inventory:
         self.tenants: dict[str, TenantRecord] = {}
         self.related: dict[str, RelatedRecord] = {}
         self.related_checked: set[str] = set()  # domains --related looked at this run, tied or not
+        self.tenants_rejected: set[str] = set()  # tenant names found this run to be another organisation's
         self.guessed: set[str] = set()  # names --guess tested this run (whether or not they exist)
         self.services: dict[str, ServiceRecord] = {}  # hostname:port -> what --fingerprint found there
         self.closed: set[str] = set()  # hostname:port pairs --fingerprint found closed this run (their old rows go)

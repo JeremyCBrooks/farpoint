@@ -174,7 +174,8 @@ It also asks Microsoft how each scan domain signs in (`identity.csv`): `managed`
 with the tenant ID and region. That's two requests per domain to `login.microsoftonline.com`, with a
 made-up username, never a real one. A Microsoft 365 tenant found by its name alone
 (`example.onmicrosoft.com`, `example.sharepoint.com`) gets one more request for its tenant ID: if it
-is not the tenant a scan domain signs in to, it is someone else's and is dropped; if it is, its tie
+is not the tenant a scan domain signs in to, it is someone else's and is dropped, from earlier runs'
+inventory too; if it is, its tie
 becomes `records`. Federation to a self-hosted ADFS server (a sign-in URL under
 `/adfs/`) is a finding; a sign-in host under the scan domains joins the inventory. Identity providers
 are recognised from `src/farpoint/data/identity_providers.json`.
@@ -292,7 +293,8 @@ few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.c
 A bot defence may answer the scan instead of the site. Such a service gets the signal
 `bot-challenge:<vendor>` (a page a browser could get past, such as Cloudflare's "Just a moment...")
 or `bot-block:<vendor>` (a refusal no client gets past, such as Cloudflare's "Sorry, you have been
-blocked" or an Akamai "Access Denied"). No finding is made from it, and the run summary counts them by
+blocked" or an Akamai "Access Denied"). Nothing on the defence's page is taken as the site's, its
+favicon and paths aren't requested, no finding is made from it, and the run summary counts them by
 vendor: what runs behind them wasn't seen. The vendors recognised are in
 `src/farpoint/data/bot_defences.json`. The scan's TLS handshake leaves out session tickets, because
 Cloudflare challenges Python's default handshake on that alone. A block is usually of the scan's

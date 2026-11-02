@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from farpoint import runtime
-from farpoint.fingerprint import end_of_life, shared_address, was_turned_away
+from farpoint.fingerprint import ORIGIN_VERSION_HEADERS, end_of_life, shared_address, was_turned_away
 from farpoint.lookalikes import RECENT_DAYS, capable, parked_at, shared_nameservers
 from farpoint.names import in_scope
 from farpoint.sources.base import HttpSource
@@ -257,7 +257,7 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
 def _origin_versions(r: Mapping) -> bool:
     """Whether a response names its software in headers that come from behind a shared front end."""
     headers = r.get("headers") or {}
-    return bool(headers.get("x-powered-by") or headers.get("x-aspnet-version"))
+    return any(headers.get(h) for h in ORIGIN_VERSION_HEADERS)
 
 
 def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, https_hosts: set[str], cnames: Sequence[str] = (), shared: bool = False) -> list[dict]:

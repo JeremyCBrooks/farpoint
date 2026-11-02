@@ -329,6 +329,8 @@ _GENERATOR = re.compile(rb"<meta[^>]+name=[\"']generator[\"'][^>]*content=[\"'](
 _ICON = re.compile(rb"<link[^>]+rel=[\"'](?:shortcut )?icon[\"'][^>]*>", re.I)
 _HREF = re.compile(rb"href=[\"']([^\"']+)", re.I)
 _WP_ASSET = re.compile(r"/wp-content/(plugins|themes)/([a-z0-9_-]+)/[^\"'?\s]*\?ver=([\d.]+)", re.I)
+# Headers that name the software behind any front end (a CDN's Server header is the CDN's; these are the origin's).
+ORIGIN_VERSION_HEADERS = ("x-powered-by", "x-aspnet-version")
 _CACHE_BUSTER = re.compile(r"\d{8,}")  # ?ver=1700000000 or ?ver=20240115: a timestamp or date, not a release
 _DEFAULT_PAGES = re.compile(
     r"^(IIS Windows Server|IIS\d*|Welcome to nginx!|Apache2 (Ubuntu|Debian) Default Page.*|Test Page for the (Apache|Nginx) HTTP Server.*|"
@@ -355,7 +357,11 @@ TURNED_AWAY = ("bot-challenge", "bot-block")
 def turned_away(resp: HttpResult) -> tuple[str, str] | None:
     """(kind, vendor) when `resp` is a bot defence's answer about the asker instead of the site. kind is
     "challenge" (a browser could get past it) or "block" (no client can; only another network)."""
-    found = identify(_page_evidence(resp), bundled_defences())
+    return _defence(_page_evidence(resp))
+
+
+def _defence(ev: Evidence) -> tuple[str, str] | None:
+    found = identify(ev, bundled_defences())
     return (found[0].category, found[0].name) if found else None
 
 
@@ -399,9 +405,9 @@ class Archive(Protocol):
 def from_capture(source: str, capture: Capture) -> dict | None:
     """What an archived copy shows, for a service a bot defence hid: inventory only, never findings,
     since the copy may be months old. None when the archive was turned away too, or nothing matched."""
-    if turned_away(capture.page):
-        return None
     ev = _page_evidence(capture.page)
+    if _defence(ev):
+        return None
     tech = identify(ev) + _wordpress_assets(ev.body)
     return {"source": source, "captured": capture.captured, "url": capture.url, "tech": tech} if tech else None
 
@@ -557,6 +563,12 @@ def _web(prober: Prober, rec: ServiceRecord, ev: Evidence, scheme: str, config: 
     page = _page_evidence(resp)
     ev.headers, ev.cookies, ev.body, ev.title, ev.generator = page.headers, page.cookies, page.body, page.title, page.generator
     rec.cookies, rec.title = page.cookies, page.title or None
+    if defence := _defence(ev):
+        # The defence answered about the scan: its page, favicon and paths say nothing about the site.
+        # Only its headers and cookies are matched (they name the defence), and nothing more is asked.
+        rec.signals.append(f"bot-{defence[0]}:{defence[1]}")
+        ev.body = ev.title = ev.generator = ""
+        return True
     rec.signals.extend(_web_signals(rec, resp, ev))
     if service := unclaimed(ev.cnames, ev.body):
         rec.signals.append(f"takeover:{service}")
@@ -595,8 +607,6 @@ def _path_note(path: str, got: HttpResult, home: HttpResult) -> str | None:
 def _web_signals(rec: ServiceRecord, resp: HttpResult, ev: Evidence) -> list[str]:
     signals = []
     title = rec.title or ""
-    if defence := turned_away(resp):  # the scan was turned away: nothing behind it was seen
-        signals.append(f"bot-{defence[0]}:{defence[1]}")
     if re.match(r"Index of /", title) or "<h1>Index of /" in ev.body:
         signals.append("directory-listing")
     if _DEFAULT_PAGES.match(title.strip()):
@@ -612,7 +622,7 @@ def _web_signals(rec: ServiceRecord, resp: HttpResult, ev: Evidence) -> list[str
         signals.append("login-form")
     if _STACK_TRACE.search(ev.body):
         signals.append("error-detail")
-    if re.search(r"\d", resp.header("server") or "") or resp.header("x-powered-by") or resp.header("x-aspnet-version"):
+    if re.search(r"\d", resp.header("server") or "") or any(resp.header(h) for h in ORIGIN_VERSION_HEADERS):
         signals.append("version-disclosure")
     if resp.header("access-control-allow-origin") == "*" and (resp.header("access-control-allow-credentials") or "").lower() == "true":
         signals.append("cors-any-origin-with-credentials")

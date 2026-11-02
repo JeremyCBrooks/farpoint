@@ -282,7 +282,9 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     found_now = {r["domain"] for r in current.get("related", [])}
     prior_related = [r for r in prior.get("related", []) if r["domain"] not in checked or r["domain"] in found_now]
     related_rows, new_related = _merge_rows(prior_related, current.get("related", []), "domain", related, stamp, prior_stamp)
-    tenants, new_tenants = _merge_rows(prior.get("tenants", []), current.get("tenants", []), "tenant", tenant, stamp, prior_stamp)
+    rejected = set(current.get("tenants_rejected", []))  # found this run to be another organisation's: dropped
+    prior_tenants = [t for t in prior.get("tenants", []) if t["tenant"] not in rejected]
+    tenants, new_tenants = _merge_rows(prior_tenants, current.get("tenants", []), "tenant", tenant, stamp, prior_stamp)
     prior_guessed = prior.get("guessed", {})
     if isinstance(prior_guessed, list):
         prior_guessed = dict.fromkeys(prior_guessed, prior_stamp)
@@ -425,6 +427,7 @@ def run_report(inv: Inventory) -> dict:
         "tenants": _tenant_rows(inv),
         "related": _related_rows(inv),
         "related_checked": sorted(inv.related_checked),
+        **({"tenants_rejected": sorted(inv.tenants_rejected)} if inv.tenants_rejected else {}),
         "guessed": sorted(inv.guessed),
         **({"fingerprints": _fingerprint_rows(inv)} if inv.services else {}),
         **({"closed": sorted(inv.closed)} if inv.closed else {}),

@@ -38,6 +38,6 @@ class WaybackArchive(HttpSource):
         timestamp, original = rows[-1][:2]
         # id_: the page as archived, without the Wayback Machine's toolbar or rewritten links
         resp = self.get(f"https://web.archive.org/web/{timestamp}id_/{original}")
-        headers = [(k.lower().removeprefix(_ORIGINAL), v) for k, v in resp.headers.items() if k.lower().startswith(_ORIGINAL)]
+        headers = [(k.lower().removeprefix(_ORIGINAL), v) for k, v in resp.headers.multi_items() if k.lower().startswith(_ORIGINAL)]  # each Set-Cookie apart
         captured = f"{timestamp[:4]}-{timestamp[4:6]}-{timestamp[6:8]}"
         return Capture(captured, original, HttpResult(resp.status_code, headers, resp.content[:BODY_LIMIT]))

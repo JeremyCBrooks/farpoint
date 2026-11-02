@@ -350,6 +350,7 @@ class Pipeline:
                 else:
                     log.info("tenants: %s is Microsoft 365 tenant %s, not the organisation's; dropped", host, found)
                     del inv.tenants[host]
+                    inv.tenants_rejected.add(host)  # and out of the running inventory, where an earlier run kept it
 
     def _sign_in(self, inv: Inventory) -> None:
         """Each scan domain's Microsoft sign-in (farpoint.identity). A self-hosted sign-in server under
@@ -577,7 +578,7 @@ class Pipeline:
         any name the same way: a wildcard's answer, not a name set up to look like the organisation, so
         the parent's registration date says nothing about it. Random names are looked up under each parent;
         without an answer either way the lookalike is left undated too."""
-        split = {d: d.split(".", 1)[1] for d in lookalikes if (reg := registered_domain(d)) and reg != d}
+        split = {d: parent_of(d) for d in lookalikes if (reg := registered_domain(d)) and reg != d}
         if not split:
             return set()
         if self.lookup is None:
@@ -588,8 +589,9 @@ class Pipeline:
         self._probe_wildcards(inv, set(split.values()), wildcards, self.lookup, "lookalikes", "its lookalikes are left undated")
         skipped = set()
         for domain, parent in split.items():
-            wildcard = wildcards[parent]
-            if (wildcard and wildcard.timed_out) or _wildcard_answer(Resolution(tuple(sorted(inv.lookalikes[domain].ips))), wildcard):
+            wildcard, ips = wildcards[parent], inv.lookalikes[domain].ips
+            # The check asks for addresses only: it says nothing about a name that only has mail servers.
+            if (wildcard and wildcard.timed_out) or (ips and _wildcard_answer(Resolution(tuple(sorted(ips))), wildcard)):
                 skipped.add(domain)
         return skipped
 
