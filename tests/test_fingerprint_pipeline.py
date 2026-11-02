@@ -96,7 +96,7 @@ def test_assessment_judges_the_merged_report_when_saving(tmp_path):
     from farpoint.assess import assessed
 
     pipeline, _ = scenario(open_ports=(22, 443, 3389))
-    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r: assessed(r, [], {}, "2026-10-24T00:00:00Z"))
+    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r, c: assessed(r, [], {}, "2026-10-24T00:00:00Z", credentials=c))
 
     kinds = {(f["kind"], f["target"]) for f in report["findings"]}
     assert ("exposed-service", f"{ORIGIN}:3389") in kinds and ("subdomain-takeover", "old.example.com") in kinds
@@ -285,7 +285,7 @@ def test_an_address_wide_service_judges_the_certificate_per_name():
 def test_a_failed_assessment_still_saves_the_scan(tmp_path):
     pipeline, _ = scenario()
 
-    def broken(report):
+    def broken(report, credentials):
         raise KeyError("reason")
 
     report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=broken)
@@ -361,7 +361,7 @@ def test_a_scan_that_did_not_ask_keeps_the_last_zone_transfer_answer(tmp_path):
 
     pipeline, _ = scenario()  # --no-axfr: nothing was asked, so the open transfer is still the latest answer
     pipeline.fingerprint = FingerprintConfig(ports=(443,), paths=(), rate=None, legacy_tls=False, axfr=False)
-    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r: assessed(r, [], {}, "2026-10-24T00:00:00Z"))
+    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-24T00:00:00Z", assess=lambda r, c: assessed(r, [], {}, "2026-10-24T00:00:00Z", credentials=c))
     assert ("zone-transfer", D) in {(f["kind"], f["target"]) for f in report["findings"]}
 
     pipeline, _ = scenario()  # the domain moved to other nameservers: the old answer no longer applies

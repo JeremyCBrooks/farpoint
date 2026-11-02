@@ -224,6 +224,7 @@ def test_a_lookalike_reflects_the_latest_run_that_saw_it():
 
 
 def test_the_block_list_and_lookalike_columns_come_from_the_findings(tmp_path):
+    from farpoint.credential_store import CredentialState
     from farpoint.output import _write_all
 
     report = merge_reports(None, run_report(Inventory(["example.com"])), "T1")
@@ -231,14 +232,14 @@ def test_the_block_list_and_lookalike_columns_come_from_the_findings(tmp_path):
         {"domain": d, "ips": ips, "current_ips": ips, "mx": mx, "ns": [], "sources": ["dnstwist"], "registered_on": "2026-09-02"}
         for d, ips, mx in (("b-parked.com", ["192.0.2.2"], []), ("z-ready.com", ["192.0.2.1"], ["mx.z-ready.com"]), ("a-ready.com", [], ["mx.a.com"]), ("idle.com", [], []))
     ]
-    _write_all(tmp_path, report, 0o644)
+    _write_all(tmp_path, report, 0o644, CredentialState())
     assert not (tmp_path / "phishing-block.txt").exists()  # only once --assess has run
 
     report["findings"] = [
         {"id": f"{k}|{d}", "level": lvl, "kind": k, "target": d, "detail": "", "evidence": []}
         for lvl, k, d in (("high", "lookalike-ready", "z-ready.com"), ("medium", "lookalike-parked", "b-parked.com"), ("high", "lookalike-ready", "a-ready.com"))
     ]
-    _write_all(tmp_path, report, 0o644)
+    _write_all(tmp_path, report, 0o644, CredentialState())
 
     assert (tmp_path / "phishing-block.txt").read_text() == "a-ready.com\nz-ready.com\nb-parked.com\n"
     rows = {r["domain"]: r for r in read_csv(tmp_path / "lookalikes.csv")}

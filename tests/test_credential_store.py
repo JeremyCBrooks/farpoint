@@ -2,11 +2,13 @@ import json
 import os
 
 import pytest
-from conftest import AT, LATER, batch, check_row as check, exposure_row
+from conftest import AT, LATER, batch, check_row as check, exposure_row, sample_inventory
 
 from farpoint.credential_store import CredentialState, load_credentials, merge_credentials, save_credentials
 from farpoint.credentials import CredentialBatch
 from farpoint.files import locked
+from farpoint.models import Inventory
+from farpoint.output import ReportError, write_outputs
 
 
 def test_refetching_updates_retrieval_but_not_event_age(tmp_path):
@@ -176,3 +178,33 @@ def test_two_fallbacks_in_the_same_second_both_survive(tmp_path):
     assert first != second and first.name == "credentials.unmerged-2026-11-01T000000Z.json"
     ids = [CredentialBatch.from_json(json.loads(f.read_text())).exposures[0]["identity"] for f in (first, second)]
     assert ids == ["a@example.com", "b@example.com"]
+
+
+def test_credentials_are_saved_even_when_the_inventory_cannot_be(tmp_path):
+    (tmp_path / "assets.json").write_text("{broken")
+    with pytest.raises(ReportError):
+        write_outputs(Inventory(["example.com"]), tmp_path, AT, credentials=batch(tmp_path, [exposure_row()], AT))
+    assert load_credentials(tmp_path).data["exposures"][0]["identity"] == "alice@example.com"
+
+
+def test_identities_stay_out_of_the_inventory_and_the_run_records_attempts(tmp_path):
+    report = write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row()], AT))
+    assert "alice" not in (tmp_path / "assets.json").read_text()
+    assert "credential_run" not in report
+    assert report["runs"][-1]["credentials"] == {"new": 1, "checks": [{"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email",
+                                                                         "operation": "stealers", "status": "partial", "records": 1, "origin": "import"}]}
+
+
+def test_an_unreadable_sidecar_still_lets_the_scan_save(tmp_path):
+    (tmp_path / "credentials.json").write_text("{")
+    report = write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row()], AT))
+    assert any(e["source"] == "credentials" and "alice" not in e["message"] for e in report["errors"])
+    assert (tmp_path / "hosts.csv").exists() and list(tmp_path.glob("credentials.unmerged-*.json"))
+
+
+def test_the_assessment_is_handed_the_sidecar_state(tmp_path):
+    seen = []
+    write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row()], AT),
+                  assess=lambda report, credentials: seen.append(credentials) or report)
+    write_outputs(sample_inventory(), tmp_path, LATER, assess=lambda report, credentials: seen.append(credentials) or report)
+    assert seen[0].revision and seen[0].revision == seen[1].revision

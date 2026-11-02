@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from farpoint import runtime
+from farpoint.credential_store import CredentialState
 from farpoint.fingerprint import ORIGIN_VERSION_HEADERS, end_of_life, shared_address, was_turned_away
 from farpoint.lookalikes import RECENT_DAYS, capable, parked_at, shared_nameservers
 from farpoint.names import in_scope
@@ -557,7 +558,8 @@ def merge_findings(prior: Sequence[Mapping], current: Sequence[dict], stamp: str
     return merged
 
 
-def assessed(report: dict, vulns: list[dict], kev: Mapping[str, dict], stamp: str, errors: Sequence[dict] = ()) -> dict:
+def assessed(report: dict, vulns: list[dict], kev: Mapping[str, dict], stamp: str, errors: Sequence[dict] = (),
+             credentials: CredentialState | None = None) -> dict:
     """`report` with its findings and CVE cache replaced by this assessment's."""
     if kev:  # remembered on each CVE, so later runs without the catalogue still know
         vulns = [{**v, "cves": [{**c, "kev": True} if c.get("id") in kev else c for c in v.get("cves", [])]} for v in vulns]

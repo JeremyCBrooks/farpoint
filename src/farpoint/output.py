@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from farpoint import files
+from farpoint.credential_store import CredentialState, attempt_summary, load_credentials, save_credentials
+from farpoint.credentials import CredentialBatch
 from farpoint.files import now_stamp, stamp as _stamp
 from farpoint.guess import RETRY_DAYS
 from farpoint.models import Inventory, Observation, describe
@@ -303,6 +305,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "new": {"hosts": new_hosts, "ips": new_ips, "lookalikes": new_lookalikes, "tenants": new_tenants, "related": new_related, "fingerprints": new_fingerprints},
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
+        **({"credentials": current["credential_run"]} if current.get("credential_run") else {}),
     }
     return {
         "updated_at": max(prior.get("updated_at", stamp), stamp),
@@ -321,6 +324,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         **({"findings": prior["findings"]} if prior.get("findings") else {}),  # re-derived by --assess, kept until then
         **({"vulns": prior["vulns"]} if prior.get("vulns") else {}),
         **({"assessed_at": prior["assessed_at"]} if prior.get("assessed_at") else {}),
+        **({"credential_assessment": prior["credential_assessment"]} if prior.get("credential_assessment") else {}),
         "errors": current["errors"],
         "skipped_sources": current["skipped_sources"],
         "runs": sorted([*prior.get("runs", []), run], key=lambda r: r["at"]),
@@ -409,7 +413,7 @@ POSTURE_FIELDS = ["domain", "mail_provider", "mx", "spf_all", "spf_lookups", "sp
                   "registrar", "created", "expires", "transfer_lock", "spf", "dmarc"]
 
 
-def _write_all(out_dir: Path, report: dict, mode: int) -> None:
+def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialState) -> None:
     seen = ["first_seen", "last_seen"]
     write = lambda name, text: files.write_atomic(out_dir / name, text, mode)
     write("assets.json", json.dumps(report, indent=2))
@@ -441,17 +445,27 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
         write("findings.csv", files.csv_text(report["findings"], ["level", "kind", "target", "detail", "evidence", *seen]))
 
 
-def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None, assess: Callable[[dict], dict] | None = None) -> dict:
+def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None,
+                  assess: Callable[[dict, CredentialState], dict] | None = None, credentials: CredentialBatch | None = None) -> dict:
     """Merge this run into out_dir's inventory and rewrite every output file. Returns the merged report.
-    `assess`, if given, judges the merged report (farpoint.assess) before it is written.
+    `assess`, if given, judges the merged report (farpoint.assess) with the credential sidecar's state before it is written.
 
-    If the existing inventory can't be merged, this run is saved alongside it (never over it) and
-    ReportError says where.
+    Credentials are saved first, to their own owner-only file, so that an inventory that can't be merged
+    never costs the evidence. If the existing inventory can't be merged, this run is saved alongside it
+    (never over it) and ReportError says where.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     current = run_report(inv)
     stamp, mode = stamp or now_stamp(), _FILE_MODE
     with files.locked(out_dir):
+        if credentials is not None:
+            save = save_credentials(out_dir, credentials, stamp)
+            state = save.state
+            current["credential_run"] = {"new": save.new_exposures, "checks": attempt_summary(credentials)}
+            if save.error:
+                current["errors"] = [*current["errors"], {"source": "credentials", "target": "credentials.json", "message": save.error}]
+        else:
+            state = load_credentials(out_dir)
         try:
             report = merge_reports(load_report(out_dir), current, stamp)
         except ReportError as exc:
@@ -459,15 +473,15 @@ def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None, asses
             files.write_atomic(unmerged, json.dumps(current, indent=2), mode)
             raise ReportError(f"{exc} This run was saved to {unmerged}.") from exc
         if assess:
-            report = _judged(report, assess)
-        _write_all(out_dir, report, mode)
+            report = _judged(report, assess, state)
+        _write_all(out_dir, report, mode, state)
     return report
 
 
-def _judged(report: dict, assess: Callable[[dict], dict]) -> dict:
+def _judged(report: dict, assess: Callable[[dict, CredentialState], dict], credentials: CredentialState) -> dict:
     """`report` assessed; if assessing fails, the scan is still saved, unjudged, with the error recorded."""
     try:
-        return assess(report)
+        return assess(report, credentials)
     except Exception as exc:  # noqa: BLE001 - never lose a scan to its assessment
         error = {"source": "assess", "target": "inventory", "message": f"{describe(exc)}; findings not updated"}
         return {**report, "errors": [*report.get("errors", []), error]}
@@ -479,14 +493,15 @@ def preview(inv: Inventory | None, out_dir: Path, stamp: str) -> dict:
     return merge_reports(prior, run_report(inv), stamp) if inv is not None else (prior or {})
 
 
-def rewrite(out_dir: Path, change: Callable[[dict], dict]) -> dict:
+def rewrite(out_dir: Path, change: Callable[[dict, CredentialState], dict]) -> dict:
     """Apply `change` to out_dir's inventory and rewrite every output file (no new run is recorded)."""
     with files.locked(out_dir):
         report = load_report(out_dir)
         if report is None:
             raise ReportError(f"no inventory in {out_dir} to assess; run a scan into it first")
-        report = change(report)
-        _write_all(out_dir, report, _FILE_MODE)
+        state = load_credentials(out_dir)
+        report = change(report, state)
+        _write_all(out_dir, report, _FILE_MODE, state)
     return report
 
 
@@ -555,7 +570,7 @@ def recover_checkpoints(out_dir: Path) -> list[dict]:
             except (OSError, ValueError) as exc:
                 raise ReportError(f"can't recover {path}: {exc}. Move or delete it to continue.") from exc
             stamp = checkpoint.get("at") or now_stamp()
-            _write_all(out_dir, merge_reports(load_report(out_dir), checkpoint, stamp), _FILE_MODE)
+            _write_all(out_dir, merge_reports(load_report(out_dir), checkpoint, stamp), _FILE_MODE, load_credentials(out_dir))
             path.unlink()
             path.with_suffix(".lock").unlink(missing_ok=True)
             recovered.append({"at": stamp, "domains": checkpoint.get("domains", []), "hosts": len(checkpoint.get("hosts", []))})

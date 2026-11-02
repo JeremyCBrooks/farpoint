@@ -307,7 +307,7 @@ def _prepare_assessment(args, http: httpx.Client, reporter, report_now, stamp: s
         vulns, catalogue, errors = lookup_vulns(current, nvd, kev, progress=lambda d, t, f: reporter.phase("vulnerabilities", d, t, f))
     except runtime.Cancelled:
         return None
-    return lambda report: assessed(report, vulns, catalogue, stamp, errors)
+    return lambda report, credentials: assessed(report, vulns, catalogue, stamp, errors, credentials)
 
 
 def _assess_only(args, http: httpx.Client) -> int:
