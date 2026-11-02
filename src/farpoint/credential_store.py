@@ -147,7 +147,11 @@ def merge_credentials(prior: dict | None, batch: CredentialBatch) -> dict:
 
 
 def _write_fallback(out_dir: Path, batch: CredentialBatch, stamp: str) -> Path:
-    path = out_dir / f"credentials.unmerged-{stamp.replace(':', '')}.json"
+    base = f"credentials.unmerged-{stamp.replace(':', '')}"
+    path, number = out_dir / f"{base}.json", 1
+    while path.exists():  # a second fallback in the same second must not overwrite the first
+        number += 1
+        path = out_dir / f"{base}-{number}.json"
     write_atomic(path, json.dumps(batch.to_json(), indent=2, sort_keys=True) + "\n", OWNER_MODE)
     return path
 

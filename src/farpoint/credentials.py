@@ -311,9 +311,9 @@ IMPORT_SPECS = {
     "checks": RowSpec(_IMPORT_CHECK, _CHECK_REQUIRED),
 }
 STORED_SPECS = {
-    "exposures": RowSpec(_STORED_EXPOSURE, _EXPOSURE_REQUIRED | {"id", "relationship"}),
-    "summaries": RowSpec(_STORED_SUMMARY, _SUMMARY_REQUIRED),
-    "checks": RowSpec(_STORED_CHECK, _CHECK_REQUIRED),
+    "exposures": RowSpec(_STORED_EXPOSURE, _EXPOSURE_REQUIRED | {"id", "relationship", "first_seen", "last_seen"}),
+    "summaries": RowSpec(_STORED_SUMMARY, _SUMMARY_REQUIRED | {"retrieved_at", "first_seen", "last_seen"}),
+    "checks": RowSpec(_STORED_CHECK, _CHECK_REQUIRED | {"started_at"}),
 }
 COLLECTIONS = tuple(IMPORT_SPECS)
 

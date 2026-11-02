@@ -2,7 +2,7 @@ import json
 import os
 
 import pytest
-from conftest import AT, batch, check_row as check, exposure_row
+from conftest import AT, LATER, batch, check_row as check, exposure_row
 
 from farpoint.credential_store import CredentialState, load_credentials, merge_credentials, save_credentials
 from farpoint.credentials import CredentialBatch
@@ -147,3 +147,32 @@ def test_a_failed_write_falls_back_without_echoing_the_error(tmp_path, monkeypat
 
 def test_a_missing_sidecar_is_no_evidence_not_an_error(tmp_path):
     assert load_credentials(tmp_path) == CredentialState(None, None)
+
+
+@pytest.mark.parametrize("collection,field", [
+    ("exposures", "first_seen"), ("exposures", "last_seen"), ("summaries", "retrieved_at"),
+    ("summaries", "first_seen"), ("summaries", "last_seen"), ("checks", "started_at")])
+def test_a_sidecar_row_missing_a_merge_field_is_unreadable_not_a_crash(tmp_path, collection, field):
+    with locked(tmp_path):
+        save_credentials(tmp_path, batch(tmp_path, [exposure_row()], AT, summaries=[_summary(4)]), AT)
+    path = tmp_path / "credentials.json"
+    doc = json.loads(path.read_text())
+    del doc[collection][0][field]
+    path.write_text(json.dumps(doc))
+    before = path.read_bytes()
+    assert load_credentials(tmp_path).error
+    with locked(tmp_path):
+        saved = save_credentials(tmp_path, batch(tmp_path, [exposure_row()], LATER), LATER)
+    assert path.read_bytes() == before and saved.error and saved.fallback.exists()
+
+
+def test_two_fallbacks_in_the_same_second_both_survive(tmp_path):
+    (tmp_path / "credentials.json").write_bytes(b"{")
+    saves = []
+    for identity in ("a@example.com", "b@example.com"):
+        with locked(tmp_path):
+            saves.append(save_credentials(tmp_path, batch(tmp_path, [exposure_row(identity=identity)], AT), AT))
+    first, second = saves[0].fallback, saves[1].fallback
+    assert first != second and first.name == "credentials.unmerged-2026-11-01T000000Z.json"
+    ids = [CredentialBatch.from_json(json.loads(f.read_text())).exposures[0]["identity"] for f in (first, second)]
+    assert ids == ["a@example.com", "b@example.com"]
