@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 out/
+scans/
 .env
 corpus/
 .env.*
@@ -16,3 +17,4 @@ dist/
 build/
 *.egg-info/
 .claude/settings.local.json
+docs/superpowers/
