@@ -205,8 +205,11 @@ def _seen(findings: list[dict], *rows: Mapping) -> list[dict]:
     return findings
 
 
-def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date | None = None) -> list[dict]:
-    """Every finding the inventory's facts support, most interesting first."""
+def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date | None = None,
+           credentials: Mapping | None = None, recent_days: int | None = None) -> list[dict]:
+    """Every finding the inventory's facts support, most interesting first. `credentials` is the sidecar's
+    data (farpoint.credential_store), judged against the inventory; `recent_days` defaults to
+    farpoint.credential_assess.RECENT_DAYS."""
     today = today or date.today()
     kev = kev or {}
     vulns = {v["cpe"]: v.get("cves", []) for v in report.get("vulns", [])}
@@ -251,8 +254,16 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     for host, rows in sorted(adfs.items()):
         detail = "sign-in is federated to a self-hosted ADFS server: a password-spray target outside Entra's lockout protection, and a Golden SAML target if its signing key is stolen"
         out.extend(_seen([_finding("medium", "self-hosted-federation", host, detail, sorted(r["domain"] for r in rows))], *rows))
+    if credentials is not None:
+        from farpoint.credential_assess import RECENT_DAYS, credential_findings  # it builds on this module's helpers
+
+        out.extend(credential_findings(report, credentials, today, RECENT_DAYS if recent_days is None else recent_days))
+    return _ranked(out)
+
+
+def _ranked(findings: Iterable[dict]) -> list[dict]:
     order = {level: i for i, level in enumerate(LEVELS)}
-    return sorted(out, key=lambda f: (order[f["level"]], f["kind"], f["target"]))
+    return sorted(findings, key=lambda f: (order[f["level"]], f["kind"], f["target"]))
 
 
 def _origin_versions(r: Mapping) -> bool:
@@ -565,8 +576,18 @@ def assessed(report: dict, vulns: list[dict], kev: Mapping[str, dict], stamp: st
         vulns = [{**v, "cves": [{**c, "kev": True} if c.get("id") in kev else c for c in v.get("cves", [])]} for v in vulns]
     report = {**report, "vulns": vulns}
     today = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").date() if re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", stamp) else date.today()
-    findings = derive(report, kev, today)
-    report["findings"] = merge_findings(report.get("findings", []), findings, stamp, report.get("updated_at", stamp))
+    state = credentials or CredentialState()
+    prior = report.get("findings", [])
+    if state.error:  # the evidence can't be read: keep its last judgement as it was, marked unavailable
+        findings = derive(report, kev, today)
+        kept = [f for f in prior if f["kind"].startswith("credential-")]
+        report["findings"] = _ranked([*merge_findings(prior, findings, stamp, report.get("updated_at", stamp)), *kept])
+        revision = (report.get("credential_assessment") or {}).get("revision")
+        report["credential_assessment"] = {"status": "unavailable", "revision": revision, "assessed_at": stamp}
+    else:
+        findings = derive(report, kev, today, credentials=state.data)
+        report["findings"] = merge_findings(prior, findings, stamp, report.get("updated_at", stamp))
+        report["credential_assessment"] = {"status": "current" if state.data else "none", "revision": state.revision, "assessed_at": stamp}
     report["assessed_at"] = stamp
     if errors:
         report["errors"] = [*report.get("errors", []), *errors]

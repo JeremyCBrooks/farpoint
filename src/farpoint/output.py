@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from farpoint import files
+from farpoint.credential_assess import current_findings
 from farpoint.credential_store import CredentialState, attempt_summary, load_credentials, save_credentials
 from farpoint.credentials import CredentialBatch
 from farpoint.files import now_stamp, stamp as _stamp
@@ -442,7 +443,7 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
     if "findings" in report:  # only once --assess has run
         block = sorted(d for d, k in flagged.items() if k == "ready") + sorted(d for d, k in flagged.items() if k == "parked")
         write("phishing-block.txt", "".join(f"{d}\n" for d in block))
-        write("findings.csv", files.csv_text(report["findings"], ["level", "kind", "target", "detail", "evidence", *seen]))
+        write("findings.csv", files.csv_text(current_findings(report, credentials), ["level", "kind", "target", "detail", "evidence", *seen]))
 
 
 def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None,

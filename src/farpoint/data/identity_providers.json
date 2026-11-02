@@ -9,5 +9,7 @@
     {"name": "CyberArk", "domains": ["cyberark.cloud", "idaptive.app"]},
     {"name": "JumpCloud", "domains": ["jumpcloud.com"]},
     {"name": "Auth0", "domains": ["auth0.com"]}
-  ]
+  ],
+  "_shared_sign_in": "Registered domains of sign-in pages that many organisations share: a credential for one of them is provider context, not the organisation's own service.",
+  "shared_sign_in": ["microsoftonline.com", "microsoft.com", "live.com", "okta.com", "google.com", "onelogin.com", "auth0.com", "pingone.com"]
 }

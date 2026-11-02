@@ -208,3 +208,10 @@ def batch(tmp_path, exposures, at=AT, checks=(), summaries=(), kinds=("email", "
 
     path = write_import(tmp_path / f"import-{next(_import_numbers)}.json", exposures, summaries, checks)
     return load_imports([path], ["example.com"], set(kinds), at)[0]
+
+
+def credential_sidecar(tmp_path, exposures, summaries=(), checks=(), kinds=("email", "website"), at="2026-10-25T00:00:00Z"):
+    """The sidecar data an import of these rows (through `load_imports` and `merge_credentials`) would store."""
+    from farpoint.credential_store import merge_credentials
+
+    return merge_credentials(None, batch(tmp_path, exposures, at, checks=checks, summaries=summaries, kinds=kinds))
