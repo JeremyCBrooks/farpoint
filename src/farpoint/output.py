@@ -6,26 +6,19 @@ into it, and every other file is regenerated from the merged result.
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import csv
-import io
 import ipaddress
 import json
 import os
 import secrets
-import tempfile
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-try:
-    import fcntl
-except ImportError:  # Windows: msvcrt's byte-range locks instead
-    fcntl = None
-    import msvcrt
-
+from farpoint import files
+from farpoint.files import now_stamp, stamp as _stamp
 from farpoint.guess import RETRY_DAYS
 from farpoint.models import Inventory, Observation, describe
 from farpoint.names import normalize_ip
@@ -128,14 +121,6 @@ def _related_rows(inv: Inventory) -> list[dict]:
 
 class ReportError(Exception):
     """The existing assets.json can't be read, so merging into it would lose history."""
-
-
-def _stamp(when: datetime) -> str:
-    return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def now_stamp() -> str:
-    return _stamp(datetime.now(timezone.utc))
 
 
 _ROW_LISTS = {
@@ -342,72 +327,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     }
 
 
-def _lock(fh, wait: bool = True) -> bool:
-    """Take an exclusive lock on open file `fh`, held until it is closed or its process dies.
-    With wait=False, returns False at once if someone else holds it."""
-    if fcntl:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-        except BlockingIOError:
-            return False
-        return True
-    fh.seek(0)
-    while True:
-        try:  # LK_LOCK itself retries for about 10 seconds before giving up
-            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
-            return True
-        except OSError:
-            if not wait:
-                return False
-
-
-@contextlib.contextmanager
-def _locked(out_dir: Path) -> Iterator[None]:
-    """Serialise read-merge-write so two runs into the same directory can't drop each other's results."""
-    with open(out_dir / ".lock", "w") as fh:
-        _lock(fh)
-        yield
-
-
-def _read_umask() -> int:
-    """os.umask() can only be read by setting it, which would briefly hand any subprocess started
-    meanwhile a umask of 0, so it is read once, at import, before any worker thread exists."""
-    umask = os.umask(0o077)
-    os.umask(umask)
-    return umask
-
-
-_FILE_MODE = 0o666 & ~_read_umask()  # what open() gives a new file (mkstemp alone would give 0o600)
-
-
-def _write_atomic(path: Path, text: str, mode: int) -> None:
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:  # closed before any unlink: Windows can't delete open files
-            if hasattr(os, "fchmod"):
-                os.fchmod(fd, mode)
-            else:  # Windows before Python 3.13
-                os.chmod(tmp, mode)
-            fh.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
-
-
-def _csv_text(rows: list[dict], fields: list[str]) -> str:
-    def flat(value) -> str:
-        if isinstance(value, list):  # phrases (evidence) are separated so they stay readable
-            return ("; " if any(" " in str(v) for v in value) else " ").join(map(str, value))
-        if isinstance(value, bool) or value is None:
-            return _resolves(value)
-        return str(value)
-
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows({k: flat(row.get(k)) for k in fields} for row in rows)
-    return buf.getvalue()
+_FILE_MODE = files.FILE_MODE
 
 
 def run_report(inv: Inventory) -> dict:
@@ -491,34 +411,34 @@ POSTURE_FIELDS = ["domain", "mail_provider", "mx", "spf_all", "spf_lookups", "sp
 
 def _write_all(out_dir: Path, report: dict, mode: int) -> None:
     seen = ["first_seen", "last_seen"]
-    write = lambda name, text: _write_atomic(out_dir / name, text, mode)
+    write = lambda name, text: files.write_atomic(out_dir / name, text, mode)
     write("assets.json", json.dumps(report, indent=2))
     write("hosts.txt", "".join(f"{h['hostname']}\n" for h in report["hosts"]))
     write("ips.txt", "".join(f"{r['ip']}\n" for r in report["ips"]))
-    write("hosts.csv", _csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
-    write("ips.csv", _csv_text(report["ips"], ["ip", "org", "network", "ports", "open_ports", "tags", "vulns", "hostnames", "sources", *seen]))
+    write("hosts.csv", files.csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
+    write("ips.csv", files.csv_text(report["ips"], ["ip", "org", "network", "ports", "open_ports", "tags", "vulns", "hostnames", "sources", *seen]))
     from farpoint.lookalikes import capable
 
     flagged = {f["target"]: f["kind"].removeprefix("lookalike-") for f in report.get("findings", []) if f["kind"] in ("lookalike-ready", "lookalike-parked")}
     lookalike_rows = [{**r, "capable": capable(r), "flagged": flagged.get(r["domain"])} for r in report["lookalikes"]]
-    write("lookalikes.csv", _csv_text(lookalike_rows, ["domain", "ips", "mx", "registered_on", "last_certificate", "capable", "flagged", "sources", *seen]))
+    write("lookalikes.csv", files.csv_text(lookalike_rows, ["domain", "ips", "mx", "registered_on", "last_certificate", "capable", "flagged", "sources", *seen]))
     if report.get("related"):  # only once --related has found some
-        write("related.csv", _csv_text(report["related"], ["domain", "related_to", "tie", "evidence", *seen]))
+        write("related.csv", files.csv_text(report["related"], ["domain", "related_to", "tie", "evidence", *seen]))
     if report.get("tenants"):  # only once --tenants has found some
-        write("tenants.csv", _csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
+        write("tenants.csv", files.csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
     if report.get("fingerprints"):  # only once --fingerprint has run
         from farpoint.assess import technologies
 
-        write("fingerprints.csv", _csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
-        write("technologies.csv", _csv_text(technologies(report), ["category", "technology", "version", "seen", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
+        write("fingerprints.csv", files.csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
+        write("technologies.csv", files.csv_text(technologies(report), ["category", "technology", "version", "seen", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
     if report.get("identity"):  # only once --tenants has run
-        write("identity.csv", _csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
+        write("identity.csv", files.csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
     if report.get("posture"):
-        write("posture.csv", _csv_text(_posture_csv_rows(report), [*POSTURE_FIELDS, *seen]))
+        write("posture.csv", files.csv_text(_posture_csv_rows(report), [*POSTURE_FIELDS, *seen]))
     if "findings" in report:  # only once --assess has run
         block = sorted(d for d, k in flagged.items() if k == "ready") + sorted(d for d, k in flagged.items() if k == "parked")
         write("phishing-block.txt", "".join(f"{d}\n" for d in block))
-        write("findings.csv", _csv_text(report["findings"], ["level", "kind", "target", "detail", "evidence", *seen]))
+        write("findings.csv", files.csv_text(report["findings"], ["level", "kind", "target", "detail", "evidence", *seen]))
 
 
 def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None, assess: Callable[[dict], dict] | None = None) -> dict:
@@ -531,12 +451,12 @@ def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None, asses
     out_dir.mkdir(parents=True, exist_ok=True)
     current = run_report(inv)
     stamp, mode = stamp or now_stamp(), _FILE_MODE
-    with _locked(out_dir):
+    with files.locked(out_dir):
         try:
             report = merge_reports(load_report(out_dir), current, stamp)
         except ReportError as exc:
             unmerged = out_dir / f"assets.unmerged-{stamp.replace(':', '')}.json"
-            _write_atomic(unmerged, json.dumps(current, indent=2), mode)
+            files.write_atomic(unmerged, json.dumps(current, indent=2), mode)
             raise ReportError(f"{exc} This run was saved to {unmerged}.") from exc
         if assess:
             report = _judged(report, assess)
@@ -561,7 +481,7 @@ def preview(inv: Inventory | None, out_dir: Path, stamp: str) -> dict:
 
 def rewrite(out_dir: Path, change: Callable[[dict], dict]) -> dict:
     """Apply `change` to out_dir's inventory and rewrite every output file (no new run is recorded)."""
-    with _locked(out_dir):
+    with files.locked(out_dir):
         report = load_report(out_dir)
         if report is None:
             raise ReportError(f"no inventory in {out_dir} to assess; run a scan into it first")
@@ -595,13 +515,13 @@ class Checkpointer:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._lock_fh is None:
             self._lock_fh = open(self.lock_path, "w")
-            _lock(self._lock_fh)
+            files.lock(self._lock_fh)
         extra = [obs for observations in list((pending or {}).values()) for obs in list(observations)]
         if extra:
             inv = copy.deepcopy(inv)
             for obs in extra:
                 inv.add(obs)
-        _write_atomic(self.path, json.dumps({**run_report(inv), "at": self.started, "interrupted": True}), _FILE_MODE)
+        files.write_atomic(self.path, json.dumps({**run_report(inv), "at": self.started, "interrupted": True}), _FILE_MODE)
         self._last = time.monotonic()
 
     def clear(self) -> None:
@@ -615,7 +535,7 @@ class Checkpointer:
 def _owner_alive(checkpoint: Path) -> bool:
     """Whether the run that wrote `checkpoint` is still running: it holds the lock on its .lock file."""
     with open(checkpoint.with_suffix(".lock"), "a") as fh:
-        return not _lock(fh, wait=False)  # closing the file releases the lock we took
+        return not files.lock(fh, wait=False)  # closing the file releases the lock we took
 
 
 def recover_checkpoints(out_dir: Path) -> list[dict]:
@@ -625,7 +545,7 @@ def recover_checkpoints(out_dir: Path) -> list[dict]:
     recovered = []
     if not out_dir.is_dir():
         return recovered
-    with _locked(out_dir):
+    with files.locked(out_dir):
         for path in sorted(out_dir.glob(".checkpoint-*.json")):
             if _owner_alive(path):
                 continue

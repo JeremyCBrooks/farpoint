@@ -1,3 +1,4 @@
+import csv
 import ipaddress
 import socket
 
@@ -5,6 +6,7 @@ import httpx
 import pytest
 
 from farpoint import runtime
+from farpoint.models import Inventory, IpDetails, Observation, SourceError
 from farpoint.sources import base
 
 pytest_plugins = ["pytester"]
@@ -141,3 +143,24 @@ def when_params(expected: dict, response: httpx.Response):
 
 def pairs(observations) -> set[tuple[str, str | None]]:
     return {(o.hostname, o.ip) for o in observations}
+
+
+def sample_inventory() -> Inventory:
+    inv = Inventory(["example.com"])
+    inv.add(Observation("input", "example.com"))
+    inv.add(Observation("crtsh", "www.example.com"))
+    inv.add(Observation("dns", "www.example.com", "93.184.216.34"))
+    inv.add(Observation("dns", "www.example.com", "2606:2800:220:1::1"))
+    inv.add(Observation("wayback", "old.example.com"))
+    inv.hosts["www.example.com"].resolves = True
+    inv.hosts["www.example.com"].cnames.add("www.example.com.cdn.net")
+    inv.hosts["old.example.com"].resolves = False
+    inv.enrich("93.184.216.34", IpDetails(org="Edgecast Inc.", network="93.184.216.0/24", ports={443, 80}))
+    inv.add(Observation("dnstwist", "examp1e.com", "198.51.100.1", lookalike=True))
+    inv.errors.append(SourceError("hackertarget", "example.com", "SourceFailure: API count exceeded"))
+    return inv
+
+
+def read_csv(path):
+    with open(path, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))

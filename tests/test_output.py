@@ -5,33 +5,13 @@ from datetime import datetime, timezone
 
 import pytest
 
+from conftest import read_csv, sample_inventory
 from farpoint.models import Inventory, IpDetails, Observation, SourceError
 from farpoint.output import ReportError, load_report, merge_reports, run_report, write_outputs
 
 
 def without_seen(row: dict) -> dict:
     return {k: v for k, v in row.items() if k not in ("first_seen", "last_seen")}
-
-
-def sample_inventory() -> Inventory:
-    inv = Inventory(["example.com"])
-    inv.add(Observation("input", "example.com"))
-    inv.add(Observation("crtsh", "www.example.com"))
-    inv.add(Observation("dns", "www.example.com", "93.184.216.34"))
-    inv.add(Observation("dns", "www.example.com", "2606:2800:220:1::1"))
-    inv.add(Observation("wayback", "old.example.com"))
-    inv.hosts["www.example.com"].resolves = True
-    inv.hosts["www.example.com"].cnames.add("www.example.com.cdn.net")
-    inv.hosts["old.example.com"].resolves = False
-    inv.enrich("93.184.216.34", IpDetails(org="Edgecast Inc.", network="93.184.216.0/24", ports={443, 80}))
-    inv.add(Observation("dnstwist", "examp1e.com", "198.51.100.1", lookalike=True))
-    inv.errors.append(SourceError("hackertarget", "example.com", "SourceFailure: API count exceeded"))
-    return inv
-
-
-def read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
 
 
 def test_text_lists_are_sorted_and_unique(tmp_path):
