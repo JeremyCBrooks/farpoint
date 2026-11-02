@@ -23,6 +23,7 @@ from farpoint.lookalikes import LookalikeConfig, NetworkLookalikeLookups, fresh_
 from farpoint.names import parse_domains
 from farpoint.pipeline import Pipeline
 from farpoint.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
+from farpoint.archive import WaybackArchive
 from farpoint.probe import NetworkProber, user_agent
 from farpoint.progress import LiveReporter, NullReporter
 from farpoint.resolve import DnsResolver
@@ -84,6 +85,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--probe-rate", type=float, default=20.0, metavar="N", help="at most N --fingerprint connections a second (default: 20)")
     p.add_argument("--no-legacy-tls", action="store_true", help="skip --fingerprint's TLS 1.0/1.1 handshakes")
     p.add_argument("--no-axfr", action="store_true", help="skip --fingerprint's zone-transfer requests")
+    p.add_argument("--no-archive", action="store_true", help="don't look up archived copies (Wayback Machine) of web services a bot defence hid from --fingerprint")
     p.add_argument(
         "--engagement",
         metavar="ID",
@@ -251,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         related_rate=args.related_rate,
         fingerprint=fingerprint if args.fingerprint else None,
         prober=NetworkProber(engagement=args.engagement) if args.fingerprint else None,
+        archive=WaybackArchive(http, retries=2) if args.fingerprint and not args.no_archive else None,
         dns=resolver,
         rdap_domain=rdap.domain if args.fingerprint else None,
         lookalikes=None if args.no_enrich else LookalikeConfig(NetworkLookalikeLookups(rdap, CrtSh(http, retries=2)), fresh_registrations(prior_report, now_stamp())),
@@ -340,7 +343,7 @@ def _summarise_assessment(report: dict) -> None:
         hosts = {r["hostname"] for r in report["fingerprints"]}
         top = Counter()
         for row in technologies(report):
-            if row["category"] not in ("cdn", "platform", "language", "framework", "cms-plugin"):
+            if row["seen"] == "live" and row["category"] not in ("cdn", "platform", "language", "framework", "cms-plugin"):
                 top[row["technology"]] += row["count"]
         shown = ", ".join(f"{name} {n}" for name, n in top.most_common(6))
         print(f"services:   {len(report['fingerprints'])} on {len(hosts)} hosts" + (f" (top: {shown}; see technologies.csv)" if shown else ""))

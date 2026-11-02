@@ -167,6 +167,7 @@ All network access sits behind small protocols, so the stage logic is tested off
 | `Enricher` | `enrich.InternetDb`, `enrich.Rdap` | enrichment |
 | `related.Probes` | `related.NetworkProbes` | related domains |
 | `probe.Prober` | `probe.NetworkProber` | fingerprinting, posture |
+| `fingerprint.Archive` | `archive.WaybackArchive` | fingerprinting (services a bot defence hid) |
 | `lookalikes.LookalikeLookups` | `lookalikes.NetworkLookalikeLookups` (RDAP, crt.sh) | lookalike triage |
 | `identity.SignIn` | `identity.MicrosoftSignIn` | tenants (sign-in) |
 
@@ -189,6 +190,7 @@ All in `src/farpoint/`:
 | `corpus.py` | Builds the optional cross-organisation naming corpus for `guess.py` |
 | `probe.py` | The only code that connects to the organisation's hosts |
 | `fingerprint.py`, `posture.py` | What fingerprinting asks, and what the answers mean |
+| `archive.py` | Archived copies of homepages a bot defence hid (Wayback Machine; passive) |
 | `visibility.py` | How much of a scan's web bot defences hid, by vendor (also `python -m farpoint.visibility`) |
 | `assess.py` | Findings; NVD and CISA lookups |
 | `output.py` | Merging, checkpoints, and writing the output files |
@@ -412,6 +414,13 @@ address.
    passed by a browser; a block can't be passed by any client, only from another network. The TLS
    handshake leaves out session tickets (`probe._context`), since Cloudflare challenges Python's
    default handshake on that extension alone.
+
+   For each host whose web services were turned away, `Pipeline._archived` asks the `Archive` (the
+   Wayback Machine) for the newest copy of its homepage from the last year, once per host, and
+   `fingerprint.from_capture` matches the same rules against it. The result goes in the service's
+   `archived` field, never in `tech`, so it feeds no CVE lookup or finding: `assess.technologies` lists
+   it with `seen` `archive`, without end-of-life or CVE counts. A copy that is itself a bot defence's
+   page is dropped. `--no-archive` leaves the `Archive` out.
 4. **Domain posture** (`posture.assess_domain`), per scan domain, almost all through DNS:
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
      exist or sit on unregistered domains); DMARC `p`, `sp`, `pct`; DKIM key sizes under 32 common

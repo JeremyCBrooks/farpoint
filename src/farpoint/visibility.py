@@ -15,7 +15,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from farpoint.fingerprint import turned_away
+from farpoint.fingerprint import turned_away, was_turned_away
 from farpoint.probe import HttpResult
 
 WEB = ("http", "https")
@@ -23,7 +23,7 @@ WEB = ("http", "https")
 
 def _defence(record: dict) -> tuple[str, str] | None:
     for signal in record.get("signals", []):
-        if signal.startswith(("bot-challenge", "bot-block")):
+        if was_turned_away([signal]):
             kind, _, vendor = signal.partition(":")
             return kind.removeprefix("bot-"), vendor or "unknown"
     # Recorded before farpoint marked bot defences: read again from the status, headers and title it kept.
@@ -36,14 +36,17 @@ def summarise(report: dict) -> dict:
     """Web services in the report: how many were seen, and per vendor how many were challenged or blocked."""
     web = [r for r in report.get("fingerprints", []) if r.get("service") in WEB]
     hidden = {"challenge": Counter(), "block": Counter()}
+    archived = 0
     for record in web:
         if defence := _defence(record):
             hidden[defence[0]][defence[1]] += 1
+            archived += bool(record.get("archived"))
     return {
         "web": len(web),
         "seen": len(web) - sum(hidden["challenge"].values()) - sum(hidden["block"].values()),
         "challenged": dict(hidden["challenge"].most_common()),
         "blocked": dict(hidden["block"].most_common()),
+        "archived": archived,  # of those hidden, how many an archived copy identified
     }
 
 
@@ -58,7 +61,10 @@ def summary_line(summary: dict) -> str | None:
         return None
     parts = [f"{label}: {_vendors(summary[key])}" for key, label in (("challenged", "challenged"), ("blocked", "blocked")) if summary[key]]
     them = "them" if hidden != 1 else "it"
-    return f"{hidden} web service{'s' if hidden != 1 else ''} turned the scan away ({'; '.join(parts)}): what runs behind {them} wasn't seen"
+    line = f"{hidden} web service{'s' if hidden != 1 else ''} turned the scan away ({'; '.join(parts)}): what runs behind {them} wasn't seen"
+    if summary.get("archived"):
+        line += f"; an archived copy identified {summary['archived']} (see the archived column of fingerprints.csv)"
+    return line
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
     for key in ("challenged", "blocked"):
         n = sum(summary[key].values())
         print(f"{key:<14}{n}" + (f"  ({_vendors(summary[key])})" if n else ""))
+    print(f"{'archived':<14}{summary['archived']}  (hidden services identified from an archived copy)")
     return 0
 
 

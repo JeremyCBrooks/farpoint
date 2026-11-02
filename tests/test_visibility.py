@@ -11,7 +11,8 @@ def web(endpoint, signals=(), status=200, title=None, headers=None, service="htt
 
 REPORT = {"fingerprints": [
     web("www.example.com:443"),
-    web("shop.example.com:443", ["bot-challenge:cloudflare"], 403),
+    {**web("shop.example.com:443", ["bot-challenge:cloudflare"], 403),
+     "archived": {"source": "wayback", "captured": "2026-08-30", "url": "https://shop.example.com/", "tech": [{"name": "WordPress"}]}},
     web("api.example.com:443", ["bot-block:akamai"], 403),
     web("old.example.com:443", ["bot-challenge"], 403),  # recorded before signals named the vendor
     # recorded before farpoint marked bot defences at all: read again from what was kept
@@ -26,6 +27,7 @@ def test_a_scan_says_how_much_of_the_web_was_hidden_and_by_whom():
         "seen": 1,
         "challenged": {"cloudflare": 2, "unknown": 1},
         "blocked": {"akamai": 1},
+        "archived": 1,  # hidden, but identified from an archived copy
     }
 
 
@@ -38,3 +40,4 @@ def test_the_report_can_be_read_from_any_scan_directory(tmp_path, capsys):
     assert "web services  5" in out
     assert "challenged    3  (cloudflare 2, unknown 1)" in out
     assert "blocked       1  (akamai 1)" in out
+    assert "archived      1  (hidden services identified from an archived copy)" in out

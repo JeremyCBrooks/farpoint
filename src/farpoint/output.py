@@ -97,6 +97,8 @@ def _fingerprint_rows(inv: Inventory) -> list[dict]:
             row["headers"] = s.headers
         if s.paths:
             row["paths"] = s.paths
+        if s.archived:
+            row["archived"] = {**s.archived, "tech": [t.row() for t in s.archived["tech"]]}
         rows.append(row)
     return rows
 
@@ -437,13 +439,19 @@ def run_report(inv: Inventory) -> dict:
     }
 
 
+def _tech_label(t: dict) -> str:
+    return f"{t['name']} {t['version']}" if t.get("version") else t["name"]
+
+
 def _fingerprint_csv_rows(report: dict) -> list[dict]:
     rows = []
     for r in report.get("fingerprints", []):
         tls = r.get("tls") or {}
+        archived = r.get("archived")
         rows.append({
             **r,
-            "tech": [f"{t['name']} {t['version']}" if t.get("version") else t["name"] for t in r.get("tech", [])],
+            "tech": [_tech_label(t) for t in r.get("tech", [])],
+            "archived": f"{archived['captured']} {archived['source']}: " + ", ".join(sorted(_tech_label(t) for t in archived["tech"])) if archived else None,
             "cert_subject": tls.get("subject"),
             "cert_issuer": tls.get("issuer"),
             "cert_expires": (tls.get("not_after") or "")[:10] or None,
@@ -472,7 +480,7 @@ def _posture_csv_rows(report: dict) -> list[dict]:
 
 
 FINGERPRINT_FIELDS = ["endpoint", "hostname", "ip", "port", "service", "tech", "status", "title", "server", "location", "signals",
-                      "cert_subject", "cert_issuer", "cert_expires", "tls_version", "legacy_tls", "banner", "favicon", "paths", "cookies"]
+                      "cert_subject", "cert_issuer", "cert_expires", "tls_version", "legacy_tls", "banner", "favicon", "paths", "cookies", "archived"]
 POSTURE_FIELDS = ["domain", "mail_provider", "mx", "spf_all", "spf_lookups", "spf_missing_includes", "dmarc_policy", "dmarc_subdomain_policy",
                   "dmarc_pct", "dkim", "mta_sts", "tls_rpt", "mx_starttls", "ns_providers", "dnssec", "caa", "axfr", "wildcard",
                   "registrar", "created", "expires", "transfer_lock", "spf", "dmarc"]
@@ -499,7 +507,7 @@ def _write_all(out_dir: Path, report: dict, mode: int) -> None:
         from farpoint.assess import technologies
 
         write("fingerprints.csv", _csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
-        write("technologies.csv", _csv_text(technologies(report), ["category", "technology", "version", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
+        write("technologies.csv", _csv_text(technologies(report), ["category", "technology", "version", "seen", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
     if report.get("identity"):  # only once --tenants has run
         write("identity.csv", _csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
     if report.get("posture"):

@@ -96,6 +96,7 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--probe-rate N` | Start at most N `--fingerprint` port checks and service checks a second across the scan (default 20). A service check makes several connections. |
 | `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
 | `--no-axfr` | Skip `--fingerprint`'s zone-transfer (`AXFR`) requests. |
+| `--no-archive` | Don't look up archived copies (Wayback Machine) of the web services a bot defence hid from `--fingerprint`. |
 | `--engagement ID` | With `--fingerprint`, add an engagement ID (a ticket or client code: up to 64 letters, digits, spaces and `.-_:@+/=`, not starting or ending with a space) to the user agent of its requests, so the organisation can tell who is probing. The passive sources and `--related` don't send it. Plain-HTTP probes send it unencrypted. |
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
@@ -298,8 +299,15 @@ Cloudflare challenges Python's default handshake on that alone. A block is usual
 network, such as a cloud provider's: scan from a network the site accepts, or ask the organisation to
 allowlist the scan's address for the run.
 
+For each host a bot defence hid, farpoint fetches the newest Wayback Machine copy of its homepage from
+the last year and matches the same rules against it (`--no-archive` turns this off). This is passive:
+only archive.org is asked, once per host. What a copy shows is recorded apart from what the scan saw:
+in the `archived` column of `fingerprints.csv` (with the capture date) and as `seen` `archive` rows in
+`technologies.csv`. It makes no findings, because the copy may be months old. A copy the archive
+itself was turned away from is ignored.
+
 `uv run python -m farpoint.visibility out` reports how many web services a scan saw and how many each
-vendor challenged or blocked. It reads scans made before these signals existed from the status,
+vendor challenged or blocked, and how many of those an archived copy identified. It reads scans made before these signals existed from the status,
 headers and title they kept, so there a block can read as a challenge. Use it to compare a change to
 how farpoint asks across the same organisations, rather than judging it on one site.
 
@@ -346,8 +354,8 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames |
-| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: service, technologies, status, title, server, redirect, signals, certificate, TLS versions, banner, favicon hash, paths |
-| `technologies.csv` | With `--fingerprint`: each technology's category, name and version, host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
+| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: service, technologies, status, title, server, redirect, signals, certificate, TLS versions, banner, favicon hash, paths, and for a service a bot defence hid, what an archived copy showed |
+| `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registration |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
 | `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |

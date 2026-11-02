@@ -129,6 +129,7 @@ class ServiceRecord:
     paths: dict[str, dict] = field(default_factory=dict)  # well-known path -> {status, note}
     tech: list[Tech] = field(default_factory=list)
     signals: list[str] = field(default_factory=list)  # e.g. "directory-listing", "basic-auth", "git-exposed"
+    archived: dict | None = None  # when a bot defence hid it: an archived copy's technologies (see fingerprint.from_capture)
 
     @property
     def key(self) -> str:

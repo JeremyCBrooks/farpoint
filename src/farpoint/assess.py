@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from farpoint import runtime
-from farpoint.fingerprint import end_of_life, shared_address
+from farpoint.fingerprint import end_of_life, shared_address, was_turned_away
 from farpoint.lookalikes import RECENT_DAYS, capable, parked_at, shared_nameservers
 from farpoint.names import in_scope
 from farpoint.sources.base import HttpSource
@@ -312,7 +312,7 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
         out.append(_finding("medium", "legacy-tls", ep, f"accepts {' and '.join(legacy)}"))
     headers = r.get("headers") or {}
     # A bot defence answered (AWS WAF challenges with a 202): its headers say nothing about how the site is served.
-    status = 0 if any(s.startswith(("bot-challenge", "bot-block")) for s in r.get("signals", [])) else r.get("status") or 0
+    status = 0 if was_turned_away(r.get("signals", [])) else r.get("status") or 0
     if r.get("service") == "http" and 200 <= status < 300:
         if r["hostname"] not in https_hosts:
             out.append(_finding("medium", "cleartext-http", ep, "serves content over plain HTTP, with no HTTPS alternative"))
@@ -572,29 +572,33 @@ def assessed(report: dict, vulns: list[dict], kev: Mapping[str, dict], stamp: st
 
 
 def technologies(report: Mapping, today: date | None = None, kev: Mapping | None = None) -> list[dict]:
-    """The inventory by technology: what runs where, grouped by product and version, edge devices first."""
-    groups: dict[tuple[str, str | None], dict] = {}
+    """The inventory by technology: what runs where, grouped by product and version, edge devices first.
+    `seen` is "live" for what the scan saw, or "archive" for what an archived copy showed of a service a
+    bot defence hid: listed, but not judged (no end-of-life or CVE counts), since the copy may be old."""
+    groups: dict[tuple[str, str | None, str], dict] = {}
     vulns = {v["cpe"]: v.get("cves", []) for v in report.get("vulns", [])}
     for r in report.get("fingerprints", []):
-        for t in r.get("tech", []):
-            g = groups.setdefault((t["name"], t.get("version")), {
-                "category": t.get("category"), "technology": t["name"], "version": t.get("version"), "cpe": t.get("cpe"),
+        seen = [("live", t) for t in r.get("tech", [])] + [("archive", t) for t in (r.get("archived") or {}).get("tech", [])]
+        for how, t in seen:
+            g = groups.setdefault((t["name"], t.get("version"), how), {
+                "category": t.get("category"), "technology": t["name"], "version": t.get("version"), "seen": how, "cpe": t.get("cpe"),
                 "endpoints": [], "hosts": set(),
             })
             g["endpoints"].append(r["endpoint"])
             g["hosts"].add(r["hostname"])
     rows = []
     for g in groups.values():
-        eol = end_of_life(g["technology"], g["version"], today)
-        cves = vulns.get(g["cpe"] or "", [])
+        live = g["seen"] == "live"
+        eol = end_of_life(g["technology"], g["version"], today) if live else None
+        cves = vulns.get(g["cpe"] or "", []) if live else []
         rows.append({
             **g,
             "endpoints": sorted(g["endpoints"]),
             "hosts": sorted(g["hosts"]),
             "count": len(g["hosts"]),
             "eol": eol["eol"] if eol else None,
-            "cves": len(cves) if g["cpe"] in vulns else None,
+            "cves": len(cves) if live and g["cpe"] in vulns else None,
             "kev": sorted(c["id"] for c in cves if c.get("kev") or c.get("id") in (kev or {})) or None,
         })
     rank = {c: i for i, c in enumerate(CATEGORY_ORDER)}
-    return sorted(rows, key=lambda r: (rank.get(r["category"], len(rank)), -r["count"], r["technology"], r["version"] or ""))
+    return sorted(rows, key=lambda r: (r["seen"] != "live", rank.get(r["category"], len(rank)), -r["count"], r["technology"], r["version"] or ""))

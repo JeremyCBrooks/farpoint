@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from functools import cache
 from importlib import resources
+from typing import Protocol
 from urllib.parse import urljoin, urlsplit
 
 from farpoint import runtime
@@ -348,14 +349,61 @@ def bundled_defences() -> tuple[Rule, ...]:
     return load_rules(json.loads(resources.files("farpoint.data").joinpath("bot_defences.json").read_text(encoding="utf-8")))
 
 
+TURNED_AWAY = ("bot-challenge", "bot-block")
+
+
 def turned_away(resp: HttpResult) -> tuple[str, str] | None:
     """(kind, vendor) when `resp` is a bot defence's answer about the asker instead of the site. kind is
     "challenge" (a browser could get past it) or "block" (no client can; only another network)."""
-    page = resp.body[:65536]
-    title = _TITLE.search(page)
-    ev = Evidence(headers=dict(resp.headers), body=_text(page), title=html.unescape(_text(title.group(1))).strip() if title else "")
-    found = identify(ev, bundled_defences())
+    found = identify(_page_evidence(resp), bundled_defences())
     return (found[0].category, found[0].name) if found else None
+
+
+def was_turned_away(signals: Iterable[str]) -> bool:
+    """Whether a service's signals say a bot defence answered instead of the site."""
+    return any(s.startswith(TURNED_AWAY) for s in signals)
+
+
+def _page_evidence(resp: HttpResult) -> Evidence:
+    """What one HTTP answer says, as the rules see it: headers, cookies, body, title and generator."""
+    title, generator = _TITLE.search(resp.body), _GENERATOR.search(resp.body)
+    return Evidence(
+        headers=dict(resp.headers),
+        cookies=_cookies(resp),
+        body=_text(resp.body),
+        title=html.unescape(_text(title.group(1))).strip()[:200] if title else "",
+        generator=html.unescape(_text(generator.group(1) or generator.group(2))).strip() if generator else "",
+    )
+
+
+# --- archived copies -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Capture:
+    """An archived copy of a homepage: the day it was made, the URL archived, and what the site answered then."""
+
+    captured: str  # YYYY-MM-DD
+    url: str
+    page: HttpResult
+
+
+class Archive(Protocol):
+    """An archive of web pages. Contacts only the archive, never the organisation."""
+
+    name: str
+
+    def capture(self, host: str) -> Capture | None: ...  # the newest recent copy of the host's homepage
+
+
+def from_capture(source: str, capture: Capture) -> dict | None:
+    """What an archived copy shows, for a service a bot defence hid: inventory only, never findings,
+    since the copy may be months old. None when the archive was turned away too, or nothing matched."""
+    if turned_away(capture.page):
+        return None
+    ev = _page_evidence(capture.page)
+    tech = identify(ev) + _wordpress_assets(ev.body)
+    return {"source": source, "captured": capture.captured, "url": capture.url, "tech": tech} if tech else None
 
 
 def _text(raw: bytes) -> str:
@@ -503,18 +551,12 @@ def _web(prober: Prober, rec: ServiceRecord, ev: Evidence, scheme: str, config: 
     rec.service = scheme
     rec.status = resp.status
     rec.headers = {k: v[:200] for k, v in resp.headers if k not in _DROP_HEADERS}
-    rec.cookies = _cookies(resp)
     rec.server = resp.header("server")
     if path != "/" and not rec.location:
         rec.location = f"{scheme}://{host}:{port}{path}" if port not in (80, 443) else f"{scheme}://{host}{path}"
-    ev.headers = {k: v for k, v in resp.headers}
-    ev.cookies = rec.cookies
-    ev.body = _text(resp.body)
-    if m := _TITLE.search(resp.body):
-        rec.title = html.unescape(_text(m.group(1))).strip()[:200] or None
-        ev.title = rec.title or ""
-    if m := _GENERATOR.search(resp.body):
-        ev.generator = html.unescape(_text(m.group(1) or m.group(2))).strip()
+    page = _page_evidence(resp)
+    ev.headers, ev.cookies, ev.body, ev.title, ev.generator = page.headers, page.cookies, page.body, page.title, page.generator
+    rec.cookies, rec.title = page.cookies, page.title or None
     rec.signals.extend(_web_signals(rec, resp, ev))
     if service := unclaimed(ev.cnames, ev.body):
         rec.signals.append(f"takeover:{service}")

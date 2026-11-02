@@ -15,7 +15,10 @@ from dataclasses import dataclass, field
 
 from farpoint import runtime
 from farpoint.enrich import Enricher, NoRdapService
-from farpoint.fingerprint import HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, FingerprintConfig, fingerprint_service, for_host, shared_address, takeover_platform
+from farpoint.fingerprint import (
+    HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, Archive, FingerprintConfig, fingerprint_service, for_host, from_capture, shared_address,
+    takeover_platform, was_turned_away,
+)
 from farpoint.posture import Dns, assess_domain, check_mx, hosted
 from farpoint.probe import Prober
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
@@ -56,6 +59,7 @@ class Pipeline:
     related_rate: float | None = None  # start at most this many --related lookups a second (None: as fast as workers go)
     fingerprint: FingerprintConfig | None = None  # probe live hosts and the domains' mail/DNS (needs `lookup`, `prober`, `dns`)
     prober: Prober | None = None
+    archive: Archive | None = None  # with `fingerprint`: identify what a bot defence hid from an archived copy
     dns: Dns | None = None  # records()/txt() for posture and dangling-CNAME checks
     rdap_domain: Callable[[str], Mapping] | None = None  # a registered domain's RDAP record
     sign_in: SignIn | None = None  # how each scan domain signs in to Microsoft (with `tenants`)
@@ -666,7 +670,30 @@ class Pipeline:
                     inv.dangling[service.hostname] = {"reason": f"serves {signal.split(':', 1)[1]}'s page for an unclaimed name", "claimable": True}
         # A name that resolves now has nothing dangling, unless its page just said otherwise (above).
         inv.dangling_checked.update(h for h, r in inv.hosts.items() if r.resolves)
+        if self.archive:
+            self._archived(inv)
         self._posture(inv)
+
+    def _archived(self, inv: Inventory) -> None:
+        """For web services a bot defence hid, what the newest archived copy of the host's homepage shows.
+        One lookup per host, to the archive only. Recorded apart from what the scan saw: inventory, not findings."""
+        archive, hidden = self.archive, {}
+        for key, service in inv.services.items():
+            if service.service in ("http", "https") and was_turned_away(service.signals):
+                hidden.setdefault(service.hostname, []).append(key)
+        done, failed = [0], [0]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("archive", done[0], len(hidden), failed[0])
+
+        self.reporter.phase("archive", 0, len(hidden))
+        jobs = {("archive", host): (lambda h=host: archive.capture(h)) for host in sorted(hidden)}
+        for (_, host), capture in self._fan_out(inv, jobs, on_done=tick):
+            if capture and (found := from_capture(archive.name, capture)):
+                for key in hidden[host]:
+                    inv.services[key].archived = found
 
     def _posture(self, inv: Inventory) -> None:
         dns, prober = self.dns, self.prober

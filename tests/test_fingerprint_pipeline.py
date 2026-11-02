@@ -369,3 +369,58 @@ def test_a_scan_that_did_not_ask_keeps_the_last_zone_transfer_answer(tmp_path):
     pipeline.dns.zones[D]["NS"] = ["ns1.newhost.net"]
     report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-25T00:00:00Z")
     assert report["posture"][0]["axfr"] is None
+
+
+class FakeArchive:
+    name = "wayback"
+
+    def __init__(self, captures):
+        self.captures, self.asked = captures, []
+
+    def capture(self, host):
+        self.asked.append(host)
+        return self.captures.get(host)
+
+
+JUST_A_MOMENT = HttpResult(403, [("cf-mitigated", "challenge")], b"<title>Just a moment...</title>")
+
+
+def test_a_hidden_web_service_is_identified_from_its_archived_copy_as_inventory_only(tmp_path):
+    from farpoint.assess import derive, technologies
+    from farpoint.fingerprint import Capture
+
+    pipeline, prober = scenario()
+    prober.http_[("http", "www.example.com", 443, "/")] = JUST_A_MOMENT
+    prober.http_[("http", "app.example.com", 443, "/")] = JUST_A_MOMENT
+    page = HttpResult(200, [("x-powered-by", "PHP/5.6.40")], b'<html><meta name="generator" content="WordPress 4.9.8">'
+                                                             b'<script src="/wp-content/plugins/revslider/x.js?ver=5.4.8"></script></html>')
+    pipeline.archive = archive = FakeArchive({
+        "www.example.com": Capture("2026-08-30", "https://www.example.com/", page),
+        "app.example.com": Capture("2026-07-01", "https://app.example.com/", JUST_A_MOMENT),  # the archive was turned away too
+    })
+
+    report = write_outputs(pipeline.run([D]), tmp_path, "2026-10-01T00:00:00Z")
+
+    assert sorted(archive.asked) == ["app.example.com", "www.example.com"]  # only what was hidden: cdn.example.com was seen
+    rows = {r["endpoint"]: r for r in report["fingerprints"]}
+    archived = rows["www.example.com:443"]["archived"]
+    assert (archived["source"], archived["captured"], archived["url"]) == ("wayback", "2026-08-30", "https://www.example.com/")
+    assert {(t["name"], t.get("version")) for t in archived["tech"]} >= {("WordPress", "4.9.8"), ("PHP", "5.6.40"), ("WordPress plugin revslider", "5.4.8")}
+    assert "archived" not in rows["app.example.com:443"]
+    assert not {t["name"] for t in rows["www.example.com:443"]["tech"]} & {"WordPress", "PHP"}  # live tech is what the scan saw
+    # Inventory only: an old copy makes no findings (PHP 5.6 is end-of-life), but is listed as archived.
+    assert not [f for f in derive(report) if any(name in f["id"] for name in ("WordPress", "PHP", "revslider"))]
+    listed = {(r["technology"], r["seen"]): r for r in technologies(report)}
+    assert listed[("PHP", "archive")]["hosts"] == ["www.example.com"] and listed[("PHP", "archive")]["eol"] is None
+    with open(tmp_path / "fingerprints.csv", newline="", encoding="utf-8") as f:
+        csv_rows = {r["endpoint"]: r for r in csv.DictReader(f)}
+    assert csv_rows["www.example.com:443"]["archived"] == "2026-08-30 wayback: PHP 5.6.40, WordPress 4.9.8, WordPress plugin revslider 5.4.8"
+
+
+def test_without_an_archive_nothing_is_looked_up():
+    pipeline, prober = scenario()  # --no-archive
+    prober.http_[("http", "www.example.com", 443, "/")] = JUST_A_MOMENT
+
+    inv = pipeline.run([D])
+
+    assert inv.services["www.example.com:443"].archived is None
