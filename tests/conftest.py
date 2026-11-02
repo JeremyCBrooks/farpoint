@@ -1,5 +1,6 @@
 import csv
 import ipaddress
+import json
 import socket
 
 import httpx
@@ -164,3 +165,26 @@ def sample_inventory() -> Inventory:
 def read_csv(path):
     with open(path, newline="", encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
+
+
+AT = "2026-11-01T00:00:00Z"
+LATER = "2026-11-02T00:00:00Z"
+
+
+def exposure_row(**fields) -> dict:
+    """A valid normalised exposure row; a field set to None is removed."""
+    row = {
+        "provider": "acme-intel", "operation": "stealers", "reference": "https://intel.example.net/case/1",
+        "scope_domain": "example.com", "query_kind": "email", "identity": "alice@example.com",
+        "exposure_type": "infostealer", "secret_types": ["password"], "secret_evidence": "record",
+        "event_at": "2026-10-01", "event_date_basis": "compromised",
+    }
+    row.update(fields)
+    return {k: v for k, v in row.items() if v is not None}
+
+
+def write_import(path, exposures=(), summaries=(), checks=(), **envelope):
+    doc = {"schema_version": 1, "exposures": list(exposures), "summaries": list(summaries), "checks": list(checks)}
+    doc.update(envelope)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
