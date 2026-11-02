@@ -146,7 +146,7 @@ def exposure_id(row: Mapping) -> str:
     identity = row.get("identity")
     if isinstance(identity, str) and "@" in identity:
         local, _, domain = identity.rpartition("@")
-        identity = f"{local}@{domain.lower()}"
+        identity = f"{local}@{identity_domain(identity) or domain.lower()}"
     key = [provider, row.get("operation"), row.get("query_kind"), row.get("scope_domain"), identity,
            row.get("service_host"), row.get("service_port"), row.get("source_event_id")]
     digest = hashlib.sha256(json.dumps(key).encode("utf-8")).hexdigest()[:32]

@@ -38,7 +38,8 @@ def level_for(tmp_path, **fields):
 
 @pytest.mark.parametrize("service,port,expected", [("vpn.example.com", 443, "high"), ("sts.example.com", None, "high"), ("example.okta.com", None, "high"),
     ("vpn.example.com", None, "high"), ("example.zendesk.com", None, "medium"), ("dns-only.example.com", None, "medium"),
-    ("old.example.com", 443, "medium"), ("login.microsoftonline.com", None, "medium"), ("new.example.com", None, "medium")])
+    ("old.example.com", 443, "medium"), ("login.microsoftonline.com", None, "medium"), ("new.example.com", None, "medium"),
+    ("vpn.example.com", 8443, "medium")])
 def test_fresh_theft_is_high_only_with_current_positive_service_evidence(tmp_path, service, port, expected):
     assert level_for(tmp_path, service_host=service, service_port=port, event_at="2026-10-01")["level"] == expected
 
@@ -50,6 +51,19 @@ def test_a_dns_only_match_suggests_fingerprinting(tmp_path):
 def test_a_missing_port_never_becomes_443(tmp_path):
     f = level_for(tmp_path, service_host="vpn.example.com")
     assert f["target"] == "vpn.example.com"
+
+
+def test_a_reported_port_that_was_not_observed_is_not_the_host(tmp_path):
+    f = level_for(tmp_path, service_host="vpn.example.com", service_port=8443)
+    assert f["target"] == "vpn.example.com:8443"
+    assert "reported port not observed (other services seen on the host)" in f["detail"]
+
+
+def test_a_shared_provider_sign_in_page_is_context_even_when_federated(tmp_path):
+    infra = {**INFRA, "identity": [{"domain": "example.com", "provider": "google", "sign_in_host": "accounts.google.com", "last_seen": SEEN}]}
+    rows = [exposure_row(service_host="accounts.google.com")]
+    [f] = creds(derive(infra, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    assert f["level"] == "medium" and f["target"] == "example.com"
 
 
 @pytest.mark.parametrize("event_at,basis,expected", [("2026-08-03", "compromised", "high"), ("2026-08-02", "compromised", "medium"),
@@ -72,7 +86,8 @@ def test_findings_group_identities_and_never_name_them(tmp_path):
     found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
     work = next(f for f in found if f["id"].endswith("|workforce-associated"))
     assert work["detail"].startswith("2 workforce-associated identities (3 records)") and work["level"] == "high"
-    assert {f["id"] for f in found} == {"credential-theft|vpn.example.com:443|workforce-associated", "credential-theft|vpn.example.com:443|customer-reported"}
+    assert {f["id"] for f in found} == {"credential-theft|vpn.example.com:443|example.com|workforce-associated",
+                                        "credential-theft|vpn.example.com:443|example.com|customer-reported"}
     assert not any(s in json.dumps(found) for s in ("alice", "bob", "cust@", "gmail"))  # "cust" alone is in "customer-reported"
 
 
@@ -80,6 +95,32 @@ def test_overlapping_providers_do_not_inflate_identity_counts(tmp_path):
     rows = [exposure_row(), exposure_row(provider="other-intel")]
     [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
     assert f["detail"].startswith("1 workforce-associated identity (2 records)")
+
+
+def test_an_identity_spelt_with_another_domain_case_is_one_identity(tmp_path):
+    rows = [exposure_row(identity="E@Example.com"), exposure_row(provider="other-intel", identity="E@example.com.")]
+    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    assert f["detail"].startswith("1 workforce-associated identity (2 records)")
+
+
+def test_each_scope_domain_gets_its_own_finding_on_a_shared_asset(tmp_path):
+    infra = {**INFRA, "domains": ["example.com", "example.org"]}
+    rows = [exposure_row(service_host="vpn.example.com", service_port=443),
+            exposure_row(scope_domain="example.org", identity="b@example.org", service_host="vpn.example.com", service_port=443)]
+    found = creds(derive(infra, today=TODAY, credentials=credential_sidecar(tmp_path, rows, domains=("example.com", "example.org"))))
+    assert {f["id"] for f in found} == {"credential-theft|vpn.example.com:443|example.com|workforce-associated",
+                                        "credential-theft|vpn.example.com:443|example.org|workforce-associated"}
+    assert {f["detail"].split(";")[0] for f in found} == {"1 workforce-associated identity (1 record) for example.com",
+                                                         "1 workforce-associated identity (1 record) for example.org"}
+
+
+def test_a_stealer_log_name_never_reaches_findings_but_a_breach_name_does(tmp_path):
+    rows = [exposure_row(source_name="VICTIM-LAPTOP-jdoe"),
+            exposure_row(identity="b@example.com", operation="breaches", exposure_type="breach", source_name="ExampleBreach",
+                         event_date_basis="breach")]
+    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    assert "VICTIM" not in json.dumps(found)
+    assert any("ExampleBreach" in f["evidence"] for f in found)
 
 
 def test_a_partial_check_is_shown_beside_the_finding(tmp_path):

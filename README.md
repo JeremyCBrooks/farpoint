@@ -377,9 +377,16 @@ kept, and paths, query strings and credentials in URLs are stripped.
 ### How it is judged
 
 Findings are grouped by scope domain, kind, relationship and matched service, and carry counts, never
-identities. Evidence is correlated with the inventory (exact host and port, a sign-in host, a tenant
-with records or CNAME evidence); a shared IP, a common SaaS provider or a name resemblance is not a
-match.
+identities. A finding's ID is `kind|target|scope domain|relationship` (for example
+`credential-theft|vpn.example.com:443|example.com|workforce-associated`), and its detail names the scope
+domain, so two of the organisation's domains with exposures on one service stay two findings. Evidence
+is correlated with the inventory (exact host and port, a sign-in host, a tenant with records or CNAME
+evidence); a shared IP, a common SaaS provider or a name resemblance is not a match. A shared identity
+provider's own sign-in page (such as `accounts.google.com`) is context, never a strong match, even when
+the organisation's sign-in is federated to it. When the provider names a port that no fingerprint saw
+open on a host that has other services, the match is `host-port-unobserved`: the finding names
+`host:port`, says "reported port not observed", and stays medium. Infostealer and phishing log names
+are left out of findings, since they can name a victim's user or machine; breach names are kept.
 
 | Level | Evidence |
 |---|---|
@@ -400,6 +407,12 @@ evidence, or an unreadable `credentials.json`, makes them **stale** or **unavail
 left out of `findings.csv` and the terminal totals (the stored snapshot stays in `assets.json`) until
 you run `--assess`. The terminal prints `assessment: current`, `stale (run --assess to update)` or the
 reason it is unavailable.
+
+If the evidence can't be saved to `credentials.json` (it is unreadable, read-only or the disk is
+full), the batch is kept in an owner-only `credentials.unmerged-<time>.json`, the terminal prints
+`warning: credential evidence not saved (<reason>); kept in <file>` and farpoint exits with status 1.
+The rest of the scan is saved as usual. To recover, fix `credentials.json` (or move it aside) and re-run
+the original import; then delete the `credentials.unmerged-*.json` file.
 
 ### Sensitive data
 
@@ -435,13 +448,14 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registration |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
 | `credentials.json` | With `--credential-import`: the credential evidence (identities included; owner-only). The source of truth for it |
-| `credential-exposures.csv` | Each exposure: provider, identity, relationship, matched service, type, secret types, event date and basis, reference. Contains identities |
+| `credential-exposures.csv` | Each exposure: its stable ID, provider, identity, relationship, matched service, type, secret types, event date and basis, reference. Contains identities |
 | `credential-summary.csv` | Aggregate counts a provider reported |
 | `credential-checks.csv` | What each provider/domain/kind/operation check covered and its status |
 | `credentials.unmerged-<time>.json` | Evidence that couldn't be saved to `credentials.json` (it is unreadable or the save failed), kept owner-only |
 | `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |
 
-Every row except in `technologies.csv` has `first_seen` and `last_seen` (UTC). `assets.json` is the
+Every row except in `technologies.csv` and `credential-checks.csv` has `first_seen` and `last_seen`
+(UTC); a credential check has `started_at`, `completed_at` and `last_complete_at` instead. `assets.json` is the
 source of truth for the infrastructure and `credentials.json` for credential evidence; the other files are regenerated from them after every scan. Discovered facts
 accumulate across scans, while fingerprints and posture describe the latest look. Findings describe
 the latest `--assess`: a scan without it leaves them as they were (see

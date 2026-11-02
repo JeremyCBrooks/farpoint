@@ -164,7 +164,7 @@ def test_ids_survive_corrections_and_retrieval_time_but_not_identity_changes(tmp
 
 def test_only_the_domain_of_an_identity_is_case_folded_for_its_id(tmp_path):
     a = batch(tmp_path, [exposure_row(identity="alice@example.com")])
-    b = batch(tmp_path, [exposure_row(identity="alice@EXAMPLE.com")])
+    b = batch(tmp_path, [exposure_row(identity="alice@EXAMPLE.com.")])
     assert a.exposures[0]["id"] == b.exposures[0]["id"]
 
 

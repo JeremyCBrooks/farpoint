@@ -214,6 +214,7 @@ def test_exports_carry_identities_matches_and_coverage(tmp_path):
     write_outputs(sample_inventory(), tmp_path, AT, credentials=batch(tmp_path, [exposure_row(service_host="www.example.com")], AT))
     [row] = read_csv(tmp_path / "credential-exposures.csv")
     assert (row["identity"], row["match"], row["matched_asset"]) == ("alice@example.com", "dns-only", "www.example.com")
+    assert list(row)[0] == "id" and row["id"] == load_credentials(tmp_path).data["exposures"][0]["id"]
     assert read_csv(tmp_path / "credential-checks.csv")[0]["status"] == "partial"
     assert read_csv(tmp_path / "credential-summary.csv") == []
 

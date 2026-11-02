@@ -336,7 +336,30 @@ def _report_recoveries(out: Path) -> None:
         if "warning" in run:
             print(f"warning: {run['warning']}", file=sys.stderr)
             continue
-        print(f"recovered an interrupted run from {run['at']} ({', '.join(run['domains'])}: {run['hosts']} hosts)", file=sys.stderr)
+        exposures = run.get("exposures", 0)
+        if not run["domains"] and not run["hosts"]:  # only a credential member was left
+            print(f"recovered {_plural(exposures, 'credential exposure')} from an interrupted run at {run['at']}", file=sys.stderr)
+            continue
+        extra = f", {_plural(exposures, 'credential exposure')}" if exposures else ""
+        print(f"recovered an interrupted run from {run['at']} ({', '.join(run['domains'])}: {run['hosts']} hosts{extra})", file=sys.stderr)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'s' if n != 1 else ''}"
+
+
+def _this_run(report: dict, stamp: str) -> dict:
+    return next((r for r in reversed(report["runs"]) if r["at"] == stamp), {})
+
+
+def _credential_save_failed(report: dict, stamp: str) -> bool:
+    """Warn when this run's credential evidence didn't reach credentials.json; value-free, names the fallback."""
+    run = _this_run(report, stamp).get("credentials", {})
+    if not run.get("error"):
+        return False
+    kept = f"; kept in {run['fallback']}" if run.get("fallback") else ""
+    print(f"warning: credential evidence not saved ({run['error']}){kept}", file=sys.stderr)
+    return True
 
 
 def _prepare_assessment(args, http: httpx.Client, reporter, report_now, stamp: str):
@@ -418,14 +441,9 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     _summarise_assessment(saved, args.out)
-    _summarise_credentials(args.out, saved, rejected, _new_exposures(saved, stamp))
+    _summarise_credentials(args.out, saved, rejected, _this_run(saved, stamp).get("credentials", {}).get("new", 0))
     print(f"output:     {args.out.resolve()}")
-    return 0
-
-
-def _new_exposures(report: dict, stamp: str) -> int:
-    run = next((r for r in reversed(report["runs"]) if r["at"] == stamp), {})
-    return run.get("credentials", {}).get("new", 0)
+    return 1 if _credential_save_failed(saved, stamp) else 0
 
 
 def _summarise_credentials(out: Path, report: dict, rejected: int = 0, new: int = 0) -> None:
@@ -433,7 +451,7 @@ def _summarise_credentials(out: Path, report: dict, rejected: int = 0, new: int 
     from collections import Counter
 
     state = load_credentials(out)
-    if not (out / SIDECAR).exists() and not rejected:
+    if not (out / SIDECAR).exists() and not rejected and not report.get("credential_assessment"):
         return
     data = state.data or {}
     checks = Counter(c["status"] for c in data.get("checks", []))
@@ -481,11 +499,11 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
         return 1
     checkpoint.clear()  # only once saved: any other failure leaves it for the next run to recover
 
-    this_run = next(r for r in reversed(report["runs"]) if r["at"] == stamp)
+    this_run = _this_run(report, stamp)
     new = this_run["new"]
     new_credentials = this_run.get("credentials", {}).get("new", 0)
     live = sum(1 for h in report["hosts"] if h["resolves"])
-    plural = lambda n, word: f"{n} {word}{'s' if n != 1 else ''}"
+    plural = _plural
     print(f"this run:   {', '.join(inv.domains)}")
     print(f"inventory:  {plural(len(report['domains']), 'domain')}, {plural(len(report['runs']), 'run')} merged")
     print(f"hostnames:  {len(report['hosts'])} ({live} resolving, {new['hosts']} new)")
@@ -509,6 +527,8 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
     if inv.errors:
         print(f"errors:     {len(inv.errors)} this run (see assets.json)")
     print(f"output:     {out.resolve()}")
+    if _credential_save_failed(report, stamp):
+        return 1
     if inv.interrupted:
         print("status:     interrupted, partial results saved; re-run to fill in the rest")
         return 130

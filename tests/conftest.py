@@ -202,16 +202,17 @@ def check_row(**fields) -> dict:
 _import_numbers = itertools.count(1)
 
 
-def batch(tmp_path, exposures, at=AT, checks=(), summaries=(), kinds=("email", "website")):
-    """Import the rows through `load_imports` (a fresh file per call) for example.com; returns the batch."""
+def batch(tmp_path, exposures, at=AT, checks=(), summaries=(), kinds=("email", "website"), domains=("example.com",)):
+    """Import the rows through `load_imports` (a fresh file per call) for `domains`; returns the batch."""
     from farpoint.credential_import import load_imports
 
     path = write_import(tmp_path / f"import-{next(_import_numbers)}.json", exposures, summaries, checks)
-    return load_imports([path], ["example.com"], set(kinds), at)[0]
+    return load_imports([path], list(domains), set(kinds), at)[0]
 
 
-def credential_sidecar(tmp_path, exposures, summaries=(), checks=(), kinds=("email", "website"), at="2026-10-25T00:00:00Z"):
+def credential_sidecar(tmp_path, exposures, summaries=(), checks=(), kinds=("email", "website"), at="2026-10-25T00:00:00Z",
+                       domains=("example.com",)):
     """The sidecar data an import of these rows (through `load_imports` and `merge_credentials`) would store."""
     from farpoint.credential_store import merge_credentials
 
-    return merge_credentials(None, batch(tmp_path, exposures, at, checks=checks, summaries=summaries, kinds=kinds))
+    return merge_credentials(None, batch(tmp_path, exposures, at, checks=checks, summaries=summaries, kinds=kinds, domains=domains))

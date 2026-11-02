@@ -452,6 +452,7 @@ def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None,
                   assess: Callable[[dict, CredentialState], dict] | None = None, credentials: CredentialBatch | None = None) -> dict:
     """Merge this run into out_dir's inventory and rewrite every output file. Returns the merged report.
     `assess`, if given, judges the merged report (farpoint.assess) with the credential sidecar's state before it is written.
+    If `credentials` can't be saved, this run's entry in `runs` says so under credentials.error and .fallback.
 
     Credentials are saved first, to their own owner-only file, so that an inventory that can't be merged
     never costs the evidence. If the existing inventory can't be merged, this run is saved alongside it
@@ -465,7 +466,8 @@ def write_outputs(inv: Inventory, out_dir: Path, stamp: str | None = None,
             save = save_credentials(out_dir, credentials, stamp)
             state = save.state
             current["credential_run"] = {"new": save.new_exposures, "checks": attempt_summary(credentials)}
-            if save.error:
+            if save.error:  # the CLI warns and fails on these; the fallback is named, never its contents
+                current["credential_run"] |= {"error": save.error, **({"fallback": save.fallback.name} if save.fallback else {})}
                 current["errors"] = [*current["errors"], {"source": "credentials", "target": "credentials.json", "message": save.error}]
         else:
             state = load_credentials(out_dir)

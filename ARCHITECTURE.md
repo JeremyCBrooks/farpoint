@@ -552,7 +552,8 @@ under a directory lock:
 With credentials, step 0 comes first: the batch is merged into and saved to `credentials.json`
 (owner-only) *before* the inventory is read, so an inventory that can't be merged never costs the
 evidence. A save that fails leaves the old sidecar intact and keeps the new evidence in
-`credentials.unmerged-<time>.json`. The assessment receives the sidecar's state, and `findings.csv` is
+`credentials.unmerged-<time>.json`; the run's entry in `runs` records `credentials.error` (value-free)
+and `credentials.fallback` (the file name), and the CLI warns on stderr and exits 1. The assessment receives the sidecar's state, and `findings.csv` is
 written from `current_findings` (below).
 
 Every row carries `first_seen` and `last_seen`. Each run is recorded with its domains, counts of new
@@ -594,28 +595,34 @@ them. `assess.derive` stays pure: it is handed the state and never produces a fi
 |---|---|
 | Exact host and port | Endpoint association |
 | Exact host, no port | Host association |
-| A federation sign-in host | Sign-in association |
+| Exact host with other fingerprints, but the reported port wasn't observed | `host-port-unobserved` on `host:port`: not strong (the port may be closed or never probed) |
+| A federation sign-in host, unless on a shared login domain | Sign-in association |
 | A tenant with records/CNAME evidence or a confirmed tenant ID | Tenant association |
 | A name-only tenant | Tentative lead; no severity change |
 | Host in DNS only | `dns-only`: medium at most; `--fingerprint` could confirm |
 | Host not in the inventory | Lead |
-| A shared login domain (`login.microsoftonline.com`) | Provider context only |
+| A shared login domain (`login.microsoftonline.com`, `accounts.google.com`), even when it is the federated sign-in host | Provider context only |
 
 **Levels.** Theft evidence (infostealer, phishing) is high only with a theft or capture date within
 `RECENT_DAYS` (90) *and* a strong association (endpoint, host, sign-in, tenant) whose supporting
 observation is itself within 90 days; otherwise medium. Account-specific password or hash records are
 medium; email-only or dataset-level exposure is low; summaries are low and never confirm accounts.
 Breach dates cannot be theft dates. Findings are grouped by scope domain, kind, relationship and
-asset, carry counts but no identities or values derived from them, and take their observation time from
-the evidence's retrieval, not the assessment's.
+asset, and their ID is `kind|target|scope_domain|relationship`, so each scope domain keeps its own
+finding on a shared asset; the detail names the scope domain. They carry counts but no identities or
+values derived from them: identities are counted once per (local part, normalised domain), and
+`source_name` appears in evidence only for breach, combolist and unknown exposures (a stealer or
+phishing log's name can embed a victim's user or machine). They take their observation time from the
+evidence's retrieval, not the assessment's.
 
-**Exports and CSVs.** `credential-exposures.csv`, `credential-summary.csv` and `credential-checks.csv`
-are written whenever the sidecar exists, owner-only. Every CSV farpoint writes neutralises formula
+**Exports and CSVs.** `credential-exposures.csv` (first column the exposure's stable `id`),
+`credential-summary.csv` and `credential-checks.csv` are written whenever the sidecar exists, owner-only. Every CSV farpoint writes neutralises formula
 prefixes.
 
 **CLI.** With domains, the import is validated first and saved with the scan. With none, `_credentials_only`
 reads the inventory (read-only), validates the import against its domains, prints the scope, recovers
-checkpoints, optionally prepares the judge, and then writes with an empty run.
+checkpoints, optionally prepares the judge, and then writes with an empty run. The `assessment:` line is
+printed whenever a sidecar exists, an import was given or `assets.json` stores a `credential_assessment`.
 
 ## Cross-cutting concerns
 

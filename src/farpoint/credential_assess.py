@@ -15,7 +15,7 @@ from functools import cache
 from importlib import resources
 
 from farpoint.credential_store import CredentialState
-from farpoint.credentials import THEFT_BASES
+from farpoint.credentials import THEFT_BASES, identity_domain
 from farpoint.names import in_scope
 from farpoint.suffixes import registered
 
@@ -24,11 +24,18 @@ STRONG = frozenset({"endpoint", "host", "sign-in", "tenant"})
 THEFT = frozenset({"infostealer", "phishing"})
 _STRONG_TIES = frozenset({"records", "cname"})
 _NO_ASSET = frozenset({"provider-context"})
+_NAMED_SOURCES = frozenset({"breach", "combolist", "unknown"})  # a stealer or phishing log's name can embed a victim's user or machine
+
+
+def _identity_key(row: Mapping) -> tuple | str:
+    """One identity however its domain is spelt: (local part as supplied, normalised domain); else the raw string."""
+    domain = identity_domain(row["identity"])
+    return (row["identity"].rpartition("@")[0], domain) if domain else row["identity"]
 
 
 @dataclass(frozen=True)
 class Match:
-    kind: str  # "endpoint" | "host" | "sign-in" | "tenant" | "tentative-tenant" | "dns-only" | "lead" | "provider-context"
+    kind: str  # "endpoint" | "host" | "sign-in" | "tenant" | "host-port-unobserved" | "tentative-tenant" | "dns-only" | "lead" | "provider-context"
     asset: str  # "vpn.example.com:443", "vpn.example.com", "sts.example.com", "example.okta.com", or "" for provider-context
     seen: str | None  # last_seen of the positive supporting observation (fingerprint, identity or tenant row)
     current: bool  # seen is within recent_days of today and not after it
@@ -78,14 +85,17 @@ class Correlator:
         endpoint = f"{host}:{port}"
         if port is not None and endpoint in self.endpoints:
             return self._positive("endpoint", endpoint, [self.endpoints[endpoint]])
-        if host in self.by_host:
-            return self._positive("host", host, self.by_host[host])
-        if host in self.sign_in:
+        if host in self.by_host:  # a reported port that wasn't seen open may be closed, filtered or never probed
+            if port is None:
+                return self._positive("host", host, self.by_host[host])
+            return self._positive("host-port-unobserved", endpoint, self.by_host[host])
+        shared = registered(host) in _shared_sign_in()  # a provider's own sign-in page is context, even when federated to
+        if host in self.sign_in and not shared:
             return self._positive("sign-in", host, self.sign_in[host])
         if host in self.tenants:
             row = self.tenants[host]
             return self._positive("tenant" if row.get("tie") in _STRONG_TIES else "tentative-tenant", host, [row])
-        if registered(host) in _shared_sign_in():
+        if shared:
             return Match("provider-context", "", None, False)
         if host in self.hosts:
             return Match("dns-only", host, None, False)
@@ -129,9 +139,11 @@ def credential_findings(report: Mapping, credentials: Mapping, today: date, rece
         rows = [row for row, _ in members]
         match = members[0][1]  # one asset, one correlation
         level = min((_level(row, m, today, recent_days) for row, m in members), key=order.__getitem__)
-        n = len({row["identity"] for row in rows if row.get("identity")})
+        n = len({_identity_key(row) for row in rows if row.get("identity")})
         m = len(rows)
-        detail = f"{n} {relationship} identit{'y' if n == 1 else 'ies'} ({m} record{'s'[:m != 1]})"
+        detail = f"{n} {relationship} identit{'y' if n == 1 else 'ies'} ({m} record{'s'[:m != 1]}) for {scope}"
+        if match and match.kind == "host-port-unobserved":
+            detail += "; reported port not observed (other services seen on the host)"
         if match and match.kind == "dns-only":
             detail += "; --fingerprint could confirm the service"
         if kind == "credential-theft":
@@ -152,8 +164,9 @@ def credential_findings(report: Mapping, credentials: Mapping, today: date, rece
             if check and check.get("status") != "complete":
                 gaps.add(f"; latest {check['provider']}/{check['query_kind']}/{check['operation']} check: {check['status']}")
         detail += "".join(sorted(gaps))
-        evidence = sorted({f"{row['provider']}:{row['operation']}" for row in rows}) + sorted({row["source_name"] for row in rows if row.get("source_name")})
-        out.extend(_seen([_finding(level, kind, asset or scope, detail, evidence, about=relationship)], *rows))
+        names = {row["source_name"] for row in rows if row.get("source_name") and row.get("exposure_type") in _NAMED_SOURCES}
+        evidence = sorted({f"{row['provider']}:{row['operation']}" for row in rows}) + sorted(names)
+        out.extend(_seen([_finding(level, kind, asset or scope, detail, evidence, about=f"{scope}|{relationship}")], *rows))
     for s in credentials.get("summaries", []):
         population = s.get("population")
         detail = (f"{s['provider']} reports {s['count']} for {s['metric']}" + (f" ({population})" if population else "")

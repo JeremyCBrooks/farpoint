@@ -190,7 +190,7 @@ def attempt_summary(batch: CredentialBatch) -> list[dict]:
     return [{n: c.get(n) for n in names} for c in batch.checks]
 
 
-_EXPOSURE_FIELDS = ["provider", "scope_domain", "query_kind", "operation", "identity", "relationship", "provider_relationship",
+_EXPOSURE_FIELDS = ["id", "provider", "scope_domain", "query_kind", "operation", "identity", "relationship", "provider_relationship",
                     "service_host", "service_port", "match", "matched_asset", "exposure_type", "source_name", "malware_family",
                     "secret_types", "secret_evidence", "event_at", "event_date_basis", "provider_discovered_at", "reference",
                     "first_seen", "last_seen"]
