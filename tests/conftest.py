@@ -1,5 +1,6 @@
 import csv
 import ipaddress
+import itertools
 import json
 import socket
 
@@ -188,3 +189,22 @@ def write_import(path, exposures=(), summaries=(), checks=(), **envelope):
     doc.update(envelope)
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path
+
+
+def check_row(**fields) -> dict:
+    """A valid import check row; a field set to None is removed."""
+    row = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",
+           "status": "complete", "checked_at": "2026-10-30"}
+    row.update(fields)
+    return {k: v for k, v in row.items() if v is not None}
+
+
+_import_numbers = itertools.count(1)
+
+
+def batch(tmp_path, exposures, at=AT, checks=(), summaries=(), kinds=("email", "website")):
+    """Import the rows through `load_imports` (a fresh file per call) for example.com; returns the batch."""
+    from farpoint.credential_import import load_imports
+
+    path = write_import(tmp_path / f"import-{next(_import_numbers)}.json", exposures, summaries, checks)
+    return load_imports([path], ["example.com"], set(kinds), at)[0]
