@@ -186,25 +186,65 @@ HOME = HttpResult(
 )
 
 
-@pytest.mark.parametrize("challenge", [
-    HttpResult(403, [("server", "cloudflare")], b"<html><title>Attention Required! | Cloudflare</title></html>"),
-    HttpResult(403, [("server", "cloudflare"), ("cf-mitigated", "challenge")], b"<html><title>Just a moment...</title></html>"),
+CF_BLOCK = (b'<html><head><title>Attention Required! | Cloudflare</title></head><body>'
+            b'<h1 data-translate="block_headline">Sorry, you have been blocked</h1></body></html>')
+
+
+@pytest.mark.parametrize("resp, signal", [
+    # a challenge: a browser could get past it
+    (HttpResult(403, [("server", "cloudflare"), ("cf-mitigated", "challenge")], b"<html><title>Just a moment...</title></html>"), "bot-challenge:cloudflare"),
+    (HttpResult(403, [("server", "cloudflare")], b"<html><title>Attention Required! | Cloudflare</title></html>"), "bot-challenge:cloudflare"),
+    (HttpResult(403, [("server", "AkamaiGHost")], b'<html><script src="/_sec/cp_challenge/ak-challenge-4-3.js"></script></html>'), "bot-challenge:akamai"),
+    (HttpResult(202, [("x-amzn-waf-action", "challenge")], b""), "bot-challenge:aws-waf"),
+    (HttpResult(405, [("x-amzn-waf-action", "captcha")], b""), "bot-challenge:aws-waf"),
+    (HttpResult(403, [("x-datadome", "protected")], b'<html><script src="https://geo.captcha-delivery.com/captcha/"></script></html>'), "bot-challenge:datadome"),
+    (HttpResult(403, [], b'<html><title>Access to this page has been denied</title><div id="px-captcha"></div></html>'), "bot-challenge:perimeterx"),
+    (HttpResult(429, [("x-vercel-mitigated", "challenge")], b""), "bot-challenge:vercel"),
+    # a block: no client gets past it, only another network
+    (HttpResult(403, [("server", "cloudflare")], CF_BLOCK), "bot-block:cloudflare"),
+    (HttpResult(403, [("server", "cloudflare")], b"<title>Access denied | www.example.com used Cloudflare to restrict access</title>"), "bot-block:cloudflare"),
+    (HttpResult(403, [("server", "AkamaiGHost")], b"<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD><BODY>You don't have permission to access "
+                                                  b"\"http&#58;&#47;&#47;www&#46;example&#46;com&#47;\" on this server.<P>Reference&#32;&#35;18&#46;5e1"), "bot-block:akamai"),
+    (HttpResult(403, [], b"<html>Request unsuccessful. Incapsula incident ID: 1234-5678</html>"), "bot-block:imperva"),
+    (HttpResult(403, [("x-cache", "Error from cloudfront")], b"<H1>403 ERROR</H1><H2>The request could not be satisfied.</H2>Request blocked. "
+                                                              b"We can't connect to the server for this app or website at this time."), "bot-block:cloudfront"),
+    (HttpResult(403, [("server", "Sucuri/Cloudproxy")], b"<title>Sucuri WebSite Firewall - Access Denied</title>"), "bot-block:sucuri"),
 ])
-def test_a_bot_challenge_is_marked_and_judged_as_nothing(challenge):
-    prober = FakeProber(http={("http", HOST, 80, "/"): challenge})
+def test_a_bot_defence_says_whose_it_is_and_whether_a_browser_could_pass(resp, signal):
+    prober = FakeProber(http={("http", HOST, 80, "/"): resp})
 
     rec = fingerprint_service(prober, HOST, IP, 80)
 
-    assert "bot-challenge" in rec.signals
-    row = {"endpoint": f"{HOST}:80", "hostname": HOST, "ip": IP, "port": 80, "service": "http", "status": 403, "signals": rec.signals, "tech": []}
-    assert derive({"fingerprints": [row]}) == []
+    assert [s for s in rec.signals if s.startswith("bot-")] == [signal]
+    row = {"endpoint": f"{HOST}:80", "hostname": HOST, "ip": IP, "port": 80, "service": "http", "status": resp.status, "signals": rec.signals, "tech": []}
+    assert derive({"fingerprints": [row]}) == []  # what the defence said is about the scan, not the site
 
 
-def test_a_plain_403_is_not_a_bot_challenge():
-    prober = FakeProber(http={("http", HOST, 80, "/"): HttpResult(403, [("server", "nginx")], b"<title>403 Forbidden</title>")})
+@pytest.mark.parametrize("resp", [
+    HttpResult(403, [("server", "nginx")], b"<title>403 Forbidden</title>"),
+    # the site itself, with the vendor's script on it: protected, but the scan saw it
+    HttpResult(200, [("server", "nginx")], b'<html><title>Shop</title><script src="https://js.datadome.co/tags.js"></script>'
+                                           b'<script src="/_Incapsula_Resource?SWJIYLWA=719d34d31c8e3a6e6fffd425f7e032f3"></script></html>'),
+])
+def test_a_page_that_is_the_site_is_not_a_bot_defence(resp):
+    prober = FakeProber(http={("http", HOST, 80, "/"): resp})
 
     rec = fingerprint_service(prober, HOST, IP, 80)
-    assert rec.status == 403 and "bot-challenge" not in rec.signals
+
+    assert not [s for s in rec.signals if s.startswith("bot-")]
+
+
+def test_a_cache_busting_timestamp_is_not_a_plugin_version():
+    page = (b'<html><link href="/wp-content/themes/acme/style.css?ver=1700000000">'
+            b'<script src="/wp-content/plugins/forms/f.js?ver=20240115"></script>'
+            b'<script src="/wp-content/plugins/contact-form-7/x.js?ver=5.7.1"></script></html>')
+    prober = FakeProber(http={("http", HOST, 80, "/"): HttpResult(200, [], page)})
+
+    found = {t.name: t.version for t in fingerprint_service(prober, HOST, IP, 80).tech}
+
+    assert found["WordPress theme acme"] is None
+    assert found["WordPress plugin forms"] is None
+    assert found["WordPress plugin contact-form-7"] == "5.7.1"
 
 
 def test_a_web_service_is_read_from_headers_page_favicon_and_paths():

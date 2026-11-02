@@ -157,6 +157,7 @@ CHALLENGE = b"<html><head><title>Attention Required! | Cloudflare</title></head>
 @pytest.mark.parametrize("policy", [
     HttpResult(403, [("server", "cloudflare")], CHALLENGE),  # a bot challenge page
     HttpResult(403, [("cf-mitigated", "challenge")], b""),  # a bot challenge, by its header
+    HttpResult(403, [], b"<html>Request unsuccessful. Incapsula incident ID: 1234-5678</html>"),  # a block of the scan's network
     HttpResult(429, [], b""),  # a rate limit
     HttpResult(503, [], b""),  # an outage
 ])

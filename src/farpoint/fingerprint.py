@@ -24,7 +24,7 @@ from urllib.parse import urljoin, urlsplit
 
 from farpoint import runtime
 from farpoint.models import ServiceRecord, Tech
-from farpoint.probe import HttpResult, Prober, UnsupportedHere, _name_matches, bot_challenge, cert_summary
+from farpoint.probe import HttpResult, Prober, UnsupportedHere, _name_matches, cert_summary
 
 # Management and data services attackers scan for first, plus the common web and appliance ports.
 DEFAULT_PORTS = (
@@ -328,6 +328,7 @@ _GENERATOR = re.compile(rb"<meta[^>]+name=[\"']generator[\"'][^>]*content=[\"'](
 _ICON = re.compile(rb"<link[^>]+rel=[\"'](?:shortcut )?icon[\"'][^>]*>", re.I)
 _HREF = re.compile(rb"href=[\"']([^\"']+)", re.I)
 _WP_ASSET = re.compile(r"/wp-content/(plugins|themes)/([a-z0-9_-]+)/[^\"'?\s]*\?ver=([\d.]+)", re.I)
+_CACHE_BUSTER = re.compile(r"\d{8,}")  # ?ver=1700000000 or ?ver=20240115: a timestamp or date, not a release
 _DEFAULT_PAGES = re.compile(
     r"^(IIS Windows Server|IIS\d*|Welcome to nginx!|Apache2 (Ubuntu|Debian) Default Page.*|Test Page for the (Apache|Nginx) HTTP Server.*|"
     r"Apache HTTP Server Test Page.*|Welcome to CentOS|Default Web Site Page|Welcome to OpenResty!|Apache Tomcat/[\d.]+|Domain Default page)$",
@@ -338,6 +339,23 @@ _STACK_TRACE = re.compile(
     r"Whitelabel Error Page|SQLSTATE\[|Microsoft OLE DB Provider|ORA-\d{5}|You have an error in your SQL syntax|DEBUG = True|Laravel.*Whoops",
     re.S,
 )
+
+
+@cache
+def bundled_defences() -> tuple[Rule, ...]:
+    import json
+
+    return load_rules(json.loads(resources.files("farpoint.data").joinpath("bot_defences.json").read_text(encoding="utf-8")))
+
+
+def turned_away(resp: HttpResult) -> tuple[str, str] | None:
+    """(kind, vendor) when `resp` is a bot defence's answer about the asker instead of the site. kind is
+    "challenge" (a browser could get past it) or "block" (no client can; only another network)."""
+    page = resp.body[:65536]
+    title = _TITLE.search(page)
+    ev = Evidence(headers=dict(resp.headers), body=_text(page), title=html.unescape(_text(title.group(1))).strip() if title else "")
+    found = identify(ev, bundled_defences())
+    return (found[0].category, found[0].name) if found else None
 
 
 def _text(raw: bytes) -> str:
@@ -535,8 +553,8 @@ def _path_note(path: str, got: HttpResult, home: HttpResult) -> str | None:
 def _web_signals(rec: ServiceRecord, resp: HttpResult, ev: Evidence) -> list[str]:
     signals = []
     title = rec.title or ""
-    if bot_challenge(resp):  # the scan was turned away: nothing behind it was seen
-        signals.append("bot-challenge")
+    if defence := turned_away(resp):  # the scan was turned away: nothing behind it was seen
+        signals.append(f"bot-{defence[0]}:{defence[1]}")
     if re.match(r"Index of /", title) or "<h1>Index of /" in ev.body:
         signals.append("directory-listing")
     if _DEFAULT_PAGES.match(title.strip()):
@@ -563,8 +581,8 @@ def _wordpress_assets(body: str) -> list[Tech]:
     """Plugins and themes a WordPress page loads with ?ver=: their versions, for free."""
     seen: dict[tuple[str, str], str] = {}
     for kind, slug, version in _WP_ASSET.findall(body):
-        seen.setdefault((kind.lower(), slug.lower()), version)
+        seen.setdefault((kind.lower(), slug.lower()), None if _CACHE_BUSTER.fullmatch(version) else version)
     return [
-        Tech(f"WordPress {kind[:-1]} {slug}", "cms-plugin", None, slug, version, None, f"asset ?ver={version}")
+        Tech(f"WordPress {kind[:-1]} {slug}", "cms-plugin", None, slug, version, None, f"asset ?ver={version}" if version else "asset path")
         for (kind, slug), version in sorted(seen.items())
     ]

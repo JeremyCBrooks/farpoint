@@ -311,7 +311,8 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
     if legacy:
         out.append(_finding("medium", "legacy-tls", ep, f"accepts {' and '.join(legacy)}"))
     headers = r.get("headers") or {}
-    status = r.get("status") or 0
+    # A bot defence answered (AWS WAF challenges with a 202): its headers say nothing about how the site is served.
+    status = 0 if any(s.startswith(("bot-challenge", "bot-block")) for s in r.get("signals", [])) else r.get("status") or 0
     if r.get("service") == "http" and 200 <= status < 300:
         if r["hostname"] not in https_hosts:
             out.append(_finding("medium", "cleartext-http", ep, "serves content over plain HTTP, with no HTTPS alternative"))

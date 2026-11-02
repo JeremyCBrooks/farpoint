@@ -288,13 +288,20 @@ checks aren't paced. Web requests identify themselves with the user agent
 `--engagement`. A scan of about 100 hosts makes a few thousand connections over a
 few minutes. Results go to `fingerprints.csv`, `technologies.csv` and `posture.csv`.
 
-A CDN's bot management may answer the scan with a challenge page instead of the site (Cloudflare's
-"Attention Required!" or "Just a moment..."). Such a service gets the signal `bot-challenge`, no
-finding is made from it, and the run summary counts them: what runs behind them wasn't seen. The
-scan's TLS handshake leaves out session tickets, because Cloudflare challenges Python's default
-handshake on that alone. Some sites block whole networks instead, such as cloud providers' (a 403
-"Attention Required!" for every client, browsers included). No client change gets past that: scan
-from a network the site accepts, or ask the organisation to allowlist the scan's address for the run.
+A bot defence may answer the scan instead of the site. Such a service gets the signal
+`bot-challenge:<vendor>` (a page a browser could get past, such as Cloudflare's "Just a moment...")
+or `bot-block:<vendor>` (a refusal no client gets past, such as Cloudflare's "Sorry, you have been
+blocked" or an Akamai "Access Denied"). No finding is made from it, and the run summary counts them by
+vendor: what runs behind them wasn't seen. The vendors recognised are in
+`src/farpoint/data/bot_defences.json`. The scan's TLS handshake leaves out session tickets, because
+Cloudflare challenges Python's default handshake on that alone. A block is usually of the scan's
+network, such as a cloud provider's: scan from a network the site accepts, or ask the organisation to
+allowlist the scan's address for the run.
+
+`uv run python -m farpoint.visibility out` reports how many web services a scan saw and how many each
+vendor challenged or blocked. It reads scans made before these signals existed from the status,
+headers and title they kept, so there a block can read as a challenge. Use it to compare a change to
+how farpoint asks across the same organisations, rather than judging it on one site.
 
 **Not passive:** the organisation's hosts see the connections, and a port sweep or `AXFR` request
 may be logged as reconnaissance (`--ports none` and `--no-axfr` drop both). Some DNS resolvers can't answer DNSSEC (DS) queries. DNSSEC then

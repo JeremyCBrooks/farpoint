@@ -17,6 +17,7 @@ uv run pytest tests/test_assess.py::test_name    # a single test
 uv run pytest -m network                         # smoke tests against real DNS, example.com and NVD
 uv run farpoint example.com                      # passive scan into ./out
 uv run python -m farpoint.guess out              # offline evaluation of the guesser on an inventory
+uv run python -m farpoint.visibility out         # how much of a scan's web bot defences hid, by vendor
 docker run --rm $(docker build -q --target test .)   # offline suite in the container image
 ```
 
@@ -74,6 +75,6 @@ Windows), use `uv run python -m pytest` instead.
 
 ## Extending
 
-Recognising a new technology, tenant platform, takeover signature or end-of-life date is a data change in
+Recognising a new technology, tenant platform, takeover signature, bot defence or end-of-life date is a data change in
 `src/farpoint/data/*.json`, not a code change. For new sources and findings, see "Extending farpoint" in
 ARCHITECTURE.md. When behaviour, options or outputs change, update README.md and ARCHITECTURE.md to match.

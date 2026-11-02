@@ -127,17 +127,16 @@ def test_assess_alone_rejudges_an_existing_inventory_without_scanning(tmp_path, 
     assert "findings:" in capsys.readouterr().out
 
 
-def test_the_summary_says_when_bot_challenges_hid_web_services(tmp_path, capsys):
+def test_the_summary_says_when_bot_defences_hid_web_services(tmp_path, capsys):
     pipeline, prober = scenario()
-    challenge = HttpResult(403, [("server", "cloudflare")], b"<title>Attention Required! | Cloudflare</title>")
-    prober.http_[("http", "www.example.com", 443, "/")] = challenge
-    prober.http_[("http", "app.example.com", 443, "/")] = challenge
+    prober.http_[("http", "www.example.com", 443, "/")] = HttpResult(403, [("server", "cloudflare")], b"<title>Attention Required! | Cloudflare</title>")
+    prober.http_[("http", "app.example.com", 443, "/")] = HttpResult(403, [], b"Request unsuccessful. Incapsula incident ID: 1-2")
     write_outputs(pipeline.run([D]), tmp_path, "2026-10-01T00:00:00Z")
 
     assert cli.main(["--assess", "--no-cve", "-o", str(tmp_path)]) == 0
 
     out = capsys.readouterr().out
-    assert "2 web services answered only with a bot challenge" in out
+    assert "2 web services turned the scan away (challenged: cloudflare 1; blocked: imperva 1)" in out
 
 
 def test_progress_phases_count_their_own_jobs():

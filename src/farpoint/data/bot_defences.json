@@ -1,0 +1,85 @@
+{
+ "_comment": "Bot defences that answer the scan instead of the site, for farpoint.fingerprint.turned_away. Same matchers as fingerprints.json. name: the vendor, as it appears in the signal. category: challenge (a browser could get past it) or block (no client can; only another network). The first rule that matches wins, so put a vendor's block before its challenge. Match only what the defence's own page says, never the script a vendor puts on the protected site.",
+ "rules": [
+  {
+   "name": "cloudflare",
+   "category": "block",
+   "match": [
+    {"body": "Sorry, you have been blocked"},
+    {"title": "used Cloudflare to restrict access"}
+   ]
+  },
+  {
+   "name": "cloudflare",
+   "category": "challenge",
+   "match": [
+    {"header": "cf-mitigated", "regex": "^challenge$"},
+    {"title": "^Just a moment\\.\\.\\.$"},
+    {"title": "^Attention Required! \\| Cloudflare$"}
+   ]
+  },
+  {
+   "name": "akamai",
+   "category": "block",
+   "match": [
+    {"body": "Reference&#32;&#35;[0-9a-f]+&#46;|errors(\\.|&#46;)edgesuite(\\.|&#46;)net"}
+   ]
+  },
+  {
+   "name": "akamai",
+   "category": "challenge",
+   "match": [
+    {"body": "/_sec/cp_challenge/"}
+   ]
+  },
+  {
+   "name": "imperva",
+   "category": "block",
+   "match": [
+    {"body": "Incapsula incident ID"}
+   ]
+  },
+  {
+   "name": "aws-waf",
+   "category": "challenge",
+   "match": [
+    {"header": "x-amzn-waf-action", "regex": "^(challenge|captcha)$"}
+   ]
+  },
+  {
+   "name": "cloudfront",
+   "category": "block",
+   "match": [
+    {"body": "Request blocked\\.\\s*We can't connect to the server for this app or website"}
+   ]
+  },
+  {
+   "name": "sucuri",
+   "category": "block",
+   "match": [
+    {"title": "^Sucuri WebSite Firewall - Access Denied"}
+   ]
+  },
+  {
+   "name": "datadome",
+   "category": "challenge",
+   "match": [
+    {"body": "(geo|ct)\\.captcha-delivery\\.com"}
+   ]
+  },
+  {
+   "name": "perimeterx",
+   "category": "challenge",
+   "match": [
+    {"body": "id=[\"']px-captcha"}
+   ]
+  },
+  {
+   "name": "vercel",
+   "category": "challenge",
+   "match": [
+    {"header": "x-vercel-mitigated", "regex": "^challenge$"}
+   ]
+  }
+ ]
+}

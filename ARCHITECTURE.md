@@ -189,6 +189,7 @@ All in `src/farpoint/`:
 | `corpus.py` | Builds the optional cross-organisation naming corpus for `guess.py` |
 | `probe.py` | The only code that connects to the organisation's hosts |
 | `fingerprint.py`, `posture.py` | What fingerprinting asks, and what the answers mean |
+| `visibility.py` | How much of a scan's web bot defences hid, by vendor (also `python -m farpoint.visibility`) |
 | `assess.py` | Findings; NVD and CISA lookups |
 | `output.py` | Merging, checkpoints, and writing the output files |
 | `runtime.py`, `progress.py` | Cancellation and per-job status; the live display |
@@ -405,13 +406,17 @@ address.
    matched against the rules in `data/fingerprints.json`. A rule's first capture group is its version,
    which fills the rule's CPE template. WordPress plugins and themes are read from asset URLs. Signals
    such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too,
-   and `bot-challenge` for a CDN's challenge page in place of the site (judged as nothing, counted in
-   the run summary).
+   and `bot-challenge:<vendor>` or `bot-block:<vendor>` when a bot defence answered in place of the
+   site (`fingerprint.turned_away`, rules in `data/bot_defences.json`; judged as nothing, counted per
+   vendor in the run summary and by `python -m farpoint.visibility OUT_DIR`). A challenge could be
+   passed by a browser; a block can't be passed by any client, only from another network. The TLS
+   handshake leaves out session tickets (`probe._context`), since Cloudflare challenges Python's
+   default handshake on that extension alone.
 4. **Domain posture** (`posture.assess_domain`), per scan domain, almost all through DNS:
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
      exist or sit on unregistered domains); DMARC `p`, `sp`, `pct`; DKIM key sizes under 32 common
-     selectors; MTA-STS (the policy is fetched over verified HTTPS; a bot challenge
-     (`probe.bot_challenge`), HTTP 429 or 5xx leaves it `unknown` with an error, since those answer
+     selectors; MTA-STS (the policy is fetched over verified HTTPS; a bot defence
+     (`fingerprint.turned_away`), HTTP 429 or 5xx leaves it `unknown` with an error, since those answer
      about the asker or the moment, not the policy; a plain 401 or 403 refuses sending servers too), TLS-RPT, BIMI
    - DNS: nameservers, one `AXFR` request to each nameserver (third-party services such as
      Cloudflare included), except managed services that can't allow one, listed in
@@ -576,6 +581,7 @@ by the lock, not the PID, since PIDs are reused.
 | `public_suffixes.txt` | `suffixes.py` | public suffix list, for registered-domain boundaries |
 | `tenants.json` | tenants | vendors, tenant name patterns, TXT and SPF markers |
 | `fingerprints.json` | fingerprinting | technology rules: matchers, category, CPE template |
+| `bot_defences.json` | fingerprinting, posture | bot defence pages: vendor, challenge or block, matchers |
 | `takeover.json` | fingerprinting | claimable platforms and their "unclaimed" page signatures |
 | `dkim_selectors.txt` | posture | the common DKIM selectors checked |
 | `dns_providers.json` | posture | managed DNS services that can't allow a zone transfer, so aren't asked |
@@ -604,6 +610,8 @@ against real DNS, `example.com` and NVD.
 - **A discovery source:** subclass `HttpSource` or `CommandSource` in `sources/`, yield `Observation`s
   (`HttpSource.observe` builds them), and register it in `sources/__init__.py`. Scoping and de-duplication are
   handled by the inventory.
+- **A bot defence:** add a rule to `data/bot_defences.json`, with `category` `challenge` or `block`.
+  Match only the defence's own page or header, never the script a vendor puts on the sites it protects.
 - **A technology:** add a rule to `data/fingerprints.json`. Put the version in the first capture group
   and give a CPE template if NVD should be asked about it.
 - **A tenant platform:** add a vendor to `data/tenants.json` with its name patterns and any TXT or SPF

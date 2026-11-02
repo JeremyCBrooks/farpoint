@@ -22,7 +22,8 @@ from typing import Protocol
 
 from farpoint import runtime
 from farpoint.models import describe
-from farpoint.probe import Prober, bot_challenge, cert_summary
+from farpoint.fingerprint import turned_away
+from farpoint.probe import Prober, cert_summary
 from farpoint.suffixes import registered
 
 MAX_SPF_LOOKUPS = 10  # RFC 7208: more makes the record fail (permerror), so mail is unauthenticated
@@ -236,10 +237,10 @@ def check_mta_sts(dns: Dns, prober: Prober, domain: str) -> dict:
     out: dict = {"mta_sts": None}
     if record:
         policy = prober.fetch(f"https://mta-sts.{domain}/.well-known/mta-sts.txt")
-        # A bot challenge, rate limit or outage is about the asker or the moment. A plain 401/403 refuses
+        # A bot defence, rate limit or outage is about the asker or the moment. A plain 401/403 refuses
         # sending servers too, so that policy is broken.
-        if policy is not None and policy.status != 200 and (bot_challenge(policy) or policy.status == 429 or policy.status >= 500):
-            out["mta_sts"] = "unknown"  # a bot challenge, rate limit or outage: the policy itself wasn't seen
+        if policy is not None and policy.status != 200 and (turned_away(policy) or policy.status == 429 or policy.status >= 500):
+            out["mta_sts"] = "unknown"  # a bot defence, rate limit or outage: the policy itself wasn't seen
             out["mta_sts_error"] = f"the MTA-STS policy host answered HTTP {policy.status}, so mta_sts is unknown"
         elif policy is None or policy.status != 200:
             out["mta_sts"] = "broken"  # advertised, but the policy can't be fetched with a valid certificate
