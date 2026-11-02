@@ -290,6 +290,14 @@ def test_an_invalid_credential_member_stays_with_a_value_free_warning(tmp_path):
     assert result and "warning" in result[0] and "SENTINEL" not in json.dumps(result)
 
 
+def test_a_credential_member_that_is_not_utf8_warns_without_quoting_its_bytes(tmp_path):
+    member = tmp_path / ".credential-checkpoint-1-ab.json"
+    member.write_bytes(b'{"identity": "SENTINEL-\xff\xfe"}')
+    result = recover_checkpoints(tmp_path)
+    assert member.exists()
+    assert "not valid UTF-8" in result[0]["warning"] and "SENTINEL" not in json.dumps(result)
+
+
 def test_the_namespaces_do_not_match_each_others_globs(tmp_path):
     cp = Checkpointer(tmp_path, credentials=batch(tmp_path, [exposure_row()], AT))
     cp(sample_inventory())

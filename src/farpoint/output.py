@@ -583,6 +583,8 @@ def _recover_credentials(out_dir: Path, member: Path) -> tuple[CredentialBatch |
         return None, "unreadable"
     except json.JSONDecodeError:
         return None, "not valid JSON"
+    except UnicodeDecodeError:  # before ValueError: its message quotes the bytes
+        return None, "not valid UTF-8"
     except ValueError as exc:  # from_json's messages never include values
         return None, str(exc)
     save = save_credentials(out_dir, batch, batch.retrieved_at)  # its own time: replaying is idempotent

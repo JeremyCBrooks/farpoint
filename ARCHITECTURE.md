@@ -18,6 +18,7 @@ options and its output files, see [README.md](README.md).
   - [7. Fingerprinting](#7-fingerprinting---fingerprint)
   - [8. Assessment](#8-assessment---assess)
   - [9. Merge and output](#9-merge-and-output)
+  - [Credential exposure](#credential-exposure---credential-import)
 - [Cross-cutting concerns](#cross-cutting-concerns)
 - [Extending farpoint](#extending-farpoint)
 
@@ -194,6 +195,10 @@ All in `src/farpoint/`:
 | `visibility.py` | How much of a scan's web bot defences hid, by vendor (also `python -m farpoint.visibility`) |
 | `assess.py` | Findings; NVD and CISA lookups |
 | `output.py` | Merging, checkpoints, and writing the output files |
+| `credentials.py` | Credential evidence rows: validation, normalisation, secret and URL stripping, `CredentialBatch` |
+| `credential_import.py` | Reads and validates `--credential-import` files into one batch |
+| `credential_store.py` | The `credentials.json` sidecar: loading, merging, owner-only saving, the `credential-*.csv` exports |
+| `credential_assess.py` | Correlating evidence with the inventory, grouped findings, freshness status |
 | `runtime.py`, `progress.py` | Cancellation and per-job status; the live display |
 
 ## Stage methodology
@@ -541,12 +546,76 @@ under a directory lock:
 
 2. runs the assessment's derivation on the merged report, if requested. If it raises, the scan is saved
    unjudged with the error recorded.
-3. writes every file atomically (temp file and rename). `assets.json` is the source of truth; the CSVs
-   and text lists are views of it.
+3. writes every file atomically (temp file and rename). `assets.json` is the source of truth for the
+   infrastructure and `credentials.json` for credential evidence; the CSVs and text lists are views of them.
+
+With credentials, step 0 comes first: the batch is merged into and saved to `credentials.json`
+(owner-only) *before* the inventory is read, so an inventory that can't be merged never costs the
+evidence. A save that fails leaves the old sidecar intact and keeps the new evidence in
+`credentials.unmerged-<time>.json`. The assessment receives the sidecar's state, and `findings.csv` is
+written from `current_findings` (below).
 
 Every row carries `first_seen` and `last_seen`. Each run is recorded with its domains, counts of new
 rows, errors and skipped sources. If the prior inventory is unreadable, the scan refuses to start; if
 it becomes unreadable mid-scan, this run is saved beside it as `assets.unmerged-<time>.json`.
+
+### Credential exposure (`--credential-import`)
+
+**Goal:** record which of the organisation's identities appear in breach, infostealer and phishing data,
+and rank that against what the scan observed, without putting identities into the infrastructure files.
+This release reads normalised provider exports; there are no live providers yet (the `Source`-style seam
+for them is the `CredentialBatch` an adapter would return).
+
+**Sidecar** (`credential_store.py`). Evidence lives in `credentials.json`, never in `assets.json`:
+exposures, summaries and checks, plus a `schema_version`, an `updated_at` and an opaque `revision` that
+changes only when the content does. Identities are stored whole; secret values never are (the importer
+keeps only a secret *type*, and strips paths, queries and user information from URLs). Files are owner-only
+(0600) on POSIX. A missing sidecar is "no evidence", not zero exposure; an unreadable one is an error that
+is never merged into or overwritten (new evidence goes to an owner-only fallback).
+
+**Merge.** Exposures union by stable ID: re-fetching updates `last_seen` but not event dates. Summaries
+replace the previous value for their metric. Checks are latest-wins snapshots, except that
+`last_complete_at` carries forward. Absence from a later import is not remediation.
+
+**Scope.** `load_imports` keeps only rows for the scan domains (with no domains given, the existing
+inventory's), and rejects the whole import when a row uses a query kind that `--credential-queries`
+hasn't enabled. All validation happens before recovery or any save.
+
+**Revision and staleness.** After assessment `assets.json` stores `credential_assessment`
+(`status`, `revision`). `credential_status(report, state)` is `current` only when the stored revision is
+the sidecar's now; otherwise `stale` (new evidence, or the sidecar went away), `unavailable` (the sidecar
+can't be read) or `none`. `current_findings` drops credential findings unless `current`, which is what
+`findings.csv` and the terminal totals use; the snapshot stays in `assets.json`. `--assess` re-derives
+them. `assess.derive` stays pure: it is handed the state and never produces a finding from an unknown.
+
+**Correlation** (`credential_assess.Correlator`), derived at assessment, never stored:
+
+| Connection | Treatment |
+|---|---|
+| Exact host and port | Endpoint association |
+| Exact host, no port | Host association |
+| A federation sign-in host | Sign-in association |
+| A tenant with records/CNAME evidence or a confirmed tenant ID | Tenant association |
+| A name-only tenant | Tentative lead; no severity change |
+| Host in DNS only | `dns-only`: medium at most; `--fingerprint` could confirm |
+| Host not in the inventory | Lead |
+| A shared login domain (`login.microsoftonline.com`) | Provider context only |
+
+**Levels.** Theft evidence (infostealer, phishing) is high only with a theft or capture date within
+`RECENT_DAYS` (90) *and* a strong association (endpoint, host, sign-in, tenant) whose supporting
+observation is itself within 90 days; otherwise medium. Account-specific password or hash records are
+medium; email-only or dataset-level exposure is low; summaries are low and never confirm accounts.
+Breach dates cannot be theft dates. Findings are grouped by scope domain, kind, relationship and
+asset, carry counts but no identities or values derived from them, and take their observation time from
+the evidence's retrieval, not the assessment's.
+
+**Exports and CSVs.** `credential-exposures.csv`, `credential-summary.csv` and `credential-checks.csv`
+are written whenever the sidecar exists, owner-only. Every CSV farpoint writes neutralises formula
+prefixes.
+
+**CLI.** With domains, the import is validated first and saved with the scan. With none, `_credentials_only`
+reads the inventory (read-only), validates the import against its domains, prints the scope, recovers
+checkpoints, optionally prepares the judge, and then writes with an empty run.
 
 ## Cross-cutting concerns
 
@@ -570,6 +639,13 @@ At most every 5 seconds the in-progress inventory, including pages from jobs sti
 to `.checkpoint-<pid>-<random>.json`, with an exclusive lock (`fcntl`, or `msvcrt` on Windows) held on a matching `.lock` file. The next
 run into the folder merges any checkpoint whose lock is free (`recover_checkpoints`). Liveness is decided
 by the lock, not the PID, since PIDs are reused.
+
+Credential evidence has a paired namespace: `.credential-checkpoint-<same token>.json` (owner-only),
+written once, with the first checkpoint, from the validated import batch. It shares the infrastructure
+checkpoint's `.lock` for liveness, including when only the credential member exists. Recovery runs under
+the directory lock, saves credentials first, removes a member only after its content is saved, and leaves
+an invalid member in place with a value-free warning. Replaying a member is idempotent: the sidecar's
+revision doesn't change.
 
 ### Rate limits and politeness
 

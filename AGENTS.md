@@ -55,8 +55,7 @@ Windows), use `uv run python -m pytest` instead.
   needs its own opt-in flag and a "not passive" note in README.md.
 - **`assess.derive` is a pure function of the merged report.** When a check's result is unknown, it must
   never produce a finding that a control is missing.
-- **`assets.json` is the source of truth.** `output.py` regenerates every other output file from it after
-  the merge, and all writes are atomic.
+- **`assets.json` is the source of truth for infrastructure and `credentials.json` for credential evidence; neither is derived from the other.** `output.py` regenerates every other output file from them after the merge, and all writes are atomic. Identities live only in `credentials.json` and `credential-*.csv`.
 - **Scan code waits with `runtime.sleep`, not `time.sleep`,** and reports with `runtime.status()` and
   `runtime.count_request()`. That keeps cancellation and the progress display working. The standalone
   `corpus.py` tool is the only exception.

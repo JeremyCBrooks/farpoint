@@ -15,11 +15,16 @@ from rich.console import Console
 
 from farpoint import runtime
 from farpoint.assess import Kev, Nvd, assessed, lookup_vulns
+from farpoint.credential_assess import credential_status, current_findings
+from farpoint.credential_import import CredentialImportError, load_imports
+from farpoint.credential_store import SIDECAR, load_credentials
+from farpoint.credentials import QUERY_KINDS
 from farpoint.enrich import InternetDb, Rdap
 from farpoint.fingerprint import DEFAULT_PATHS, FingerprintConfig, parse_paths, parse_ports
 from farpoint.guess import GuessConfig
 from farpoint.identity import MicrosoftSignIn
 from farpoint.lookalikes import LookalikeConfig, NetworkLookalikeLookups, fresh_registrations
+from farpoint.models import Inventory
 from farpoint.names import parse_domains
 from farpoint.pipeline import Pipeline
 from farpoint.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
@@ -97,6 +102,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="judge the inventory: ranked findings (findings.csv), and the CVEs NVD and CISA's known-exploited list "
         "give for each fingerprinted version; sends nothing to the organisation. With no domains, re-assesses --out's inventory",
+    )
+    p.add_argument(
+        "--credential-import",
+        action="append",
+        type=Path,
+        metavar="PATH",
+        help="add credential-exposure evidence from a provider export (JSON, schema in docs/credential-import/); repeatable. "
+        "Offline: nothing is sent anywhere. With no domains, adds it to --out's inventory",
+    )
+    p.add_argument(
+        "--credential-queries",
+        default=None,
+        metavar="KINDS",
+        help="email (default): workforce email-domain exposure; website: credentials for logins to in-scope hosts, including customers' identities",
     )
     p.add_argument("--no-cve", action="store_true", help="--assess without the NVD/CISA lookups")
     p.add_argument("--timeout", type=float, default=60.0, help="HTTP timeout in seconds (default: 60)")
@@ -177,8 +196,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{s.name:<14} {'ready' if s.available() else 'unavailable (missing key or binary)'}")
         return 0
 
+    kinds = _credential_kinds(parser, args)
     lines = list(args.domains) + (args.file.read_text(encoding="utf-8").splitlines() if args.file else [])
     domains = parse_domains(lines)
+    if not domains and args.credential_import and not lines:
+        return _credentials_only(args, http, kinds)
     if not domains and args.assess and not lines:
         return _assess_only(args, http)
     if not domains:
@@ -223,12 +245,14 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
 
+    stamp = now_stamp()
     try:
-        for run in recover_checkpoints(args.out):  # from runs that were killed before they could save
-            if "warning" in run:
-                print(f"warning: {run['warning']}", file=sys.stderr)
-                continue
-            print(f"recovered an interrupted run from {run['at']} ({', '.join(run['domains'])}: {run['hosts']} hosts)", file=sys.stderr)
+        batch, rejected = load_imports(args.credential_import, domains, kinds, stamp) if args.credential_import else (None, 0)
+    except CredentialImportError as exc:
+        parser.error(str(exc))
+
+    try:
+        _report_recoveries(args.out)  # from runs that were killed before they could save
         prior_report = load_report(args.out)  # fail before a long scan, not after it
     except ReportError as exc:
         parser.error(str(exc))
@@ -237,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
     live = console.is_terminal and not args.verbose and not args.no_progress
     if live:
         logging.getLogger().setLevel(logging.ERROR)  # failures show on their progress line instead
-    checkpoint = Checkpointer(args.out)
+    checkpoint = Checkpointer(args.out, credentials=batch)
     reporter = LiveReporter(console) if live else NullReporter()
     resolver = DnsResolver(args.nameserver)
     rdap = Rdap(http, retries=2)
@@ -264,7 +288,6 @@ def main(argv: list[str] | None = None) -> int:
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, _on_interrupt(stop_scan=True))
-    stamp = now_stamp()
 
     def scan():
         inv = pipeline.run(domains)
@@ -284,17 +307,36 @@ def main(argv: list[str] | None = None) -> int:
         inv.interrupted = True
 
     if not inv.interrupted:
-        return _save_and_summarise(inv, args.out, checkpoint, stamp, judge)
+        return _save_and_summarise(inv, args.out, checkpoint, stamp, judge, batch, rejected)
     # Interrupted: worker threads may still be stuck in requests, and a normal return would wait for
     # them at interpreter exit. Whatever happens while saving, leave with os._exit.
     try:
-        code = _save_and_summarise(inv, args.out, checkpoint, stamp, judge)
+        code = _save_and_summarise(inv, args.out, checkpoint, stamp, judge, batch, rejected)
     except BaseException:
         traceback.print_exc()
         code = 1
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(code)
+
+
+def _credential_kinds(parser: argparse.ArgumentParser, args) -> list[str]:
+    """--credential-queries as a list; argument errors are raised before anything is recovered, saved or requested."""
+    if args.credential_queries is not None and not args.credential_import:
+        parser.error("--credential-queries selects what --credential-import (and, later, --credentials) collect; add one of them")
+    kinds = _csv("email" if args.credential_queries is None else args.credential_queries)
+    unknown = [k for k in kinds if k not in QUERY_KINDS]
+    if unknown or not kinds:
+        parser.error(f"--credential-queries: unknown kind(s) {', '.join(unknown) or '(none)'}; choose from {', '.join(QUERY_KINDS)}")
+    return kinds
+
+
+def _report_recoveries(out: Path) -> None:
+    for run in recover_checkpoints(out):
+        if "warning" in run:
+            print(f"warning: {run['warning']}", file=sys.stderr)
+            continue
+        print(f"recovered an interrupted run from {run['at']} ({', '.join(run['domains'])}: {run['hosts']} hosts)", file=sys.stderr)
 
 
 def _prepare_assessment(args, http: httpx.Client, reporter, report_now, stamp: str):
@@ -332,12 +374,79 @@ def _assess_only(args, http: httpx.Client) -> int:
         print("interrupted: nothing changed", file=sys.stderr)
         return 130
     report = rewrite(args.out, judge)
-    _summarise_assessment(report)
+    _summarise_assessment(report, args.out)
+    _summarise_credentials(args.out, report)
     print(f"output:     {args.out.resolve()}")
     return 0
 
 
-def _summarise_assessment(report: dict) -> None:
+def _credentials_only(args, http: httpx.Client, kinds: list[str]) -> int:
+    """`farpoint --credential-import FILE -o DIR`: add evidence to an existing inventory without scanning.
+    Everything is validated before anything is changed."""
+    try:
+        report = load_report(args.out)
+    except ReportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if report is None:
+        print(f"error: no inventory in {args.out} to add credential evidence to; scan into it first", file=sys.stderr)
+        return 2
+    stamp = now_stamp()
+    try:
+        batch, rejected = load_imports(args.credential_import, report["domains"], kinds, stamp)
+    except CredentialImportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"credential scope: {', '.join(report['domains'])}", file=sys.stderr)
+    try:
+        _report_recoveries(args.out)
+    except ReportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    judge = None
+    if args.assess:
+        runtime.reset()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, _on_interrupt(stop_scan=False))
+        judge = _prepare_assessment(args, http, NullReporter(), lambda: report, stamp)
+        if judge is None:
+            print("interrupted: nothing changed", file=sys.stderr)
+            return 130
+    try:
+        saved = write_outputs(Inventory(report["domains"]), args.out, stamp, assess=judge, credentials=batch)
+    except ReportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _summarise_assessment(saved, args.out)
+    _summarise_credentials(args.out, saved, rejected, _new_exposures(saved, stamp))
+    print(f"output:     {args.out.resolve()}")
+    return 0
+
+
+def _new_exposures(report: dict, stamp: str) -> int:
+    run = next((r for r in reversed(report["runs"]) if r["at"] == stamp), {})
+    return run.get("credentials", {}).get("new", 0)
+
+
+def _summarise_credentials(out: Path, report: dict, rejected: int = 0, new: int = 0) -> None:
+    """Counts only: identities never reach the terminal."""
+    from collections import Counter
+
+    state = load_credentials(out)
+    if not (out / SIDECAR).exists() and not rejected:
+        return
+    data = state.data or {}
+    checks = Counter(c["status"] for c in data.get("checks", []))
+    shown = ", ".join(f"{n} {status}" for status, n in sorted(checks.items())) or "none"
+    print(f"credentials: {len(data.get('exposures', []))} exposures ({new} new), {len(data.get('summaries', []))} summaries; checks: {shown}")
+    if rejected:
+        print(f"            {rejected} import rows outside scope were dropped")
+    status = credential_status(report, state)
+    note = {"stale": " (run --assess to update)", "unavailable": f": {state.error}"}.get(status, "")
+    print(f"            assessment: {status}{note}")
+
+
+def _summarise_assessment(report: dict, out: Path) -> None:
     from collections import Counter
 
     from farpoint.assess import technologies
@@ -355,16 +464,17 @@ def _summarise_assessment(report: dict) -> None:
         if line := summary_line(summarise(report)):
             print(f"            {line}")
     if "findings" in report:
-        levels = Counter(f["level"] for f in report["findings"])
+        findings = current_findings(report, load_credentials(out))
+        levels = Counter(f["level"] for f in findings)
         print(f"findings:   {levels['high']} high, {levels['medium']} medium, {levels['low']} low (see findings.csv)")
-        for f in [f for f in report["findings"] if f["level"] == "high"][:8]:
+        for f in [f for f in findings if f["level"] == "high"][:8]:
             print(f"            {f['target']}: {f['detail']}")
 
 
-def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | None = None, judge=None) -> int:
+def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | None = None, judge=None, batch=None, rejected: int = 0) -> int:
     stamp = stamp or now_stamp()
     try:
-        report = write_outputs(inv, out, stamp, assess=judge)
+        report = write_outputs(inv, out, stamp, assess=judge, credentials=batch)
     except ReportError as exc:  # this run was saved to an assets.unmerged-*.json instead
         checkpoint.clear()
         print(f"error: {exc}", file=sys.stderr)
@@ -373,6 +483,7 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
 
     this_run = next(r for r in reversed(report["runs"]) if r["at"] == stamp)
     new = this_run["new"]
+    new_credentials = this_run.get("credentials", {}).get("new", 0)
     live = sum(1 for h in report["hosts"] if h["resolves"])
     plural = lambda n, word: f"{n} {word}{'s' if n != 1 else ''}"
     print(f"this run:   {', '.join(inv.domains)}")
@@ -391,7 +502,8 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
         verified = sum(1 for t in report["tenants"] if t["verified"])
         print(f"tenants:    {len(report['tenants'])} ({verified} verified in DNS, {new['tenants']} new)")
     if inv.services or judge:
-        _summarise_assessment(report)
+        _summarise_assessment(report, out)
+    _summarise_credentials(out, report, rejected, new_credentials)
     if inv.skipped:
         print(f"skipped:    {', '.join(inv.skipped)} (no API key / not installed)")
     if inv.errors:

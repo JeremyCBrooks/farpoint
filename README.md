@@ -100,6 +100,8 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--engagement ID` | With `--fingerprint`, add an engagement ID (a ticket or client code: up to 64 letters, digits, spaces and `.-_:@+/=`, not starting or ending with a space) to the user agent of its requests, so the organisation can tell who is probing. The passive sources and `--related` don't send it. Plain-HTTP probes send it unencrypted. |
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
+| `--credential-import PATH` | Add credential-exposure evidence from a provider export (schema: [docs/credential-import/schema.json](docs/credential-import/schema.json)). Repeatable. Offline: nothing is sent anywhere. With no domains, adds it to the inventory in `--out`, within that inventory's domains. See [Credential exposure](#credential-exposure---credential-import). |
+| `--credential-queries KINDS` | Which kinds of evidence an import may hold: `email` (default; workforce email-domain exposure) and `website` (credentials for logins to in-scope hosts, which includes customers' identities). Needs `--credential-import`. An import with a disabled kind is rejected whole. |
 | `--timeout SECONDS` | HTTP timeout for data sources, RDAP, NVD, CISA and Microsoft (default 60). |
 | `--workers N` | Jobs run at once per source or phase (default 16). |
 | `--no-progress` | No live progress display. |
@@ -341,6 +343,78 @@ run, even when a later scan without it re-assesses the inventory. `technologies.
 version with how many hosts run it, its end-of-life date, its CVE count and the known-exploited
 ones, edge devices first.
 
+## Credential exposure (`--credential-import`)
+
+Adds evidence that the organisation's accounts appear in breaches, infostealer logs or phishing
+captures, and ranks it with the rest of the findings. This release reads **normalised exports that
+you obtained yourself** from an intelligence provider; it sends nothing anywhere. Live provider
+lookups come in a later release.
+
+```bash
+# Add an export to an existing inventory and judge it (no scan, no network)
+uv run farpoint --credential-import evidence.json --assess --no-cve -o out/acme
+
+# Also accept website-login records (these hold customers' identities)
+uv run farpoint --credential-import evidence.json --credential-queries email,website --assess --no-cve -o out/acme
+
+# Import alongside a normal scan of example.com
+uv run farpoint example.com --credential-import evidence.json --assess
+
+# Re-judge what is stored, without new evidence
+uv run farpoint --assess --no-cve -o out/acme
+```
+
+With no domains, the import needs an existing inventory and is scoped to *its* domains: the terminal
+prints `credential scope: ...` first so you can check it matches your authorisation. A missing
+inventory is an error. Rows outside the scope are dropped and counted. An invalid import, or one
+with a disabled query kind, is rejected before anything is saved or recovered.
+
+The format is in [docs/credential-import/schema.json](docs/credential-import/schema.json), with a
+worked file in [docs/credential-import/example.json](docs/credential-import/example.json). Secret
+values (passwords, hashes, cookies, tokens) must not be in the file; only the *type* of secret is
+kept, and paths, query strings and credentials in URLs are stripped.
+
+### How it is judged
+
+Findings are grouped by scope domain, kind, relationship and matched service, and carry counts, never
+identities. Evidence is correlated with the inventory (exact host and port, a sign-in host, a tenant
+with records or CNAME evidence); a shared IP, a common SaaS provider or a name resemblance is not a
+match.
+
+| Level | Evidence |
+|---|---|
+| high | Infostealer or phishing evidence with a known theft or capture date within 90 days, tied to a service, sign-in host or tenant that a scan observed within the last 90 days. Needs a positive observation, so a name that only resolves in DNS stays medium (run `--fingerprint`). |
+| medium | The same theft evidence with an unknown or older date, or without a strong match to a service; account-specific password or hash records. |
+| low | Email-only breach membership and dataset-level exposure; aggregate counts (reported as summaries, never as confirmed accounts). |
+
+Breach publication dates never count as theft dates. The theft-date clauses ("theft date unknown",
+"older than 90 days") appear only on credential-theft findings. Evidence is historical: it is not
+proof that an account can be accessed now, that a password is still valid or that the organisation is
+compromised, and absence from a later import does not mean remediation. A check that was partial or
+failed is shown next to the finding and never reads as a clean result.
+
+### Freshness
+
+Credential findings are tied to the version of the credential file they judged. Importing new
+evidence, or an unreadable `credentials.json`, makes them **stale** or **unavailable**: they are then
+left out of `findings.csv` and the terminal totals (the stored snapshot stays in `assets.json`) until
+you run `--assess`. The terminal prints `assessment: current`, `stale (run --assess to update)` or the
+reason it is unavailable.
+
+### Sensitive data
+
+- Identities (email addresses and other account identifiers) are stored whole in `credentials.json`
+  and the `credential-*.csv` exports, and **only** there. `assets.json`, `findings.csv` and the other
+  files carry no identities.
+- No secret values are stored anywhere: not in the files, checkpoints, fallbacks or messages.
+- These files are written owner-only (mode 0600) on POSIX. On Windows file modes give no such
+  guarantee, so the output folder itself must be private.
+- You are responsible for having a lawful basis and authorisation to process the identities you
+  import. farpoint applies no retention expiry.
+- To delete credential evidence, remove `credentials.json`, `credentials.unmerged-*.json`,
+  `.credential-checkpoint-*` and `credential-*.csv` from the output folder, then run `--assess` to
+  re-derive the findings.
+
 ## Output (`--out`, default `./out`)
 
 Each scan is **merged** into the inventory already in the folder. Scan domains one at a time, re-run
@@ -360,10 +434,15 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registration |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
+| `credentials.json` | With `--credential-import`: the credential evidence (identities included; owner-only). The source of truth for it |
+| `credential-exposures.csv` | Each exposure: provider, identity, relationship, matched service, type, secret types, event date and basis, reference. Contains identities |
+| `credential-summary.csv` | Aggregate counts a provider reported |
+| `credential-checks.csv` | What each provider/domain/kind/operation check covered and its status |
+| `credentials.unmerged-<time>.json` | Evidence that couldn't be saved to `credentials.json` (it is unreadable or the save failed), kept owner-only |
 | `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |
 
 Every row except in `technologies.csv` has `first_seen` and `last_seen` (UTC). `assets.json` is the
-source of truth, and the other files are regenerated from it after every scan. Discovered facts
+source of truth for the infrastructure and `credentials.json` for credential evidence; the other files are regenerated from them after every scan. Discovered facts
 accumulate across scans, while fingerprints and posture describe the latest look. Findings describe
 the latest `--assess`: a scan without it leaves them as they were (see
 [ARCHITECTURE.md](ARCHITECTURE.md#9-merge-and-output) for the exact rules).
