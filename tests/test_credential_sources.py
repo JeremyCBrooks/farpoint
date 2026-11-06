@@ -130,8 +130,11 @@ def _live_http():
 @pytest.mark.network
 def test_hudsonrock_live_shape():
     provider = build_credential_providers(_live_http(), [HudsonRock(_live_http())])["hudsonrock-osint"]
-    built, _ = _collect(provider, kinds=("email", "website"))
+    # Not example.com: Hudson Rock never answers for it (seen 2026-11-06), though it answers others in about a second.
+    rows = collect_credentials([provider], ["tesla.com"], ("email", "website"), AT)
+    built, _ = build_batch([(rows, "live")], ["tesla.com"], ("email", "website"), AT)
     assert {c["status"] for c in built.checks} == {"complete"}
+    assert built.exposures and built.summaries
 
 
 @pytest.mark.network
