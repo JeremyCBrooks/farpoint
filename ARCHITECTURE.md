@@ -18,7 +18,7 @@ options and its output files, see [README.md](README.md).
   - [7. Fingerprinting](#7-fingerprinting---fingerprint)
   - [8. Assessment](#8-assessment---assess)
   - [9. Merge and output](#9-merge-and-output)
-  - [Credential exposure](#credential-exposure---credential-import)
+  - [Credential exposure](#credential-exposure---credentials)
 - [Cross-cutting concerns](#cross-cutting-concerns)
 - [Extending farpoint](#extending-farpoint)
 
@@ -197,7 +197,7 @@ All in `src/farpoint/`:
 | `assess.py` | Findings; NVD and CISA lookups |
 | `output.py` | Merging, checkpoints, and writing the output files |
 | `credentials.py` | Credential evidence rows: validation, normalisation, secret and URL stripping, `CredentialBatch` |
-| `credential_import.py` | Reads and validates `--credential-import` files; `build_batch` turns import and live rows into one batch |
+| `credential_batch.py` | `build_batch`: providers' validated rows into one scoped, stamped batch |
 | `credential_sources/` | Live credential providers (`--credentials`): the protocol, error categories, Hudson Rock and HIBP adapters |
 | `credential_store.py` | The `credentials.json` sidecar: loading, merging, owner-only saving, the `credential-*.csv` exports |
 | `credential_assess.py` | Correlating evidence with the inventory, grouped findings, freshness status |
@@ -564,21 +564,22 @@ Every row carries `first_seen` and `last_seen`. Each run is recorded with its do
 rows, errors and skipped sources. If the prior inventory is unreadable, the scan refuses to start; if
 it becomes unreadable mid-scan, this run is saved beside it as `assets.unmerged-<time>.json`.
 
-### Credential exposure (`--credential-import`)
+### Credential exposure (`--credentials`)
 
 **Goal:** record which of the organisation's identities appear in breach, infostealer and phishing data,
 and rank that against what the scan observed, without putting identities into the infrastructure files.
-Evidence comes from normalised provider exports (`--credential-import`) and from free live providers
-(`--credentials`).
+Evidence comes only from live providers (`--credentials`): users name a provider, never hand-write
+evidence files. A paid provider is added as another `CredentialProvider`, with its key in the environment.
 
 **Live providers** (`credential_sources/`). A `CredentialProvider` names its query kinds and the
-(kind, operation) checks it covers, and turns a root domain into import-shaped `exposures` and
-`summaries`. `collect_credentials` validates them against the import allowlist and adds one check per
+(kind, operation) checks it covers, and turns a root domain into normalised `exposures` and
+`summaries`. `collect_credentials` validates them against `credentials.PROVIDER_SPECS` (a row that fails
+makes the provider's check `failed` with `schema`, and keeps nothing) and adds one check per
 operation: `complete`, or `failed` with a value-free category (`error_category`: an `UnexpectedResponse`
 such as an HTML challenge page is `schema`, a 429 past retries `quota`, other HTTP errors `server`,
 network errors `transport`, 401/403 `denied`). The CLI collects before the scan, after recovery and the
-inventory check, and hands the rows with any import files to `build_batch`; from there the batch takes the
-import path unchanged (checkpoint, sidecar, fallback). Collection makes one small request per provider and
+inventory check, and hands the rows to `build_batch`, which scopes, relates and identifies them; the batch
+then goes through the checkpoint, sidecar and fallback. Collection makes one small request per provider and
 domain, so there is no pagination. Ctrl-C during it returns 130 with nothing written.
 
 `hudsonrock-osint` reads the `hudsonrock` hostname source's per-run memo (`HudsonRock.report`: one
@@ -591,25 +592,24 @@ only: breaches of the site itself, dataset-level, fabricated and spam lists skip
 
 **Snapshots.** For `SNAPSHOT_PROVIDERS` (the two free providers) an exposure or summary makes findings
 only while it belongs to its check's latest complete snapshot, when that check came from a live
-run (`origin: live`): `last_seen >= last_complete_at` (`in_latest_snapshot`). Older rows stay in the sidecar as history. Other providers and imports
-accumulate as before.
+run (`origin: live`): `last_seen >= last_complete_at` (`in_latest_snapshot`). Older rows stay in the sidecar as history. Other providers'
+rows accumulate.
 
 **Sidecar** (`credential_store.py`). Evidence lives in `credentials.json`, never in `assets.json`:
 exposures, summaries and checks, plus a `schema_version`, an `updated_at` and an opaque `revision` that
-changes only when the content does. Identities are stored whole; secret values never are (the importer
+changes only when the content does. Identities are stored whole; secret values never are (normalisation
 keeps only a secret *type*, and strips paths, queries and user information from URLs). Files are owner-only
 (0600) on POSIX. A missing sidecar is "no evidence", not zero exposure; an unreadable one is an error that
 is never merged into or overwritten (new evidence goes to an owner-only fallback).
 
 **Merge.** Exposures union by stable ID: re-fetching updates `last_seen` but not event dates. Summaries
 replace the previous value for their metric. Checks are latest-wins snapshots by observation time,
-except that `last_complete_at` carries forward. The importer and sidecar use the same `merge_check`
-helper, so multiple files in one import follow the same rules regardless of file order. Absence from
-a later import is not remediation.
+except that `last_complete_at` carries forward. `build_batch` and the sidecar use the same `merge_check`
+helper, so checks follow the same rules whatever order they arrive in. Absence from a later check is
+not remediation.
 
-**Scope.** `load_imports` keeps only rows for the scan domains (with no domains given, the existing
-inventory's), and rejects the whole import when a row uses a query kind that `--credential-queries`
-hasn't enabled. All validation happens before recovery or any save.
+**Scope.** `build_batch` keeps only rows for the scan domains (with no domains given, the existing
+inventory's) and of a query kind that `--credential-queries` has enabled; the rest are dropped and counted.
 
 **Revision and staleness.** After assessment `assets.json` stores `credential_assessment`
 (`status`, `revision`). `credential_status(report, state)` is `current` only when the stored revision is
@@ -649,10 +649,10 @@ evidence's retrieval, not the assessment's.
 owner-only. Reassessment regenerates all three too, recreating missing exports and replacing stale rows
 after a sidecar replacement. Every CSV farpoint writes neutralises formula prefixes.
 
-**CLI.** With domains, the import is validated first and saved with the scan. With none, `_credentials_only`
-reads the inventory (read-only), validates the import against its domains, prints the scope, recovers
-checkpoints, optionally prepares the judge, and then writes with an empty run. The `assessment:` line is
-printed whenever a sidecar exists, an import was given or `assets.json` stores a `credential_assessment`.
+**CLI.** With domains, evidence is collected before the scan and saved with it. With none, `_credentials_only`
+reads the inventory (read-only), prints the scope, recovers checkpoints, collects for the inventory's
+domains, optionally prepares the judge, and then writes with an empty run. The `assessment:` line is
+printed whenever a sidecar exists, rows were dropped or `assets.json` stores a `credential_assessment`.
 
 ## Cross-cutting concerns
 
@@ -678,7 +678,7 @@ run into the folder merges any checkpoint whose lock is free (`recover_checkpoin
 by the lock, not the PID, since PIDs are reused.
 
 Credential evidence has a paired namespace: `.credential-checkpoint-<same token>.json` (owner-only),
-written once, with the first checkpoint, from the validated import batch. It shares the infrastructure
+written once, with the first checkpoint, from the collected batch. It shares the infrastructure
 checkpoint's `.lock` for liveness, including when only the credential member exists. Recovery runs under
 the directory lock, saves credentials first, removes a member only after its content is saved, and leaves
 an invalid member in place with a value-free warning. Replaying a member is idempotent: the sidecar's

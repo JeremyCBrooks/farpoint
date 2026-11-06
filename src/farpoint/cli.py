@@ -16,7 +16,7 @@ from rich.console import Console
 from farpoint import runtime
 from farpoint.assess import Kev, Nvd, assessed, lookup_vulns
 from farpoint.credential_assess import credential_status, current_findings, no_data
-from farpoint.credential_import import CredentialImportError, build_batch, read_imports
+from farpoint.credential_batch import build_batch
 from farpoint.credential_sources import build_credential_providers
 from farpoint.credential_sources.base import collect_credentials
 from farpoint.credential_store import SIDECAR, load_credentials
@@ -104,14 +104,6 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="judge the inventory: ranked findings (findings.csv), and the CVEs NVD and CISA's known-exploited list "
         "give for each fingerprinted version; sends nothing to the organisation. With no domains, re-assesses --out's inventory",
-    )
-    p.add_argument(
-        "--credential-import",
-        action="append",
-        type=Path,
-        metavar="PATH",
-        help="add credential-exposure evidence from a provider export (JSON, schema in docs/credential-import/); repeatable. "
-        "Offline: nothing is sent anywhere. With no domains, adds it to --out's inventory",
     )
     p.add_argument(
         "--credentials",
@@ -213,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     providers = _credential_providers(parser, args, http, all_sources, kinds)
     lines = list(args.domains) + (args.file.read_text(encoding="utf-8").splitlines() if args.file else [])
     domains = parse_domains(lines)
-    if not domains and (args.credential_import or providers) and not lines:
+    if not domains and providers and not lines:
         return _credentials_only(args, http, kinds, providers)
     if not domains and args.assess and not lines:
         return _assess_only(args, http)
@@ -261,21 +253,18 @@ def main(argv: list[str] | None = None) -> int:
 
     stamp = now_stamp()
     try:
-        loaded = read_imports(args.credential_import, kinds) if args.credential_import else []
-    except CredentialImportError as exc:
-        parser.error(str(exc))
-
-    try:
         _report_recoveries(args.out)  # from runs that were killed before they could save
         prior_report = load_report(args.out)  # fail before a long scan, not after it
     except ReportError as exc:
         parser.error(str(exc))
     if providers:
         print(f"credential scope: {', '.join(domains)}", file=sys.stderr)
-    live = _collect_live(providers, domains, kinds, stamp)
-    if live is None:
-        return 130
-    batch, rejected = build_batch(loaded + live, domains, kinds, stamp) if loaded or live else (None, 0)
+    batch, rejected = None, 0
+    if providers:
+        live = _collect_live(providers, domains, kinds, stamp)
+        if live is None:
+            return 130
+        batch, rejected = build_batch(live, domains, kinds, stamp)
 
     console = Console(stderr=True)
     live = console.is_terminal and not args.verbose and not args.no_progress
@@ -356,11 +345,9 @@ def _credential_providers(parser: argparse.ArgumentParser, args, http: httpx.Cli
     return chosen
 
 
-def _collect_live(providers: list, domains: list[str], kinds: list[str], stamp: str) -> list | None:
-    """The providers' rows, tagged `live`, for `build_batch` ([] with no providers); None when interrupted.
+def _collect_live(providers: list, domains: list[str], kinds: list[str], stamp: str) -> dict[str, list[dict]] | None:
+    """The providers' rows for `build_batch`; None when interrupted.
     A failed provider is a warning naming only provider, domain and category."""
-    if not providers:
-        return []
     runtime.reset()
     try:
         rows = collect_credentials(providers, domains, kinds, stamp)
@@ -370,13 +357,13 @@ def _collect_live(providers: list, domains: list[str], kinds: list[str], stamp: 
     failed = {(c["provider"], c["scope_domain"], c["error"]) for c in rows["checks"] if c["status"] == "failed"}
     for provider, domain, error in sorted(failed):
         print(f"warning: {provider} {domain}: {error}", file=sys.stderr)
-    return [(rows, "live")]
+    return rows
 
 
 def _credential_kinds(parser: argparse.ArgumentParser, args) -> list[str]:
     """--credential-queries as a list; argument errors are raised before anything is recovered, saved or requested."""
-    if args.credential_queries is not None and not args.credential_import and args.credentials is None:
-        parser.error("--credential-queries selects what --credential-import and --credentials collect; add one of them")
+    if args.credential_queries is not None and args.credentials is None:
+        parser.error("--credential-queries selects what --credentials collects; add --credentials")
     kinds = _csv("email" if args.credential_queries is None else args.credential_queries)
     unknown = [k for k in kinds if k not in QUERY_KINDS]
     if unknown or not kinds:
@@ -457,8 +444,7 @@ def _assess_only(args, http: httpx.Client) -> int:
 
 
 def _credentials_only(args, http: httpx.Client, kinds: list[str], providers: list) -> int:
-    """`farpoint --credential-import FILE -o DIR` or `--credentials PROVIDERS -o DIR`: add evidence to an existing
-    inventory without scanning. Everything is validated before anything is changed."""
+    """`farpoint --credentials PROVIDERS -o DIR`: add evidence to an existing inventory without scanning."""
     try:
         report = load_report(args.out)
     except ReportError as exc:
@@ -468,11 +454,6 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str], providers: lis
         print(f"error: no inventory in {args.out} to add credential evidence to; scan into it first", file=sys.stderr)
         return 2
     stamp = now_stamp()
-    try:
-        loaded = read_imports(args.credential_import or [], kinds)
-    except CredentialImportError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
     print(f"credential scope: {', '.join(report['domains'])}", file=sys.stderr)
     try:
         _report_recoveries(args.out)
@@ -482,7 +463,7 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str], providers: lis
     live = _collect_live(providers, report["domains"], kinds, stamp)
     if live is None:
         return 130
-    batch, rejected = build_batch(loaded + live, report["domains"], kinds, stamp)
+    batch, rejected = build_batch(live, report["domains"], kinds, stamp)
     judge = None
     if args.assess:
         runtime.reset()
@@ -515,7 +496,7 @@ def _summarise_credentials(out: Path, report: dict, rejected: int = 0, new: int 
     shown = ", ".join(f"{n} {status}" for status, n in sorted(checks.items())) or "none"
     print(f"credentials: {len(data.get('exposures', []))} exposures ({new} new), {len(data.get('summaries', []))} summaries; checks: {shown}")
     if rejected:
-        print(f"            {rejected} import rows outside scope were dropped")
+        print(f"            {rejected} provider rows outside scope were dropped")
     status = credential_status(report, state)
     note = {"stale": " (run --assess to update)", "unavailable": f": {state.error}"}.get(status, "")
     print(f"            assessment: {status}{note}")

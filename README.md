@@ -100,9 +100,8 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--engagement ID` | With `--fingerprint`, add an engagement ID (a ticket or client code: up to 64 letters, digits, spaces and `.-_:@+/=`, not starting or ending with a space) to the user agent of its requests, so the organisation can tell who is probing. The passive sources and `--related` don't send it. Plain-HTTP probes send it unencrypted. |
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
-| `--credential-import PATH` | Add credential-exposure evidence from a provider export (schema: [docs/credential-import/schema.json](docs/credential-import/schema.json)). Repeatable. Offline: nothing is sent anywhere. With no domains, adds it to the inventory in `--out`, within that inventory's domains. See [Credential exposure](#credential-exposure---credential-import). |
-| `--credentials PROVIDERS` | Collect credential-exposure evidence from free providers, comma-separated: `hudsonrock-osint`, `hibp-public`. No "all": name each one. Sends each root domain to the provider; never contacts the organisation. With no domains, collects for the inventory in `--out`. See [Free providers](#free-providers---credentials). |
-| `--credential-queries KINDS` | Which kinds of evidence an import or `--credentials` may hold: `email` (default; workforce email-domain exposure) and `website` (credentials for logins to in-scope hosts, which includes customers' identities). Needs `--credential-import` or `--credentials`. An import with a disabled kind is rejected whole. |
+| `--credentials PROVIDERS` | Collect credential-exposure evidence from free providers, comma-separated: `hudsonrock-osint`, `hibp-public`. No "all": name each one. Sends each root domain to the provider; never contacts the organisation. With no domains, collects for the inventory in `--out`, within that inventory's domains. See [Credential exposure](#credential-exposure---credentials). |
+| `--credential-queries KINDS` | Which kinds of evidence `--credentials` collects: `email` (default; workforce email-domain exposure) and `website` (credentials for logins to in-scope hosts, which includes customers' identities). Needs `--credentials`. Rows of a kind that isn't enabled are dropped. |
 | `--timeout SECONDS` | HTTP timeout for data sources, RDAP, NVD, CISA and Microsoft (default 60). |
 | `--workers N` | Jobs run at once per source or phase (default 16). |
 | `--no-progress` | No live progress display. |
@@ -345,43 +344,29 @@ run, even when a later scan without it re-assesses the inventory. `technologies.
 version with how many hosts run it, its end-of-life date, its CVE count and the known-exploited
 ones, edge devices first.
 
-## Credential exposure (`--credential-import`)
+## Credential exposure (`--credentials`)
 
-Adds evidence that the organisation's accounts appear in breaches, infostealer logs or phishing
-captures, and ranks it with the rest of the findings. This release reads **normalised exports that
-you obtained yourself** from an intelligence provider, which sends nothing anywhere, and collects from
-two free providers with `--credentials` (below).
+Adds evidence that the organisation's accounts appear in breaches or infostealer logs, and ranks it with
+the rest of the findings. Name the providers to ask; farpoint fetches, normalises and stores their answers.
 
 ```bash
-# Add an export to an existing inventory and judge it (no scan, no network)
-uv run farpoint --credential-import evidence.json --assess --no-cve -o out/acme
+# Collect alongside a normal scan of example.com
+uv run farpoint example.com --credentials hudsonrock-osint --assess
 
-# Also accept website-login records (these hold customers' identities)
-uv run farpoint --credential-import evidence.json --credential-queries email,website --assess --no-cve -o out/acme
-
-# Import alongside a normal scan of example.com
-uv run farpoint example.com --credential-import evidence.json --assess
+# Add evidence to an existing inventory and judge it, without scanning
+uv run farpoint --credentials hudsonrock-osint,hibp-public --credential-queries email,website --assess --no-cve -o out/acme
 
 # Re-judge what is stored, without new evidence
 uv run farpoint --assess --no-cve -o out/acme
 ```
 
-With no domains, the import needs an existing inventory and is scoped to *its* domains: the terminal
-prints `credential scope: ...` first so you can check it matches your authorisation. A missing
-inventory is an error. Rows outside the scope are dropped and counted. An invalid import, or one
-with a disabled query kind, is rejected before anything is saved or recovered.
+With no domains, `--credentials` needs an existing inventory and is scoped to *its* domains: the terminal
+prints `credential scope: ...` first so you can check it matches your authorisation. A missing inventory
+is an error. Rows outside the scope are dropped and counted. Secret values (passwords, hashes, cookies,
+tokens) are never stored; only the *type* of secret is kept, and paths, query strings and credentials in
+URLs are stripped.
 
-The format is in [docs/credential-import/schema.json](docs/credential-import/schema.json), with a
-worked file in [docs/credential-import/example.json](docs/credential-import/example.json). Secret
-values (passwords, hashes, cookies, tokens) must not be in the file; only the *type* of secret is
-kept, and paths, query strings and credentials in URLs are stripped.
-
-### Free providers (`--credentials`)
-
-```bash
-uv run farpoint example.com --credentials hudsonrock-osint --assess
-uv run farpoint --credentials hudsonrock-osint,hibp-public --credential-queries email,website --assess --no-cve -o out/acme
-```
+### Providers
 
 | Provider | What it reports | Kind |
 |---|---|---|
@@ -389,8 +374,8 @@ uv run farpoint --credentials hudsonrock-osint,hibp-public --credential-queries 
 | `hibp-public` | [Have I Been Pwned](https://haveibeenpwned.com)'s breach list: breaches of the organisation's own site, with date and data classes. Data from haveibeenpwned.com, licensed CC BY 4.0 | `website` only, so it needs `--credential-queries email,website` |
 
 Each sends only the root domain, once per run, to that provider; neither contacts the organisation.
-Both are free and need no key. Collection runs before the scan, and the evidence is saved like an
-import. A provider that fails prints `warning: <provider> <domain>: <category>`, is recorded as a
+Both are free and need no key. Collection runs before the scan, and the evidence is saved with it. A
+provider that fails prints `warning: <provider> <domain>: <category>`, is recorded as a
 failed check, and doesn't change the exit status. Ctrl-C during collection changes nothing.
 
 What the free data can't do:
@@ -402,8 +387,7 @@ What the free data can't do:
   a clean one. Such a check is shown as `no data`, never as clean, and makes no finding.
 - **It is a sample.** Hudson Rock lists at most about a hundred URLs. Only rows from a provider's latest
   complete check make findings; older rows stay in `credentials.json` and the exports as history
-  (`in_latest_snapshot` is `no`). A later failed check retires nothing. Imports keep the usual rule, even
-  under these providers' names: absence from a later import is not remediation.
+  (`in_latest_snapshot` is `no`). A later failed check retires nothing.
 
 Hudson Rock's URLs are unmasked and can hold password-reset tokens: only the host and an explicit port
 are kept. The `hudsonrock` hostname source reads the same answer, so with `--credentials
@@ -433,15 +417,15 @@ are left out of findings, since they can name a victim's user or machine; breach
 Breach publication dates never count as theft dates. The theft-date clauses ("theft date unknown",
 "older than 90 days") appear only on credential-theft findings. Evidence is historical: it is not
 proof that an account can be accessed now, that a password is still valid or that the organisation is
-compromised, and absence from a later import does not mean remediation. A check that was partial or
+compromised, and absence from a later check does not mean remediation. A check that was partial or
 failed is shown next to the finding and never reads as a clean result.
-When several imported files contain checks for the same operation, the newest check wins by its
-observation time, regardless of file order, and the latest successful completion is retained.
+When a provider reports several checks for the same operation, the newest wins by its observation
+time, and the latest successful completion is retained.
 
 ### Freshness
 
-Credential findings are tied to the version of the credential file they judged. Importing new
-evidence, or an unreadable `credentials.json`, makes them **stale** or **unavailable**: they are then
+Credential findings are tied to the version of the credential file they judged. Collecting new
+evidence without `--assess`, or an unreadable `credentials.json`, makes them **stale** or **unavailable**: they are then
 left out of `findings.csv` and the terminal totals (the stored snapshot stays in `assets.json`) until
 you run `--assess`. The terminal prints `assessment: current`, `stale (run --assess to update)` or the
 reason it is unavailable.
@@ -452,7 +436,7 @@ If the evidence can't be saved to `credentials.json` (it is unreadable, read-onl
 full), the batch is kept in an owner-only `credentials.unmerged-<time>.json`, the terminal prints
 `warning: credential evidence not saved (<reason>); kept in <file>` and farpoint exits with status 1.
 The rest of the scan is saved as usual. To recover, fix `credentials.json` (or move it aside) and re-run
-the original import; then delete the `credentials.unmerged-*.json` file.
+the same `--credentials` command; then delete the `credentials.unmerged-*.json` file.
 If both the sidecar and fallback writes fail, an existing credential checkpoint is retained for
 automatic recovery on the next run after the write problem is fixed.
 
@@ -465,7 +449,7 @@ automatic recovery on the next run after the write problem is fixed.
 - These files are written owner-only (mode 0600) on POSIX. On Windows file modes give no such
   guarantee, so the output folder itself must be private.
 - You are responsible for having a lawful basis and authorisation to process the identities you
-  import. farpoint applies no retention expiry.
+  collect. farpoint applies no retention expiry.
 - To delete credential evidence, remove `credentials.json`, `credentials.unmerged-*.json`,
   `.credential-checkpoint-*` and `credential-*.csv` from the output folder, then run `--assess` to
   re-derive the findings.
@@ -489,7 +473,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registration |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
-| `credentials.json` | With `--credential-import` or `--credentials`: the credential evidence (identities included; owner-only). The source of truth for it |
+| `credentials.json` | With `--credentials`: the credential evidence (identities included; owner-only). The source of truth for it |
 | `credential-exposures.csv` | Each exposure: its stable ID, provider, identity, relationship, matched service, type, secret types, occurrences, event date and basis, reference, and whether it is in its provider's latest snapshot. Contains identities |
 | `credential-summary.csv` | Aggregate counts a provider reported |
 | `credential-checks.csv` | What each provider/domain/kind/operation check covered, its status, and `no data` when a complete check returned nothing |

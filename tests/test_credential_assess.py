@@ -2,7 +2,7 @@ import json
 from datetime import date
 
 import pytest
-from conftest import AT, LATER, batch, credential_sidecar, exposure_row, live_batch, read_csv, sample_inventory
+from conftest import AT, LATER, batch, credential_sidecar, exposure_row, batch, read_csv, sample_inventory
 
 from farpoint.assess import assessed, derive
 from farpoint.credential_assess import credential_status
@@ -31,7 +31,7 @@ def creds(report_rows):
 
 
 def level_for(tmp_path, **fields):
-    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, [exposure_row(**fields)])))
+    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar([exposure_row(**fields)])))
     assert len(found) == 1
     return found[0]
 
@@ -73,7 +73,7 @@ def test_a_closed_federation_endpoint_is_not_high_after_merge(tmp_path):
     inv = sample_inventory()
     inv.identity["example.com"] = {"domain": "example.com", "provider": "adfs", "sign_in_host": "sts.example.com"}
     inv.services["sts.example.com:8443"] = ServiceRecord("sts.example.com", "93.184.216.34", 8443, service="https")
-    evidence = batch(tmp_path, [exposure_row(service_host="sts.example.com", service_port=8443)], AT)
+    evidence = batch([exposure_row(service_host="sts.example.com", service_port=8443)], AT)
     first = write_outputs(inv, tmp_path, AT, credentials=evidence, assess=judge)
     assert creds(first["findings"])[0]["level"] == "high"
     closed = sample_inventory()
@@ -86,7 +86,7 @@ def test_a_closed_federation_endpoint_is_not_high_after_merge(tmp_path):
 def test_a_shared_provider_sign_in_page_is_context_even_when_federated(tmp_path):
     infra = {**INFRA, "identity": [{"domain": "example.com", "provider": "google", "sign_in_host": "accounts.google.com", "last_seen": SEEN}]}
     rows = [exposure_row(service_host="accounts.google.com")]
-    [f] = creds(derive(infra, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    [f] = creds(derive(infra, today=TODAY, credentials=credential_sidecar(rows)))
     assert f["level"] == "medium" and f["target"] == "example.com"
 
 
@@ -107,7 +107,7 @@ def test_findings_group_identities_and_never_name_them(tmp_path):
             exposure_row(service_host="vpn.example.com", service_port=443, source_event_id="log-2"),
             exposure_row(identity="bob@example.com", service_host="vpn.example.com", service_port=443),
             exposure_row(identity="cust@gmail.com", query_kind="website", service_host="vpn.example.com", service_port=443, provider_relationship="customer")]
-    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(rows)))
     work = next(f for f in found if f["id"].endswith("|workforce-associated"))
     assert work["detail"].startswith("2 workforce-associated identities (3 records)") and work["level"] == "high"
     assert {f["id"] for f in found} == {"credential-theft|vpn.example.com:443|example.com|workforce-associated",
@@ -117,13 +117,13 @@ def test_findings_group_identities_and_never_name_them(tmp_path):
 
 def test_overlapping_providers_do_not_inflate_identity_counts(tmp_path):
     rows = [exposure_row(), exposure_row(provider="other-intel")]
-    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(rows)))
     assert f["detail"].startswith("1 workforce-associated identity (2 records)")
 
 
 def test_an_identity_spelt_with_another_domain_case_is_one_identity(tmp_path):
     rows = [exposure_row(identity="E@Example.com"), exposure_row(provider="other-intel", identity="E@example.com.")]
-    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(rows)))
     assert f["detail"].startswith("1 workforce-associated identity (2 records)")
 
 
@@ -131,7 +131,7 @@ def test_each_scope_domain_gets_its_own_finding_on_a_shared_asset(tmp_path):
     infra = {**INFRA, "domains": ["example.com", "example.org"]}
     rows = [exposure_row(service_host="vpn.example.com", service_port=443),
             exposure_row(scope_domain="example.org", identity="b@example.org", service_host="vpn.example.com", service_port=443)]
-    found = creds(derive(infra, today=TODAY, credentials=credential_sidecar(tmp_path, rows, domains=("example.com", "example.org"))))
+    found = creds(derive(infra, today=TODAY, credentials=credential_sidecar(rows, domains=("example.com", "example.org"))))
     assert {f["id"] for f in found} == {"credential-theft|vpn.example.com:443|example.com|workforce-associated",
                                         "credential-theft|vpn.example.com:443|example.org|workforce-associated"}
     assert {f["detail"].split(";")[0] for f in found} == {"1 workforce-associated identity (1 record) for example.com",
@@ -142,7 +142,7 @@ def test_a_stealer_log_name_never_reaches_findings_but_a_breach_name_does(tmp_pa
     rows = [exposure_row(source_name="VICTIM-LAPTOP-jdoe"),
             exposure_row(identity="b@example.com", operation="breaches", exposure_type="breach", source_name="ExampleBreach",
                          event_date_basis="breach")]
-    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, rows)))
+    found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(rows)))
     assert "VICTIM" not in json.dumps(found)
     assert any("ExampleBreach" in f["evidence"] for f in found)
 
@@ -160,14 +160,14 @@ def test_findings_are_dated_by_credential_retrieval_not_infrastructure(tmp_path)
 def test_an_aggregate_is_a_low_summary_finding(tmp_path):
     summary = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",
                "metric": "accounts", "count": 42}
-    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(tmp_path, [], summaries=[summary])))
+    [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar([], summaries=[summary])))
     assert (f["level"], f["kind"], f["target"]) == ("low", "credential-summary", "example.com")
     assert f["detail"].startswith("acme-intel reports 42 for accounts") and "not a list of confirmed accounts" in f["detail"]
 
 
 def test_old_theft_stays_old_after_refetch(tmp_path):
     row = exposure_row(service_host="vpn.example.com", service_port=443, event_at="2026-06-01")
-    again = merge_credentials(credential_sidecar(tmp_path, [row]), batch(tmp_path, [row], "2026-10-31T00:00:00Z"))
+    again = merge_credentials(credential_sidecar([row]), batch([row], "2026-10-31T00:00:00Z"))
     [f] = creds(derive(INFRA, today=TODAY, credentials=again))
     assert f["level"] == "medium" and "theft older than 90 days" in f["detail"]
 
@@ -181,9 +181,9 @@ def csv_credential_rows(tmp_path):
 
 
 def test_new_evidence_makes_credential_findings_stale_until_reassessed(tmp_path):
-    write_outputs(sample_inventory(), tmp_path, AT, assess=judge, credentials=batch(tmp_path, [exposure_row()], AT))
+    write_outputs(sample_inventory(), tmp_path, AT, assess=judge, credentials=batch([exposure_row()], AT))
     assert any(r["kind"].startswith("credential-") for r in read_csv(tmp_path / "findings.csv"))
-    report = write_outputs(sample_inventory(), tmp_path, LATER, credentials=batch(tmp_path, [exposure_row(identity="b@example.com")], LATER))
+    report = write_outputs(sample_inventory(), tmp_path, LATER, credentials=batch([exposure_row(identity="b@example.com")], LATER))
     assert credential_status(report, load_credentials(tmp_path)) == "stale"
     assert not any(r["kind"].startswith("credential-") for r in read_csv(tmp_path / "findings.csv"))
     assert any(f["kind"].startswith("credential-") for f in report["findings"])      # snapshot kept in assets.json
@@ -192,7 +192,7 @@ def test_new_evidence_makes_credential_findings_stale_until_reassessed(tmp_path)
 
 
 def test_a_deleted_sidecar_makes_old_findings_stale_and_reassessment_clears_them(tmp_path):
-    write_outputs(sample_inventory(), tmp_path, AT, assess=judge, credentials=batch(tmp_path, [exposure_row()], AT))
+    write_outputs(sample_inventory(), tmp_path, AT, assess=judge, credentials=batch([exposure_row()], AT))
     (tmp_path / "credentials.json").unlink()
     report = rewrite(tmp_path, lambda r, c: r)
     assert credential_status(report, load_credentials(tmp_path)) == "stale" and creds(report["findings"])
@@ -202,7 +202,7 @@ def test_a_deleted_sidecar_makes_old_findings_stale_and_reassessment_clears_them
 
 
 def test_an_unreadable_sidecar_keeps_findings_as_an_unavailable_snapshot(tmp_path):
-    first = write_outputs(sample_inventory(), tmp_path, AT, assess=judge, credentials=batch(tmp_path, [exposure_row()], AT))
+    first = write_outputs(sample_inventory(), tmp_path, AT, assess=judge, credentials=batch([exposure_row()], AT))
     before = creds(first["findings"])
     (tmp_path / "credentials.json").write_text("{", encoding="utf-8")
     report = rewrite(tmp_path, lambda r, c: assessed(r, [], {}, LATER, credentials=c))
@@ -231,7 +231,7 @@ def _sidecar(tmp_path, *batches):
     """Merge successive live (at, exposures, checks) batches the way successive runs would."""
     data = None
     for at, exposures, checks in batches:
-        data = merge_credentials(data, live_batch(exposures, at, checks=checks))
+        data = merge_credentials(data, batch(exposures, at, checks=checks))
     return data
 
 
@@ -261,15 +261,8 @@ def test_a_latest_all_zero_snapshot_retires_older_findings(tmp_path):
     assert len(data["exposures"]) == 1  # kept as history
 
 
-def test_the_snapshot_rule_does_not_retire_imported_rows(tmp_path):
-    imported = exposure_row(service_host="vpn.example.com")
-    data = _sidecar(tmp_path, (AT, [imported], [_snapshot_check(AT, provider="acme-intel", operation="stealers")]),
+def test_the_snapshot_rule_does_not_retire_other_providers_rows(tmp_path):
+    accumulating = exposure_row(service_host="vpn.example.com")
+    data = _sidecar(tmp_path, (AT, [accumulating], [_snapshot_check(AT, provider="acme-intel", operation="stealers")]),
                     (LATER, [], [_snapshot_check(LATER, provider="acme-intel", operation="stealers")]))
-    assert [f["target"] for f in creds(derive(INFRA, today=TODAY, credentials=data))] == ["vpn.example.com"]
-
-
-def test_an_import_naming_a_snapshot_provider_keeps_the_accumulating_rule(tmp_path):
-    row = exposure_row(provider="hibp-public", service_host="vpn.example.com")  # an export, not a live answer
-    data = _sidecar(tmp_path)  # nothing live
-    data = merge_credentials(data, batch(tmp_path, [row], AT))
     assert [f["target"] for f in creds(derive(INFRA, today=TODAY, credentials=data))] == ["vpn.example.com"]

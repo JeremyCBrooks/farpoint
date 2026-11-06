@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from conftest import AT, HUDSON_ROUTE, fake_http, hudson_body, when_params
-from farpoint.credential_import import build_batch
+from farpoint.credential_batch import build_batch
 from farpoint.credential_sources import build_credential_providers
 from farpoint.credential_sources.base import collect_credentials
 from farpoint.credential_sources.hibp import HibpPublic
@@ -16,7 +16,7 @@ HIBP_ROUTE = "haveibeenpwned.com/api/v3/breaches"
 
 def _collect(provider, kinds=("email",)):
     rows = collect_credentials([provider], [D], kinds, AT)
-    return build_batch([(rows, "live")], [D], kinds, AT)
+    return build_batch(rows, [D], kinds, AT)
 
 
 def _hudson(body=None, handler=None):
@@ -132,7 +132,7 @@ def test_hudsonrock_live_shape():
     provider = build_credential_providers(_live_http(), [HudsonRock(_live_http())])["hudsonrock-osint"]
     # Not example.com: Hudson Rock never answers for it (seen 2026-11-06), though it answers others in about a second.
     rows = collect_credentials([provider], ["tesla.com"], ("email", "website"), AT)
-    built, _ = build_batch([(rows, "live")], ["tesla.com"], ("email", "website"), AT)
+    built, _ = build_batch(rows, ["tesla.com"], ("email", "website"), AT)
     assert {c["status"] for c in built.checks} == {"complete"}
     assert built.exposures and built.summaries
 
@@ -140,5 +140,5 @@ def test_hudsonrock_live_shape():
 @pytest.mark.network
 def test_hibp_live_shape():
     rows = collect_credentials([HibpPublic(_live_http())], ["adobe.com"], ("website",), AT)
-    built, _ = build_batch([(rows, "live")], ["adobe.com"], ("website",), AT)
+    built, _ = build_batch(rows, ["adobe.com"], ("website",), AT)
     assert [(r["source_name"], r["event_at"]) for r in built.exposures] == [("Adobe", "2013-10-04")]

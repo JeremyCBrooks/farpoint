@@ -34,7 +34,7 @@ def _check_key(row: Mapping) -> tuple:
 
 
 def in_latest_snapshot(row: Mapping, checks: Mapping[tuple, Mapping]) -> bool | None:
-    """None for evidence that accumulates (other providers, and imports even under a snapshot provider's name);
+    """None for evidence that accumulates (providers other than the snapshot ones, and rows with no live check);
     else whether the row was in its latest complete live check."""
     check = checks.get(_check_key(row)) or {}
     if row["provider"] not in SNAPSHOT_PROVIDERS or check.get("origin") != "live":

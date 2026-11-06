@@ -1,8 +1,8 @@
-"""Live credential providers: the protocol, error categories and collection into import-shaped rows.
+"""Live credential providers: the protocol, error categories and collection into normalised rows.
 
-A provider turns a root domain into import-shaped `exposures` and `summaries` (validated against the same
-allowlist as `--credential-import`); `collect_credentials` adds one check per operation. Nothing here
-writes a file or touches the inventory; `credential_import.build_batch` makes the batch.
+A provider turns a root domain into normalised `exposures` and `summaries` (validated against
+`credentials.PROVIDER_SPECS`); `collect_credentials` adds one check per operation. Nothing here
+writes a file or touches the inventory; `credential_batch.build_batch` makes the batch.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Protocol
 import httpx
 
 from farpoint import runtime
-from farpoint.credentials import IMPORT_SPECS, validate_collections
+from farpoint.credentials import PROVIDER_SPECS, validate_collections
 from farpoint.sources.base import SourceFailure, UnexpectedResponse
 
 log = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class CredentialProvider(Protocol):
         ...
 
     def collect(self, domain: str, kinds: Collection[str]) -> dict[str, list[dict]]:
-        """Import-shaped `exposures` and `summaries` for the enabled kinds; raises on failure."""
+        """Normalised `exposures` and `summaries` for the enabled kinds; raises on failure."""
         ...
 
 
@@ -60,7 +60,7 @@ def collect_credentials(providers: Sequence[CredentialProvider], domains: Sequen
                 continue
             runtime.status(f"{provider.name} {domain}")
             try:
-                rows = validate_collections(provider.collect(domain, kinds), IMPORT_SPECS)
+                rows = validate_collections(provider.collect(domain, kinds), PROVIDER_SPECS)
             except (runtime.Cancelled, KeyboardInterrupt):
                 raise
             except Exception as exc:

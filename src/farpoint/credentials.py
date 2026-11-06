@@ -32,20 +32,8 @@ CHECK_STATUSES = ("complete", "partial", "unavailable", "unsupported", "failed",
 ERROR_CATEGORIES = ("no-key", "denied", "quota", "transport", "server", "schema")
 LIMIT_HITS = ("pages", "records")
 
-IMPORT_EXPOSURE_FIELDS = frozenset({
-    "provider", "provider_record_id", "reference", "scope_domain", "query_kind", "operation", "identity",
-    "provider_relationship", "service_host", "service_port", "exposure_type", "source_name", "source_event_id",
-    "malware_family", "secret_types", "secret_evidence", "event_at", "event_date_basis",
-    "provider_discovered_at", "source_observed_at", "occurrences",
-})
-IMPORT_SUMMARY_FIELDS = frozenset({
-    "provider", "scope_domain", "query_kind", "operation", "metric", "population", "count",
-    "window_start", "window_end", "reference",
-})
-IMPORT_CHECK_FIELDS = frozenset({"provider", "scope_domain", "query_kind", "operation", "status", "error", "checked_at"})
-
 # What a stored row holds, in the order its keys are written (so equal rows serialise identically). A stored
-# check keeps started_at/completed_at, not the import's raw checked_at.
+# check keeps started_at/completed_at, not the provider's raw checked_at.
 STORED_EXPOSURE_ORDER = (
     "id", "provider", "provider_record_id", "reference", "scope_domain", "query_kind", "operation", "identity",
     "identity_domain", "provider_relationship", "relationship", "service_host", "service_port", "exposure_type",
@@ -97,7 +85,7 @@ def normalise_time(value: Any) -> str | None:
 
 
 def merge_check(old: Mapping, new: Mapping) -> dict:
-    """Keep the latest observed attempt and the latest successful completion, independent of import/save order."""
+    """Keep the latest observed attempt and the latest successful completion, independent of the order they arrive in."""
     def observed(check: Mapping) -> str:
         return check.get("completed_at") or check["started_at"]
 
@@ -169,12 +157,12 @@ def exposure_id(row: Mapping) -> str:
 
 
 def normalise_exposure(raw: Mapping, *, domains: Sequence[str], kinds: Collection[str]) -> dict | None:
-    """The stored form of a validated import row, or None when no enabled scope predicate holds."""
+    """The stored form of a validated provider row, or None when no enabled scope predicate holds."""
     kind = raw["query_kind"]
     scope = normalize_hostname(raw["scope_domain"])
     if kind not in kinds or scope is None or scope not in domains:
         return None
-    row = dict.fromkeys(STORED_EXPOSURE_ORDER) | raw  # every model field, in a fixed order; None where the import had none
+    row = dict.fromkeys(STORED_EXPOSURE_ORDER) | raw  # every model field, in a fixed order; None where the provider gave none
     row["scope_domain"] = scope
     host, port = normalise_service(raw.get("service_host"), raw.get("service_port"))
     for name, value in (("service_host", host), ("service_port", port)):
@@ -261,7 +249,7 @@ def _secret_types(value: Any) -> list[str]:
     return [check(item) for item in value]
 
 
-_IMPORT_EXPOSURE = {
+_PROVIDER_EXPOSURE = {
     "provider": _text, "provider_record_id": _text, "reference": _text, "scope_domain": _text,
     "query_kind": _enum(QUERY_KINDS), "operation": _text, "identity": _text, "provider_relationship": _text,
     "service_host": _text, "service_port": _port, "exposure_type": _enum(EXPOSURE_TYPES), "source_name": _text,
@@ -269,21 +257,21 @@ _IMPORT_EXPOSURE = {
     "secret_evidence": _enum(SECRET_EVIDENCE), "event_at": _time, "event_date_basis": _enum(DATE_BASES),
     "provider_discovered_at": _time, "source_observed_at": _time, "occurrences": _count,
 }
-_IMPORT_SUMMARY = {
+_PROVIDER_SUMMARY = {
     "provider": _text, "scope_domain": _text, "query_kind": _enum(QUERY_KINDS), "operation": _text,
     "metric": _text, "population": _text, "count": _count, "window_start": _time, "window_end": _time,
     "reference": _text,
 }
-_IMPORT_CHECK = {
+_PROVIDER_CHECK = {
     "provider": _text, "scope_domain": _text, "query_kind": _enum(QUERY_KINDS), "operation": _text,
     "status": _enum(CHECK_STATUSES), "error": _enum(ERROR_CATEGORIES), "checked_at": _time,
 }
-_STORED_EXPOSURE = _IMPORT_EXPOSURE | {
+_STORED_EXPOSURE = _PROVIDER_EXPOSURE | {
     "id": _text, "identity_domain": _text, "relationship": _enum(RELATIONSHIPS),
     "first_seen": _time, "last_seen": _time,
 }
-_STORED_SUMMARY = _IMPORT_SUMMARY | {"retrieved_at": _time, "first_seen": _time, "last_seen": _time}
-_STORED_CHECK = {k: v for k, v in _IMPORT_CHECK.items() if k != "checked_at"} | {
+_STORED_SUMMARY = _PROVIDER_SUMMARY | {"retrieved_at": _time, "first_seen": _time, "last_seen": _time}
+_STORED_CHECK = {k: v for k, v in _PROVIDER_CHECK.items() if k != "checked_at"} | {
     "started_at": _time, "completed_at": _time, "last_complete_at": _time, "pages": _count, "records": _count,
     "limit_hit": _enum(LIMIT_HITS), "origin": _text,
 }
@@ -322,17 +310,17 @@ class RowSpec:
         return clean
 
 
-IMPORT_SPECS = {
-    "exposures": RowSpec(_IMPORT_EXPOSURE, _EXPOSURE_REQUIRED),
-    "summaries": RowSpec(_IMPORT_SUMMARY, _SUMMARY_REQUIRED),
-    "checks": RowSpec(_IMPORT_CHECK, _CHECK_REQUIRED),
+PROVIDER_SPECS = {
+    "exposures": RowSpec(_PROVIDER_EXPOSURE, _EXPOSURE_REQUIRED),
+    "summaries": RowSpec(_PROVIDER_SUMMARY, _SUMMARY_REQUIRED),
+    "checks": RowSpec(_PROVIDER_CHECK, _CHECK_REQUIRED),
 }
 STORED_SPECS = {
     "exposures": RowSpec(_STORED_EXPOSURE, _EXPOSURE_REQUIRED | {"id", "relationship", "first_seen", "last_seen"}),
     "summaries": RowSpec(_STORED_SUMMARY, _SUMMARY_REQUIRED | {"retrieved_at", "first_seen", "last_seen"}),
     "checks": RowSpec(_STORED_CHECK, _CHECK_REQUIRED | {"started_at"}),
 }
-COLLECTIONS = tuple(IMPORT_SPECS)
+COLLECTIONS = tuple(PROVIDER_SPECS)
 
 
 def validate_collections(doc: Mapping, specs: Mapping[str, RowSpec]) -> dict[str, list[dict]]:

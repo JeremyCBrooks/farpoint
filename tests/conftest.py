@@ -1,7 +1,5 @@
 import csv
 import ipaddress
-import itertools
-import json
 import socket
 
 import httpx
@@ -184,15 +182,8 @@ def exposure_row(**fields) -> dict:
     return {k: v for k, v in row.items() if v is not None}
 
 
-def write_import(path, exposures=(), summaries=(), checks=(), **envelope):
-    doc = {"schema_version": 1, "exposures": list(exposures), "summaries": list(summaries), "checks": list(checks)}
-    doc.update(envelope)
-    path.write_text(json.dumps(doc), encoding="utf-8")
-    return path
-
-
 def summary_row(**fields) -> dict:
-    """A valid import summary row; a field set to None is removed."""
+    """A valid provider summary row; a field set to None is removed."""
     row = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",
            "metric": "infected-employees", "count": 4}
     row.update(fields)
@@ -200,30 +191,28 @@ def summary_row(**fields) -> dict:
 
 
 def check_row(**fields) -> dict:
-    """A valid import check row; a field set to None is removed."""
+    """A valid provider check row; a field set to None is removed."""
     row = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",
            "status": "complete", "checked_at": "2026-10-30"}
     row.update(fields)
     return {k: v for k, v in row.items() if v is not None}
 
 
-_import_numbers = itertools.count(1)
+def batch(exposures=(), at=AT, checks=(), summaries=(), kinds=("email", "website"), domains=("example.com",)):
+    """The batch providers' rows make for `domains`, validated as `collect_credentials` validates them."""
+    from farpoint.credential_batch import build_batch
+    from farpoint.credentials import PROVIDER_SPECS, validate_collections
+
+    rows = validate_collections({"exposures": list(exposures), "summaries": list(summaries), "checks": list(checks)}, PROVIDER_SPECS)
+    return build_batch(rows, list(domains), set(kinds), at)[0]
 
 
-def batch(tmp_path, exposures, at=AT, checks=(), summaries=(), kinds=("email", "website"), domains=("example.com",)):
-    """Import the rows through `load_imports` (a fresh file per call) for `domains`; returns the batch."""
-    from farpoint.credential_import import load_imports
-
-    path = write_import(tmp_path / f"import-{next(_import_numbers)}.json", exposures, summaries, checks)
-    return load_imports([path], list(domains), set(kinds), at)[0]
-
-
-def credential_sidecar(tmp_path, exposures, summaries=(), checks=(), kinds=("email", "website"), at="2026-10-25T00:00:00Z",
+def credential_sidecar(exposures, summaries=(), checks=(), kinds=("email", "website"), at="2026-10-25T00:00:00Z",
                        domains=("example.com",)):
-    """The sidecar data an import of these rows (through `load_imports` and `merge_credentials`) would store."""
+    """The sidecar data these rows would store (through `batch` and `merge_credentials`)."""
     from farpoint.credential_store import merge_credentials
 
-    return merge_credentials(None, batch(tmp_path, exposures, at, checks=checks, summaries=summaries, kinds=kinds, domains=domains))
+    return merge_credentials(None, batch(exposures, at, checks=checks, summaries=summaries, kinds=kinds, domains=domains))
 
 
 HUDSON_ROUTE = "cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain"
@@ -241,12 +230,3 @@ def hudson_body(employee_urls=(), user_urls=(), **fields) -> dict:
             "totalUrls": 0, "stats": {"totalEmployees": 0, "totalUsers": 0}, "is_shopify": False}
     body.update(fields)
     return body
-
-
-def live_batch(exposures=(), at=AT, checks=(), summaries=(), kinds=("email", "website"), domains=("example.com",)):
-    """The batch a live provider's rows would make (origin `live`), validated like collected rows."""
-    from farpoint.credential_import import build_batch
-    from farpoint.credentials import IMPORT_SPECS, validate_collections
-
-    rows = validate_collections({"exposures": list(exposures), "summaries": list(summaries), "checks": list(checks)}, IMPORT_SPECS)
-    return build_batch([(rows, "live")], list(domains), set(kinds), at)[0]
