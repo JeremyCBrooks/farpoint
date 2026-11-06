@@ -124,6 +124,11 @@
             "dataset"
           ]
         },
+        "occurrences": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many times the provider reports seeing credentials for this service: a snapshot that replaces the previous value, not a count to add up"
+        },
         "event_at": {
           "type": "string",
           "description": "ISO 8601 date (YYYY-MM-DD) or date-time; a time with an offset is stored as UTC"

@@ -234,3 +234,31 @@ def test_stored_rows_have_a_fixed_key_order_and_no_raw_checked_at(tmp_path):
     assert list(row)[0] == "id" and list(row) == [k for k in STORED_EXPOSURE_ORDER]
     assert "checked_at" not in chk and chk["completed_at"] == "2026-10-30"
     CredentialBatch.from_json(b.to_json())  # the stored form is accepted back
+
+
+def test_an_identityless_employee_row_on_an_in_scope_host_is_workforce(tmp_path):
+    row = exposure_row(identity=None, provider_relationship="Employee", service_host="https://vpn.example.com/x?t=1",
+                       secret_evidence="dataset", event_at=None, event_date_basis=None, occurrences=12)
+    imported, rejected = load_imports([write_import(tmp_path / "e.json", [row])], ["example.com"], ["email"], AT)
+    (stored,) = imported.exposures
+    assert rejected == 0 and stored["relationship"] == "workforce-associated"
+    assert stored["service_host"] == "vpn.example.com" and stored["occurrences"] == 12
+
+
+def test_an_identityless_row_without_a_workforce_label_or_off_scope_host_is_dropped(tmp_path):
+    rows = [exposure_row(identity=None, service_host="vpn.example.com"),
+            exposure_row(identity=None, provider_relationship="Employee", service_host="login.microsoftonline.com")]
+    imported, rejected = load_imports([write_import(tmp_path / "e.json", rows)], ["example.com"], ["email"], AT)
+    assert imported.exposures == () and rejected == 2
+
+
+def test_occurrences_are_a_snapshot_and_do_not_change_the_id(tmp_path):
+    from farpoint.credential_store import merge_credentials
+
+    def employee(n):
+        return exposure_row(identity=None, provider_relationship="Employee", service_host="vpn.example.com", occurrences=n)
+
+    first = merge_credentials(None, batch(tmp_path, [employee(3)], "2026-10-01T00:00:00Z"))
+    again = merge_credentials(first, batch(tmp_path, [employee(5)], "2026-11-01T00:00:00Z"))
+    (row,) = again["exposures"]
+    assert row["occurrences"] == 5 and row["id"] == first["exposures"][0]["id"]

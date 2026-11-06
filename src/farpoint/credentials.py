@@ -27,6 +27,7 @@ DATE_BASES = ("breach", "compromised", "captured", "published", "uploaded", "unk
 THEFT_BASES = frozenset({"compromised", "captured"})
 RELATIONSHIPS = ("workforce-associated", "customer-reported", "service-account-unknown")
 CUSTOMER_LABELS = frozenset({"customer", "user"})
+WORKFORCE_LABELS = frozenset({"employee"})  # an identity-less row a provider attributes to the workforce
 CHECK_STATUSES = ("complete", "partial", "unavailable", "unsupported", "failed", "interrupted")
 ERROR_CATEGORIES = ("no-key", "denied", "quota", "transport", "server", "schema")
 LIMIT_HITS = ("pages", "records")
@@ -35,7 +36,7 @@ IMPORT_EXPOSURE_FIELDS = frozenset({
     "provider", "provider_record_id", "reference", "scope_domain", "query_kind", "operation", "identity",
     "provider_relationship", "service_host", "service_port", "exposure_type", "source_name", "source_event_id",
     "malware_family", "secret_types", "secret_evidence", "event_at", "event_date_basis",
-    "provider_discovered_at", "source_observed_at",
+    "provider_discovered_at", "source_observed_at", "occurrences",
 })
 IMPORT_SUMMARY_FIELDS = frozenset({
     "provider", "scope_domain", "query_kind", "operation", "metric", "population", "count",
@@ -48,7 +49,7 @@ IMPORT_CHECK_FIELDS = frozenset({"provider", "scope_domain", "query_kind", "oper
 STORED_EXPOSURE_ORDER = (
     "id", "provider", "provider_record_id", "reference", "scope_domain", "query_kind", "operation", "identity",
     "identity_domain", "provider_relationship", "relationship", "service_host", "service_port", "exposure_type",
-    "source_name", "source_event_id", "malware_family", "secret_types", "secret_evidence", "event_at",
+    "source_name", "source_event_id", "malware_family", "secret_types", "secret_evidence", "occurrences", "event_at",
     "event_date_basis", "provider_discovered_at", "source_observed_at", "first_seen", "last_seen",
 )
 STORED_SUMMARY_ORDER = (
@@ -181,13 +182,15 @@ def normalise_exposure(raw: Mapping, *, domains: Sequence[str], kinds: Collectio
     row["reference"] = safe_reference(raw["reference"])
     domain = identity_domain(raw.get("identity"))
     row["identity_domain"] = domain
+    workforce = (raw.get("identity") is None and host is not None and in_scope(host, scope)
+                 and str(raw.get("provider_relationship") or "").lower() in WORKFORCE_LABELS)
     if kind == "email":
-        in_play = domain is not None and in_scope(domain, scope)
+        in_play = (domain is not None and in_scope(domain, scope)) or workforce
     else:
         in_play = host is not None and in_scope(host, scope)
     if not in_play:
         return None
-    if domain is not None and any(in_scope(domain, d) for d in domains):
+    if workforce or (domain is not None and any(in_scope(domain, d) for d in domains)):
         row["relationship"] = "workforce-associated"
     elif str(raw.get("provider_relationship") or "").lower() in CUSTOMER_LABELS:
         row["relationship"] = "customer-reported"
@@ -264,7 +267,7 @@ _IMPORT_EXPOSURE = {
     "service_host": _text, "service_port": _port, "exposure_type": _enum(EXPOSURE_TYPES), "source_name": _text,
     "source_event_id": _text, "malware_family": _text, "secret_types": _secret_types,
     "secret_evidence": _enum(SECRET_EVIDENCE), "event_at": _time, "event_date_basis": _enum(DATE_BASES),
-    "provider_discovered_at": _time, "source_observed_at": _time,
+    "provider_discovered_at": _time, "source_observed_at": _time, "occurrences": _count,
 }
 _IMPORT_SUMMARY = {
     "provider": _text, "scope_domain": _text, "query_kind": _enum(QUERY_KINDS), "operation": _text,
