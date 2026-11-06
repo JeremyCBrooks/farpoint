@@ -402,8 +402,8 @@ What the free data can't do:
   a clean one. Such a check is shown as `no data`, never as clean, and makes no finding.
 - **It is a sample.** Hudson Rock lists at most about a hundred URLs. Only rows from a provider's latest
   complete check make findings; older rows stay in `credentials.json` and the exports as history
-  (`in_latest_snapshot` is `no`). A later failed check retires nothing. Imports keep the usual rule:
-  absence from a later import is not remediation.
+  (`in_latest_snapshot` is `no`). A later failed check retires nothing. Imports keep the usual rule, even
+  under these providers' names: absence from a later import is not remediation.
 
 Hudson Rock's URLs are unmasked and can hold password-reset tokens: only the host and an explicit port
 are kept. The `hudsonrock` hostname source reads the same answer, so with `--credentials

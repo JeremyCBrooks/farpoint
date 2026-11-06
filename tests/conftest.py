@@ -241,3 +241,12 @@ def hudson_body(employee_urls=(), user_urls=(), **fields) -> dict:
             "totalUrls": 0, "stats": {"totalEmployees": 0, "totalUsers": 0}, "is_shopify": False}
     body.update(fields)
     return body
+
+
+def live_batch(exposures=(), at=AT, checks=(), summaries=(), kinds=("email", "website"), domains=("example.com",)):
+    """The batch a live provider's rows would make (origin `live`), validated like collected rows."""
+    from farpoint.credential_import import build_batch
+    from farpoint.credentials import IMPORT_SPECS, validate_collections
+
+    rows = validate_collections({"exposures": list(exposures), "summaries": list(summaries), "checks": list(checks)}, IMPORT_SPECS)
+    return build_batch([(rows, "live")], list(domains), set(kinds), at)[0]

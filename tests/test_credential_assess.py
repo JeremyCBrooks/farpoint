@@ -2,7 +2,7 @@ import json
 from datetime import date
 
 import pytest
-from conftest import AT, LATER, batch, credential_sidecar, exposure_row, read_csv, sample_inventory
+from conftest import AT, LATER, batch, credential_sidecar, exposure_row, live_batch, read_csv, sample_inventory
 
 from farpoint.assess import assessed, derive
 from farpoint.credential_assess import credential_status
@@ -228,10 +228,10 @@ def _snapshot_check(at, status="complete", provider="hudsonrock-osint", operatio
 
 
 def _sidecar(tmp_path, *batches):
-    """Merge successive (at, exposures, checks) batches the way successive runs would."""
+    """Merge successive live (at, exposures, checks) batches the way successive runs would."""
     data = None
     for at, exposures, checks in batches:
-        data = merge_credentials(data, batch(tmp_path, exposures, at, checks=checks))
+        data = merge_credentials(data, live_batch(exposures, at, checks=checks))
     return data
 
 
@@ -265,4 +265,11 @@ def test_the_snapshot_rule_does_not_retire_imported_rows(tmp_path):
     imported = exposure_row(service_host="vpn.example.com")
     data = _sidecar(tmp_path, (AT, [imported], [_snapshot_check(AT, provider="acme-intel", operation="stealers")]),
                     (LATER, [], [_snapshot_check(LATER, provider="acme-intel", operation="stealers")]))
+    assert [f["target"] for f in creds(derive(INFRA, today=TODAY, credentials=data))] == ["vpn.example.com"]
+
+
+def test_an_import_naming_a_snapshot_provider_keeps_the_accumulating_rule(tmp_path):
+    row = exposure_row(provider="hibp-public", service_host="vpn.example.com")  # an export, not a live answer
+    data = _sidecar(tmp_path)  # nothing live
+    data = merge_credentials(data, batch(tmp_path, [row], AT))
     assert [f["target"] for f in creds(derive(INFRA, today=TODAY, credentials=data))] == ["vpn.example.com"]

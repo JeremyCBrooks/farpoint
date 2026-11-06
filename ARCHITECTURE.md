@@ -588,8 +588,8 @@ a domain Hudson Rock doesn't know produces only complete checks (`no data`). `hi
 only: breaches of the site itself, dataset-level, fabricated and spam lists skipped.
 
 **Snapshots.** For `SNAPSHOT_PROVIDERS` (the two free providers) an exposure or summary makes findings
-only while it belongs to its check's latest complete snapshot: `last_seen >= last_complete_at`
-(`in_latest_snapshot`). Older rows stay in the sidecar as history. Other providers and imports
+only while it belongs to its check's latest complete snapshot, when that check came from a live
+run (`origin: live`): `last_seen >= last_complete_at` (`in_latest_snapshot`). Older rows stay in the sidecar as history. Other providers and imports
 accumulate as before.
 
 **Sidecar** (`credential_store.py`). Evidence lives in `credentials.json`, never in `assets.json`:

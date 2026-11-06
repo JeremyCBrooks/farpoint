@@ -34,10 +34,12 @@ def _check_key(row: Mapping) -> tuple:
 
 
 def in_latest_snapshot(row: Mapping, checks: Mapping[tuple, Mapping]) -> bool | None:
-    """None for a provider whose evidence accumulates; else whether the row was in its latest complete check."""
-    if row["provider"] not in SNAPSHOT_PROVIDERS:
+    """None for evidence that accumulates (other providers, and imports even under a snapshot provider's name);
+    else whether the row was in its latest complete live check."""
+    check = checks.get(_check_key(row)) or {}
+    if row["provider"] not in SNAPSHOT_PROVIDERS or check.get("origin") != "live":
         return None
-    complete = (checks.get(_check_key(row)) or {}).get("last_complete_at")
+    complete = check.get("last_complete_at")
     return bool(complete) and row["last_seen"] >= complete
 
 

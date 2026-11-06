@@ -319,8 +319,10 @@ def test_exports_mark_snapshot_membership_and_no_data(tmp_path):
     def snap(at):
         return check(provider="hudsonrock-osint", operation="employee-urls", checked_at=at)
 
-    data = merge_credentials(None, batch(tmp_path, [employee("vpn.example.com")], AT, checks=[snap(AT)]))
-    data = merge_credentials(data, batch(tmp_path, [], LATER, checks=[snap(LATER), check(checked_at=LATER)]))
+    from conftest import live_batch
+
+    data = merge_credentials(None, live_batch([employee("vpn.example.com")], AT, checks=[snap(AT)]))
+    data = merge_credentials(data, live_batch([], LATER, checks=[snap(LATER), check(checked_at=LATER)]))
     out = tmp_path / "out"
     out.mkdir()
     write_credential_exports(out, data, {"domains": ["example.com"]}, date(2026, 11, 2))
