@@ -105,6 +105,7 @@ def build_batch(loaded: Sequence[tuple[dict[str, list[dict]], str]], domains: Se
     for rows, origin in loaded:
         for raw in [*rows["exposures"], *rows["summaries"]]:
             origins.setdefault(_key(raw | {"scope_domain": normalize_hostname(raw["scope_domain"])}), origin)
+        for raw in rows["summaries"]:
             if _in_domains(raw, domains):
                 summaries.append(_ordered(STORED_SUMMARY_ORDER, raw, retrieved_at=when, first_seen=when, last_seen=when))
             else:
