@@ -15,7 +15,7 @@ from rich.console import Console
 
 from farpoint import runtime
 from farpoint.assess import Kev, Nvd, assessed, lookup_vulns
-from farpoint.credential_assess import credential_status, current_findings
+from farpoint.credential_assess import credential_status, current_findings, no_data
 from farpoint.credential_import import CredentialImportError, load_imports
 from farpoint.credential_store import SIDECAR, load_credentials
 from farpoint.credentials import QUERY_KINDS
@@ -454,7 +454,7 @@ def _summarise_credentials(out: Path, report: dict, rejected: int = 0, new: int 
     if not (out / SIDECAR).exists() and not rejected and not report.get("credential_assessment"):
         return
     data = state.data or {}
-    checks = Counter(c["status"] for c in data.get("checks", []))
+    checks = Counter("no data" if no_data(c, data) else c["status"] for c in data.get("checks", []))
     shown = ", ".join(f"{n} {status}" for status, n in sorted(checks.items())) or "none"
     print(f"credentials: {len(data.get('exposures', []))} exposures ({new} new), {len(data.get('summaries', []))} summaries; checks: {shown}")
     if rejected:

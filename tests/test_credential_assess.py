@@ -215,3 +215,54 @@ def test_an_unreadable_sidecar_keeps_findings_as_an_unavailable_snapshot(tmp_pat
 def test_an_old_inventory_without_a_sidecar_is_unchanged(tmp_path):     # Review Focus 4
     write_outputs(sample_inventory(), tmp_path, AT, assess=lambda r, c: assessed(r, [], {}, AT, credentials=c))
     assert not list(tmp_path.glob("credential*")) and credential_status(load_report(tmp_path), load_credentials(tmp_path)) == "none"
+
+
+def _employee(host, n=1, **fields):
+    return exposure_row(provider="hudsonrock-osint", operation="employee-urls", identity=None, provider_relationship="Employee",
+                        service_host=host, occurrences=n, secret_evidence="dataset", event_at=None, event_date_basis=None, **fields)
+
+
+def _snapshot_check(at, status="complete", provider="hudsonrock-osint", operation="employee-urls"):
+    from conftest import check_row
+    return check_row(provider=provider, operation=operation, status=status, checked_at=at)
+
+
+def _sidecar(tmp_path, *batches):
+    """Merge successive (at, exposures, checks) batches the way successive runs would."""
+    data = None
+    for at, exposures, checks in batches:
+        data = merge_credentials(data, batch(tmp_path, exposures, at, checks=checks))
+    return data
+
+
+LATEST = "2026-11-03T00:00:00Z"
+
+
+def test_identityless_findings_say_identities_were_not_reported_and_show_occurrences(tmp_path):
+    data = _sidecar(tmp_path, (AT, [_employee("vpn.example.com", 12)], [_snapshot_check(AT)]))
+    (f,) = [f for f in creds(derive(INFRA, today=TODAY, credentials=data)) if f["kind"] == "credential-theft"]
+    assert "0 " not in f["detail"] and "identities not reported by provider" in f["detail"]
+    assert "seen 12 times" in f["detail"] and f["level"] == "medium"  # a fresh fingerprint, but no theft date
+
+
+@pytest.mark.parametrize("later_failure", [False, True])
+def test_only_rows_from_the_latest_complete_snapshot_produce_findings(tmp_path, later_failure):
+    runs = [(AT, [_employee("vpn.example.com")], [_snapshot_check(AT)]),
+            (LATER, [_employee("sts.example.com")], [_snapshot_check(LATER)])]
+    if later_failure:
+        runs.append((LATEST, [], [_snapshot_check(LATEST, status="failed")]))
+    found = creds(derive(INFRA, today=TODAY, credentials=_sidecar(tmp_path, *runs)))
+    assert [f["target"] for f in found] == ["sts.example.com"]
+
+
+def test_a_latest_all_zero_snapshot_retires_older_findings(tmp_path):
+    data = _sidecar(tmp_path, (AT, [_employee("vpn.example.com")], [_snapshot_check(AT)]), (LATER, [], [_snapshot_check(LATER)]))
+    assert creds(derive(INFRA, today=TODAY, credentials=data)) == []
+    assert len(data["exposures"]) == 1  # kept as history
+
+
+def test_the_snapshot_rule_does_not_retire_imported_rows(tmp_path):
+    imported = exposure_row(service_host="vpn.example.com")
+    data = _sidecar(tmp_path, (AT, [imported], [_snapshot_check(AT, provider="acme-intel", operation="stealers")]),
+                    (LATER, [], [_snapshot_check(LATER, provider="acme-intel", operation="stealers")]))
+    assert [f["target"] for f in creds(derive(INFRA, today=TODAY, credentials=data))] == ["vpn.example.com"]

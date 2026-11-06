@@ -305,3 +305,25 @@ def test_the_namespaces_do_not_match_each_others_globs(tmp_path):
     assert len(list(tmp_path.glob(".checkpoint-*.json"))) == 1 and len(list(tmp_path.glob(".credential-checkpoint-*.json"))) == 1
     cp.clear()
     assert not list(tmp_path.glob(".*checkpoint-*"))
+
+
+def test_exports_mark_snapshot_membership_and_no_data(tmp_path):
+    from datetime import date
+
+    from farpoint.credential_store import write_credential_exports
+
+    def employee(host):
+        return exposure_row(provider="hudsonrock-osint", operation="employee-urls", identity=None, provider_relationship="Employee",
+                            service_host=host, occurrences=4, secret_evidence="dataset", event_at=None, event_date_basis=None)
+
+    def snap(at):
+        return check(provider="hudsonrock-osint", operation="employee-urls", checked_at=at)
+
+    data = merge_credentials(None, batch(tmp_path, [employee("vpn.example.com")], AT, checks=[snap(AT)]))
+    data = merge_credentials(data, batch(tmp_path, [], LATER, checks=[snap(LATER), check(checked_at=LATER)]))
+    out = tmp_path / "out"
+    out.mkdir()
+    write_credential_exports(out, data, {"domains": ["example.com"]}, date(2026, 11, 2))
+    (row,) = read_csv(out / "credential-exposures.csv")
+    assert row["occurrences"] == "4" and row["in_latest_snapshot"] == "no"
+    assert {c["result"] for c in read_csv(out / "credential-checks.csv")} == {"no data"}

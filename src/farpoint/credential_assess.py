@@ -25,6 +25,29 @@ THEFT = frozenset({"infostealer", "phishing"})
 _STRONG_TIES = frozenset({"records", "cname"})
 _NO_ASSET = frozenset({"provider-context"})
 _NAMED_SOURCES = frozenset({"breach", "combolist", "unknown"})  # a stealer or phishing log's name can embed a victim's user or machine
+# Providers whose answer is a capped sample of the moment: only rows from their latest complete check are current.
+SNAPSHOT_PROVIDERS = frozenset({"hudsonrock-osint", "hibp-public"})
+
+
+def _check_key(row: Mapping) -> tuple:
+    return (row["provider"], row["scope_domain"], row["query_kind"], row["operation"])
+
+
+def in_latest_snapshot(row: Mapping, checks: Mapping[tuple, Mapping]) -> bool | None:
+    """None for a provider whose evidence accumulates; else whether the row was in its latest complete check."""
+    if row["provider"] not in SNAPSHOT_PROVIDERS:
+        return None
+    complete = (checks.get(_check_key(row)) or {}).get("last_complete_at")
+    return bool(complete) and row["last_seen"] >= complete
+
+
+def no_data(check: Mapping, data: Mapping) -> bool:
+    """A complete check that returned nothing: no data, which is not the same as no exposure."""
+    if check.get("status") != "complete" or not check.get("last_complete_at"):
+        return False
+    key, since = _check_key(check), check["last_complete_at"]
+    return not any(_check_key(r) == key and r["last_seen"] >= since
+                   for r in [*data.get("exposures", []), *data.get("summaries", [])])
 
 
 def _identity_key(row: Mapping) -> tuple | str:
@@ -130,13 +153,15 @@ def credential_findings(report: Mapping, credentials: Mapping, today: date, rece
     from farpoint.assess import LEVELS, _finding, _seen
 
     correlator = Correlator(report, today, recent_days)
+    checks = {_check_key(c): c for c in credentials.get("checks", [])}
     groups: dict[tuple, list[tuple[Mapping, Match | None]]] = {}
     for row in credentials.get("exposures", []):
+        if in_latest_snapshot(row, checks) is False:
+            continue
         match = correlator.match(row)
         kind = "credential-theft" if row.get("exposure_type") in THEFT else "credential-breach"
         asset = match.asset if match and match.kind not in _NO_ASSET else ""
         groups.setdefault((kind, row["scope_domain"], row["relationship"], asset), []).append((row, match))
-    checks = {(c["provider"], c["scope_domain"], c["query_kind"], c["operation"]): c for c in credentials.get("checks", [])}
     order = {level: i for i, level in enumerate(LEVELS)}
     out: list[dict] = []
     for (kind, scope, relationship, asset), members in sorted(groups.items()):
@@ -145,7 +170,12 @@ def credential_findings(report: Mapping, credentials: Mapping, today: date, rece
         level = min((_level(row, m, today, recent_days) for row, m in members), key=order.__getitem__)
         n = len({_identity_key(row) for row in rows if row.get("identity")})
         m = len(rows)
-        detail = f"{n} {relationship} identit{'y' if n == 1 else 'ies'} ({m} record{'s'[:m != 1]}) for {scope}"
+        if any(row.get("identity") for row in rows):
+            detail = f"{n} {relationship} identit{'y' if n == 1 else 'ies'} ({m} record{'s'[:m != 1]}) for {scope}"
+        else:
+            detail = f"{relationship}; identities not reported by provider ({m} record{'s'[:m != 1]}) for {scope}"
+        if any(row.get("occurrences") is not None for row in rows):
+            detail += f"; seen {sum(row.get('occurrences') or 0 for row in rows)} times"
         if match and match.kind == "host-port-unobserved":
             detail += "; reported port not observed (host-only evidence)"
         if match and match.kind == "dns-only":
@@ -172,6 +202,8 @@ def credential_findings(report: Mapping, credentials: Mapping, today: date, rece
         evidence = sorted({f"{row['provider']}:{row['operation']}" for row in rows}) + sorted(names)
         out.extend(_seen([_finding(level, kind, asset or scope, detail, evidence, about=f"{scope}|{relationship}")], *rows))
     for s in credentials.get("summaries", []):
+        if in_latest_snapshot(s, checks) is False:
+            continue
         population = s.get("population")
         detail = (f"{s['provider']} reports {s['count']} for {s['metric']}" + (f" ({population})" if population else "")
                   + "; an aggregate, not a list of confirmed accounts")

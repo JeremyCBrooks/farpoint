@@ -268,3 +268,14 @@ def test_assess_clears_exports_after_sidecar_is_emptied(tmp_path):
     assert cli.main(["--assess", "--no-cve", "-o", str(out)]) == 0
     assert read_csv(out / "credential-exposures.csv") == []
     assert read_csv(out / "credential-checks.csv") == []
+
+
+def test_the_cli_reports_no_data_checks(tmp_path, capsys):
+    from conftest import check_row
+
+    out = tmp_path / "out"
+    write_outputs(sample_inventory(), out, STAMP)
+    path = write_import(tmp_path / "e.json", checks=[check_row()])
+    assert cli.main(["--credential-import", str(path), "-o", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "checks: 1 no data" in printed and "1 complete" not in printed
