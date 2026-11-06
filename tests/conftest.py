@@ -191,6 +191,14 @@ def write_import(path, exposures=(), summaries=(), checks=(), **envelope):
     return path
 
 
+def summary_row(**fields) -> dict:
+    """A valid import summary row; a field set to None is removed."""
+    row = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",
+           "metric": "infected-employees", "count": 4}
+    row.update(fields)
+    return {k: v for k, v in row.items() if v is not None}
+
+
 def check_row(**fields) -> dict:
     """A valid import check row; a field set to None is removed."""
     row = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",

@@ -75,18 +75,25 @@ def _key(row: dict) -> tuple:
 
 def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collection[str],
                  retrieved_at: str) -> tuple[CredentialBatch, int]:
-    """Validate every file, then return one batch and the number of rows rejected as out of scope.
+    """Validate every file, then return one batch and the number of rows rejected as out of scope."""
+    return build_batch([(_load_one(Path(p), kinds), "import") for p in paths], domains, kinds, retrieved_at)
+
+
+def build_batch(loaded: Sequence[tuple[dict[str, list[dict]], str]], domains: Sequence[str], kinds: Collection[str],
+                retrieved_at: str) -> tuple[CredentialBatch, int]:
+    """One batch from validated, import-shaped rows, each set with its origin (`import` or `live`), and the
+    number of rows rejected as out of scope.
 
     Exposures are scoped, related and identified by `normalise_exposure`. A provider/domain/kind/operation
-    with rows but no declared check gets a `partial` one: the import cannot say it covered everything."""
+    with rows but no declared check gets a `partial` one: the rows alone cannot say they covered everything."""
     when = normalise_time(retrieved_at)
     if when is None:
         raise ValueError("retrieved_at: must be an ISO 8601 date or time")
     domains = [d for d in (normalize_hostname(d) for d in domains) if d]
-    loaded = [_load_one(Path(p), kinds) for p in paths]
     rejected = 0
     exposures: dict[str, dict] = {}  # the last row with an id wins
-    for rows in loaded:
+    origins: dict[tuple, str] = {}
+    for rows, _ in loaded:
         for raw in rows["exposures"]:
             row = normalise_exposure(raw, domains=domains, kinds=kinds)
             if row is None:
@@ -95,8 +102,9 @@ def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collectio
             exposures.pop(row["id"], None)
             exposures[row["id"]] = {**row, "first_seen": when, "last_seen": when}
     summaries, declared = [], {}
-    for rows in loaded:
-        for raw in rows["summaries"]:
+    for rows, origin in loaded:
+        for raw in [*rows["exposures"], *rows["summaries"]]:
+            origins.setdefault(_key(raw | {"scope_domain": normalize_hostname(raw["scope_domain"])}), origin)
             if _in_domains(raw, domains):
                 summaries.append(_ordered(STORED_SUMMARY_ORDER, raw, retrieved_at=when, first_seen=when, last_seen=when))
             else:
@@ -109,7 +117,7 @@ def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collectio
             status = raw["status"]
             check = _ordered(
                 STORED_CHECK_ORDER, raw, started_at=at, completed_at=at,
-                last_complete_at=at if status == "complete" else None, origin="import")
+                last_complete_at=at if status == "complete" else None, origin=origin)
             key = _key(raw)
             declared[key] = merge_check(declared[key], check) if key in declared else check
     counts: dict[tuple, int] = {}
@@ -119,7 +127,7 @@ def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collectio
         provider, scope, kind, operation = key
         declared[key] = _ordered(
             STORED_CHECK_ORDER, {"provider": provider, "scope_domain": scope, "query_kind": kind, "operation": operation},
-            status="partial", started_at=when, completed_at=when, origin="import")
+            status="partial", started_at=when, completed_at=when, origin=origins.get(key, "import"))
     for key, check in declared.items():
         check["records"] = counts.get(key, 0)
     batch = CredentialBatch(when, tuple(exposures.values()), tuple(summaries), tuple(declared.values()))

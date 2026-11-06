@@ -262,3 +262,16 @@ def test_occurrences_are_a_snapshot_and_do_not_change_the_id(tmp_path):
     again = merge_credentials(first, batch(tmp_path, [employee(5)], "2026-11-01T00:00:00Z"))
     (row,) = again["exposures"]
     assert row["occurrences"] == 5 and row["id"] == first["exposures"][0]["id"]
+
+
+def test_live_rows_and_import_rows_build_one_batch_with_their_own_origins():
+    from conftest import summary_row
+
+    from farpoint.credential_import import build_batch
+
+    live = {"exposures": [], "summaries": [summary_row(provider="hudsonrock-osint", operation="domain-summary")],
+            "checks": [check_row(provider="hudsonrock-osint", operation="domain-summary")]}
+    imported = {"exposures": [exposure_row()], "summaries": [], "checks": []}
+    built, _ = build_batch([(imported, "import"), (live, "live")], ["example.com"], ["email"], AT)
+    origins = {(c["provider"], c["origin"]) for c in built.checks}
+    assert origins == {("acme-intel", "import"), ("hudsonrock-osint", "live")}
