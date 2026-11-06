@@ -205,7 +205,7 @@ def _hudson(handler):
 def test_hudsonrock_yields_hosts_from_both_url_lists():
     from conftest import hudson_body
 
-    body = hudson_body(employees=[("https://vpn.example.com/remote/login", 3)], users=[("https://shop.example.com/account?x=1", 9)])
+    body = hudson_body(employee_urls=[("https://vpn.example.com/remote/login", 3)], user_urls=[("https://shop.example.com/account?x=1", 9)])
     source = _hudson(when_params({"domain": D}, httpx.Response(200, json=body)))
     assert pairs(source.collect(D)) == {("vpn.example.com", None), ("shop.example.com", None)}
 
@@ -217,7 +217,7 @@ def test_hudsonrock_fetches_a_domain_once_for_report_and_collect():
 
     def handler(request):
         calls.append(request)
-        return httpx.Response(200, json=hudson_body(employees=[("https://vpn.example.com/", 1)]))
+        return httpx.Response(200, json=hudson_body(employee_urls=[("https://vpn.example.com/", 1)]))
 
     source = _hudson(handler)
     assert source.report(D)["data"]["employees_urls"]

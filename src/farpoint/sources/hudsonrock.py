@@ -12,7 +12,7 @@ from collections.abc import Iterator
 
 from farpoint.credentials import normalise_service
 from farpoint.models import Observation
-from farpoint.sources.base import HttpSource, SourceFailure
+from farpoint.sources.base import HttpSource, UnexpectedResponse
 
 URL_LISTS = ("employees_urls", "clients_urls")
 
@@ -58,9 +58,9 @@ class HudsonRock(HttpSource):
         try:
             body = response.json()
         except ValueError:
-            raise SourceFailure("unexpected response (not JSON)") from None
+            raise UnexpectedResponse("unexpected response (not JSON)") from None
         if not isinstance(body, dict) or not isinstance(body.get("data"), dict):
-            raise SourceFailure("unexpected response")
+            raise UnexpectedResponse("unexpected response")
         return body
 
     def collect(self, domain: str) -> Iterator[Observation]:

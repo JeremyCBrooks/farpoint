@@ -28,6 +28,10 @@ class SourceFailure(Exception):
     """The source answered, but with an error/quota message rather than data."""
 
 
+class UnexpectedResponse(SourceFailure):
+    """The source answered with something that isn't the data it documents (an HTML challenge page, say)."""
+
+
 class Source(Protocol):
     name: str
 
