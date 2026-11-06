@@ -224,3 +224,20 @@ def credential_sidecar(tmp_path, exposures, summaries=(), checks=(), kinds=("ema
     from farpoint.credential_store import merge_credentials
 
     return merge_credentials(None, batch(tmp_path, exposures, at, checks=checks, summaries=summaries, kinds=kinds, domains=domains))
+
+
+HUDSON_ROUTE = "cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-domain"
+
+
+def hudson_body(employees=(), users=(), **fields) -> dict:
+    """A Hudson Rock search-by-domain answer in the shape verified on 2026-11-05, with synthetic values.
+    `employees`/`users` are (url, occurrence) pairs; zero counts unless given."""
+    def urls(pairs, kind):
+        return [{"url": url, "occurrence": n, "type": kind} for url, n in pairs]
+
+    body = {"total": 0, "totalStealers": 37000000, "employees": 0, "users": 0, "third_parties": 0,
+            "data": {"employees_urls": urls(employees, "Employee"), "clients_urls": urls(users, "User"),
+                     "all_urls": urls(employees, "Employee") + urls(users, "User")},
+            "totalUrls": 0, "stats": {"totalEmployees": 0, "totalUsers": 0}, "is_shopify": False}
+    body.update(fields)
+    return body

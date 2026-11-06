@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 import httpx
 
 from farpoint.sources.base import Source
+from farpoint.sources.hudsonrock import HudsonRock
 from farpoint.sources.tools import Bbot, Dnstwist, Subfinder
 from farpoint.sources.web import CertSpotter, CrtSh, HackerTarget, Otx, RapidDns, Shodan, UrlScan, VirusTotal, Wayback
 
@@ -20,6 +21,7 @@ def build_sources(http: httpx.Client, env: Mapping[str, str]) -> list[Source]:
         Otx(http, env.get("OTX_API_KEY")),
         UrlScan(http, env.get("URLSCAN_API_KEY")),
         RapidDns(http),
+        HudsonRock(http),
         Shodan(http, env.get("SHODAN_API_KEY")),
         VirusTotal(http, env.get("VIRUSTOTAL_API_KEY")),
         Subfinder(),

@@ -192,3 +192,48 @@ def test_shodan_having_nothing_on_a_domain_is_no_results_not_a_failure():
     inv = Pipeline(sources=[Shodan(http, api_key="sk", retries=0)]).run([D])
 
     assert inv.errors == [] and set(inv.hosts) == {D}
+
+
+def _hudson(handler):
+    from conftest import HUDSON_ROUTE
+
+    from farpoint.sources.hudsonrock import HudsonRock
+
+    return HudsonRock(fake_http({HUDSON_ROUTE: handler}), backoff=0)
+
+
+def test_hudsonrock_yields_hosts_from_both_url_lists():
+    from conftest import hudson_body
+
+    body = hudson_body(employees=[("https://vpn.example.com/remote/login", 3)], users=[("https://shop.example.com/account?x=1", 9)])
+    source = _hudson(when_params({"domain": D}, httpx.Response(200, json=body)))
+    assert pairs(source.collect(D)) == {("vpn.example.com", None), ("shop.example.com", None)}
+
+
+def test_hudsonrock_fetches_a_domain_once_for_report_and_collect():
+    from conftest import hudson_body
+
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=hudson_body(employees=[("https://vpn.example.com/", 1)]))
+
+    source = _hudson(handler)
+    assert source.report(D)["data"]["employees_urls"]
+    assert pairs(source.collect(D)) == {("vpn.example.com", None)}
+    assert len(calls) == 1
+
+
+def test_hudsonrock_remembers_a_failure_instead_of_retrying():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, text="<html>Just a moment...</html>", headers={"content-type": "text/html"})
+
+    source = _hudson(handler)
+    for _ in range(2):
+        with pytest.raises(SourceFailure):
+            list(source.collect(D))
+    assert len(calls) == 1

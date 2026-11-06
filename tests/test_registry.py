@@ -28,3 +28,8 @@ def test_api_keys_come_from_environment():
     unkeyed = {s.name: s for s in build_sources(fake_http({}), env={})}
 
     assert keyed["shodan"].available() and not unkeyed["shodan"].available()
+
+
+def test_hudsonrock_is_a_default_keyless_source(all_sources):
+    (source,) = [s for s in select_sources(all_sources) if s.name == "hudsonrock"]
+    assert source.available()
