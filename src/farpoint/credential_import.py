@@ -76,7 +76,12 @@ def _key(row: dict) -> tuple:
 def load_imports(paths: Sequence[Path], domains: Sequence[str], kinds: Collection[str],
                  retrieved_at: str) -> tuple[CredentialBatch, int]:
     """Validate every file, then return one batch and the number of rows rejected as out of scope."""
-    return build_batch([(_load_one(Path(p), kinds), "import") for p in paths], domains, kinds, retrieved_at)
+    return build_batch(read_imports(paths, kinds), domains, kinds, retrieved_at)
+
+
+def read_imports(paths: Sequence[Path], kinds: Collection[str]) -> list[tuple[dict[str, list[dict]], str]]:
+    """Every file's validated rows, tagged `import`, for `build_batch`; raises CredentialImportError."""
+    return [(_load_one(Path(p), kinds), "import") for p in paths]
 
 
 def build_batch(loaded: Sequence[tuple[dict[str, list[dict]], str]], domains: Sequence[str], kinds: Collection[str],

@@ -171,6 +171,7 @@ All network access sits behind small protocols, so the stage logic is tested off
 | `fingerprint.Archive` | `archive.WaybackArchive` | fingerprinting (services a bot defence hid) |
 | `lookalikes.LookalikeLookups` | `lookalikes.NetworkLookalikeLookups` (RDAP, crt.sh) | lookalike triage |
 | `identity.SignIn` | `identity.MicrosoftSignIn` | tenants (sign-in) |
+| `credential_sources.base.CredentialProvider` | `credential_sources.hudsonrock.HudsonRockOsint`, `credential_sources.hibp.HibpPublic` | `--credentials` (before the scan) |
 
 `cli.py` is the only place these are wired together.
 
@@ -196,7 +197,8 @@ All in `src/farpoint/`:
 | `assess.py` | Findings; NVD and CISA lookups |
 | `output.py` | Merging, checkpoints, and writing the output files |
 | `credentials.py` | Credential evidence rows: validation, normalisation, secret and URL stripping, `CredentialBatch` |
-| `credential_import.py` | Reads and validates `--credential-import` files into one batch |
+| `credential_import.py` | Reads and validates `--credential-import` files; `build_batch` turns import and live rows into one batch |
+| `credential_sources/` | Live credential providers (`--credentials`): the protocol, error categories, Hudson Rock and HIBP adapters |
 | `credential_store.py` | The `credentials.json` sidecar: loading, merging, owner-only saving, the `credential-*.csv` exports |
 | `credential_assess.py` | Correlating evidence with the inventory, grouped findings, freshness status |
 | `runtime.py`, `progress.py` | Cancellation and per-job status; the live display |
@@ -564,8 +566,31 @@ it becomes unreadable mid-scan, this run is saved beside it as `assets.unmerged-
 
 **Goal:** record which of the organisation's identities appear in breach, infostealer and phishing data,
 and rank that against what the scan observed, without putting identities into the infrastructure files.
-This release reads normalised provider exports; there are no live providers yet (the `Source`-style seam
-for them is the `CredentialBatch` an adapter would return).
+Evidence comes from normalised provider exports (`--credential-import`) and from free live providers
+(`--credentials`).
+
+**Live providers** (`credential_sources/`). A `CredentialProvider` names its query kinds and the
+(kind, operation) checks it covers, and turns a root domain into import-shaped `exposures` and
+`summaries`. `collect_credentials` validates them against the import allowlist and adds one check per
+operation: `complete`, or `failed` with a value-free category (`error_category`: an `UnexpectedResponse`
+such as an HTML challenge page is `schema`, a 429 past retries `quota`, other HTTP errors `server`,
+network errors `transport`, 401/403 `denied`). The CLI collects before the scan, after recovery and the
+inventory check, and hands the rows with any import files to `build_batch`; from there the batch takes the
+import path unchanged (checkpoint, sidecar, fallback). Collection makes one small request per provider and
+domain, so there is no pagination. Ctrl-C during it returns 130 with nothing written.
+
+`hudsonrock-osint` reads the `hudsonrock` hostname source's per-run memo (`HudsonRock.report`: one
+request per domain, failures remembered, never written), so the source and the provider share one
+request. Its employee URLs become identity-less `email` exposures, one per in-scope host and explicit
+port, with `occurrences` summed; `normalise_exposure` accepts an identity-less `email` row when its host is
+in scope and its provider label is a workforce label (`WORKFORCE_LABELS`). Zero counts write no rows, so
+a domain Hudson Rock doesn't know produces only complete checks (`no data`). `hibp-public` is `website`
+only: breaches of the site itself, dataset-level, fabricated and spam lists skipped.
+
+**Snapshots.** For `SNAPSHOT_PROVIDERS` (the two free providers) an exposure or summary makes findings
+only while it belongs to its check's latest complete snapshot: `last_seen >= last_complete_at`
+(`in_latest_snapshot`). Older rows stay in the sidecar as history. Other providers and imports
+accumulate as before.
 
 **Sidecar** (`credential_store.py`). Evidence lives in `credentials.json`, never in `assets.json`:
 exposures, summaries and checks, plus a `schema_version`, an `updated_at` and an opaque `revision` that

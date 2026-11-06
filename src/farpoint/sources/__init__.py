@@ -21,7 +21,7 @@ def build_sources(http: httpx.Client, env: Mapping[str, str]) -> list[Source]:
         Otx(http, env.get("OTX_API_KEY")),
         UrlScan(http, env.get("URLSCAN_API_KEY")),
         RapidDns(http),
-        HudsonRock(http),
+        HudsonRock(http, retries=1),  # also read before the scan by --credentials: an outage must not stall it
         Shodan(http, env.get("SHODAN_API_KEY")),
         VirusTotal(http, env.get("VIRUSTOTAL_API_KEY")),
         Subfinder(),

@@ -49,7 +49,8 @@ Windows), use `uv run python -m pytest` instead.
   keyed by `(name, target)` and hands them to `_fan_out`. Workers only do I/O. All inventory changes
   happen on the main thread, between results.
 - **All network access sits behind small protocols:** `sources.base.Source`, `lookup` and `posture.Dns`,
-  `enrich.Enricher`, `related.Probes`, `probe.Prober` and `fingerprint.Archive`. `cli.py` is the only place where the real
+  `enrich.Enricher`, `related.Probes`, `probe.Prober`, `fingerprint.Archive` and
+  `credential_sources.base.CredentialProvider`. `cli.py` is the only place where the real
   implementations are wired in. Only `probe.py` contacts the organisation's own hosts, and only for
   in-scope names that currently resolve to public addresses. Keep it that way: any new active behaviour
   needs its own opt-in flag and a "not passive" note in README.md.

@@ -101,7 +101,8 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--assess` | Rank findings and look up CVEs. With no domains, re-assesses the inventory in `--out` without scanning. |
 | `--no-cve` | Assess without the NVD and CISA lookups. |
 | `--credential-import PATH` | Add credential-exposure evidence from a provider export (schema: [docs/credential-import/schema.json](docs/credential-import/schema.json)). Repeatable. Offline: nothing is sent anywhere. With no domains, adds it to the inventory in `--out`, within that inventory's domains. See [Credential exposure](#credential-exposure---credential-import). |
-| `--credential-queries KINDS` | Which kinds of evidence an import may hold: `email` (default; workforce email-domain exposure) and `website` (credentials for logins to in-scope hosts, which includes customers' identities). Needs `--credential-import`. An import with a disabled kind is rejected whole. |
+| `--credentials PROVIDERS` | Collect credential-exposure evidence from free providers, comma-separated: `hudsonrock-osint`, `hibp-public`. No "all": name each one. Sends each root domain to the provider; never contacts the organisation. With no domains, collects for the inventory in `--out`. See [Free providers](#free-providers---credentials). |
+| `--credential-queries KINDS` | Which kinds of evidence an import or `--credentials` may hold: `email` (default; workforce email-domain exposure) and `website` (credentials for logins to in-scope hosts, which includes customers' identities). Needs `--credential-import` or `--credentials`. An import with a disabled kind is rejected whole. |
 | `--timeout SECONDS` | HTTP timeout for data sources, RDAP, NVD, CISA and Microsoft (default 60). |
 | `--workers N` | Jobs run at once per source or phase (default 16). |
 | `--no-progress` | No live progress display. |
@@ -118,6 +119,7 @@ Results are then merged into the inventory in the output folder, and every outpu
 | AlienVault OTX | Passive DNS | optional `OTX_API_KEY` (recommended: anonymous use is heavily rate-limited) |
 | urlscan.io | Existing scans (never submits one) | optional `URLSCAN_API_KEY` |
 | RapidDNS | Subdomain table | none |
+| Hudson Rock | Hosts of login URLs seen in infostealer logs | none |
 | Shodan | Subdomains and records | required `SHODAN_API_KEY` |
 | VirusTotal | Subdomain relations | required `VIRUSTOTAL_API_KEY` (free tier works) |
 | subfinder | Passive subdomain tool | `subfinder` on PATH |
@@ -347,8 +349,8 @@ ones, edge devices first.
 
 Adds evidence that the organisation's accounts appear in breaches, infostealer logs or phishing
 captures, and ranks it with the rest of the findings. This release reads **normalised exports that
-you obtained yourself** from an intelligence provider; it sends nothing anywhere. Live provider
-lookups come in a later release.
+you obtained yourself** from an intelligence provider, which sends nothing anywhere, and collects from
+two free providers with `--credentials` (below).
 
 ```bash
 # Add an export to an existing inventory and judge it (no scan, no network)
@@ -373,6 +375,40 @@ The format is in [docs/credential-import/schema.json](docs/credential-import/sch
 worked file in [docs/credential-import/example.json](docs/credential-import/example.json). Secret
 values (passwords, hashes, cookies, tokens) must not be in the file; only the *type* of secret is
 kept, and paths, query strings and credentials in URLs are stripped.
+
+### Free providers (`--credentials`)
+
+```bash
+uv run farpoint example.com --credentials hudsonrock-osint --assess
+uv run farpoint --credentials hudsonrock-osint,hibp-public --credential-queries email,website --assess --no-cve -o out/acme
+```
+
+| Provider | What it reports | Kind |
+|---|---|---|
+| `hudsonrock-osint` | [Hudson Rock](https://www.hudsonrock.com/free-tools)'s free search by domain: login URLs on the domain's hosts found in infostealer logs, how often each was seen, and domain-wide counts (infected employees, users and third parties, stealer families, the latest compromise dates) | `email` for employees' logins; `website` for users' (customers') logins and counts |
+| `hibp-public` | [Have I Been Pwned](https://haveibeenpwned.com)'s breach list: breaches of the organisation's own site, with date and data classes. Data from haveibeenpwned.com, licensed CC BY 4.0 | `website` only, so it needs `--credential-queries email,website` |
+
+Each sends only the root domain, once per run, to that provider; neither contacts the organisation.
+Both are free and need no key. Collection runs before the scan, and the evidence is saved like an
+import. A provider that fails prints `warning: <provider> <domain>: <category>`, is recorded as a
+failed check, and doesn't change the exit status. Ctrl-C during collection changes nothing.
+
+What the free data can't do:
+
+- **It names no accounts.** Findings point at hosts ("identities not reported by provider"), so they
+  tell you where to look and whether a paid provider is worth buying, not whose password to reset.
+- **It has no per-login date.** Hudson Rock's dates are domain-wide, so its findings are medium at most.
+- **Zero means no data.** Hudson Rock answers a domain it knows nothing about with zeros, exactly like
+  a clean one. Such a check is shown as `no data`, never as clean, and makes no finding.
+- **It is a sample.** Hudson Rock lists at most about a hundred URLs. Only rows from a provider's latest
+  complete check make findings; older rows stay in `credentials.json` and the exports as history
+  (`in_latest_snapshot` is `no`). A later failed check retires nothing. Imports keep the usual rule:
+  absence from a later import is not remediation.
+
+Hudson Rock's URLs are unmasked and can hold password-reset tokens: only the host and an explicit port
+are kept. The `hudsonrock` hostname source reads the same answer, so with `--credentials
+hudsonrock-osint` a domain is requested once; it runs by default like the other sources
+(`--exclude hudsonrock` turns it off, without affecting `--credentials`).
 
 ### How it is judged
 
@@ -453,10 +489,10 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, SPF, DMARC, DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registration |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
-| `credentials.json` | With `--credential-import`: the credential evidence (identities included; owner-only). The source of truth for it |
-| `credential-exposures.csv` | Each exposure: its stable ID, provider, identity, relationship, matched service, type, secret types, event date and basis, reference. Contains identities |
+| `credentials.json` | With `--credential-import` or `--credentials`: the credential evidence (identities included; owner-only). The source of truth for it |
+| `credential-exposures.csv` | Each exposure: its stable ID, provider, identity, relationship, matched service, type, secret types, occurrences, event date and basis, reference, and whether it is in its provider's latest snapshot. Contains identities |
 | `credential-summary.csv` | Aggregate counts a provider reported |
-| `credential-checks.csv` | What each provider/domain/kind/operation check covered and its status |
+| `credential-checks.csv` | What each provider/domain/kind/operation check covered, its status, and `no data` when a complete check returned nothing |
 | `credentials.unmerged-<time>.json` | Evidence that couldn't be saved to `credentials.json` (it is unreadable or the save failed), kept owner-only |
 | `assets.json` | The inventory: everything above in full, plus each scan's domains, errors and skipped sources |
 

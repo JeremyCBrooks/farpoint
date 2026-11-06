@@ -16,7 +16,9 @@ from rich.console import Console
 from farpoint import runtime
 from farpoint.assess import Kev, Nvd, assessed, lookup_vulns
 from farpoint.credential_assess import credential_status, current_findings, no_data
-from farpoint.credential_import import CredentialImportError, load_imports
+from farpoint.credential_import import CredentialImportError, build_batch, read_imports
+from farpoint.credential_sources import build_credential_providers
+from farpoint.credential_sources.base import collect_credentials
 from farpoint.credential_store import SIDECAR, load_credentials
 from farpoint.credentials import QUERY_KINDS
 from farpoint.enrich import InternetDb, Rdap
@@ -112,6 +114,14 @@ def _parser() -> argparse.ArgumentParser:
         "Offline: nothing is sent anywhere. With no domains, adds it to --out's inventory",
     )
     p.add_argument(
+        "--credentials",
+        default=None,
+        metavar="PROVIDERS",
+        help="collect credential-exposure evidence from these free providers: hudsonrock-osint (infostealer logs), "
+        "hibp-public (breaches of the site itself; needs --credential-queries website). Sends each root domain to them; "
+        "never contacts the organisation. With no domains, collects for --out's inventory",
+    )
+    p.add_argument(
         "--credential-queries",
         default=None,
         metavar="KINDS",
@@ -194,13 +204,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_sources:
         for s in all_sources:
             print(f"{s.name:<14} {'ready' if s.available() else 'unavailable (missing key or binary)'}")
+        print("credential providers:")
+        for name in build_credential_providers(http, all_sources):
+            print(f"{name:<18} ready (no key needed)")
         return 0
 
     kinds = _credential_kinds(parser, args)
+    providers = _credential_providers(parser, args, http, all_sources, kinds)
     lines = list(args.domains) + (args.file.read_text(encoding="utf-8").splitlines() if args.file else [])
     domains = parse_domains(lines)
-    if not domains and args.credential_import and not lines:
-        return _credentials_only(args, http, kinds)
+    if not domains and (args.credential_import or providers) and not lines:
+        return _credentials_only(args, http, kinds, providers)
     if not domains and args.assess and not lines:
         return _assess_only(args, http)
     if not domains:
@@ -247,7 +261,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stamp = now_stamp()
     try:
-        batch, rejected = load_imports(args.credential_import, domains, kinds, stamp) if args.credential_import else (None, 0)
+        loaded = read_imports(args.credential_import, kinds) if args.credential_import else []
     except CredentialImportError as exc:
         parser.error(str(exc))
 
@@ -256,6 +270,12 @@ def main(argv: list[str] | None = None) -> int:
         prior_report = load_report(args.out)  # fail before a long scan, not after it
     except ReportError as exc:
         parser.error(str(exc))
+    if providers:
+        print(f"credential scope: {', '.join(domains)}", file=sys.stderr)
+    live = _collect_live(providers, domains, kinds, stamp)
+    if live is None:
+        return 130
+    batch, rejected = build_batch(loaded + live, domains, kinds, stamp) if loaded or live else (None, 0)
 
     console = Console(stderr=True)
     live = console.is_terminal and not args.verbose and not args.no_progress
@@ -320,10 +340,43 @@ def main(argv: list[str] | None = None) -> int:
     os._exit(code)
 
 
+def _credential_providers(parser: argparse.ArgumentParser, args, http: httpx.Client, all_sources, kinds: list[str]) -> list:
+    """The --credentials providers, in the order given; argument errors before anything is touched."""
+    if args.credentials is None:
+        return []
+    known = build_credential_providers(http, all_sources)
+    names = _csv(args.credentials)
+    unknown = [n for n in names if n not in known]
+    if unknown or not names:
+        parser.error(f"--credentials: unknown provider(s) {', '.join(unknown) or '(none)'}; choose from {', '.join(known)}")
+    chosen = [known[n] for n in dict.fromkeys(names)]
+    for provider in chosen:
+        if not provider.operations(kinds):
+            parser.error(f"--credentials: {provider.name} checks breaches of the site itself; add --credential-queries email,website")
+    return chosen
+
+
+def _collect_live(providers: list, domains: list[str], kinds: list[str], stamp: str) -> list | None:
+    """The providers' rows, tagged `live`, for `build_batch` ([] with no providers); None when interrupted.
+    A failed provider is a warning naming only provider, domain and category."""
+    if not providers:
+        return []
+    runtime.reset()
+    try:
+        rows = collect_credentials(providers, domains, kinds, stamp)
+    except (KeyboardInterrupt, runtime.Cancelled):
+        print("interrupted: nothing changed", file=sys.stderr)
+        return None
+    failed = {(c["provider"], c["scope_domain"], c["error"]) for c in rows["checks"] if c["status"] == "failed"}
+    for provider, domain, error in sorted(failed):
+        print(f"warning: {provider} {domain}: {error}", file=sys.stderr)
+    return [(rows, "live")]
+
+
 def _credential_kinds(parser: argparse.ArgumentParser, args) -> list[str]:
     """--credential-queries as a list; argument errors are raised before anything is recovered, saved or requested."""
-    if args.credential_queries is not None and not args.credential_import:
-        parser.error("--credential-queries selects what --credential-import (and, later, --credentials) collect; add one of them")
+    if args.credential_queries is not None and not args.credential_import and args.credentials is None:
+        parser.error("--credential-queries selects what --credential-import and --credentials collect; add one of them")
     kinds = _csv("email" if args.credential_queries is None else args.credential_queries)
     unknown = [k for k in kinds if k not in QUERY_KINDS]
     if unknown or not kinds:
@@ -403,9 +456,9 @@ def _assess_only(args, http: httpx.Client) -> int:
     return 0
 
 
-def _credentials_only(args, http: httpx.Client, kinds: list[str]) -> int:
-    """`farpoint --credential-import FILE -o DIR`: add evidence to an existing inventory without scanning.
-    Everything is validated before anything is changed."""
+def _credentials_only(args, http: httpx.Client, kinds: list[str], providers: list) -> int:
+    """`farpoint --credential-import FILE -o DIR` or `--credentials PROVIDERS -o DIR`: add evidence to an existing
+    inventory without scanning. Everything is validated before anything is changed."""
     try:
         report = load_report(args.out)
     except ReportError as exc:
@@ -416,7 +469,7 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str]) -> int:
         return 2
     stamp = now_stamp()
     try:
-        batch, rejected = load_imports(args.credential_import, report["domains"], kinds, stamp)
+        loaded = read_imports(args.credential_import or [], kinds)
     except CredentialImportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -426,6 +479,10 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str]) -> int:
     except ReportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    live = _collect_live(providers, report["domains"], kinds, stamp)
+    if live is None:
+        return 130
+    batch, rejected = build_batch(loaded + live, report["domains"], kinds, stamp)
     judge = None
     if args.assess:
         runtime.reset()
