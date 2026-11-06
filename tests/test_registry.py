@@ -33,3 +33,14 @@ def test_api_keys_come_from_environment():
 def test_hudsonrock_is_a_default_keyless_source(all_sources):
     (source,) = [s for s in select_sources(all_sources) if s.name == "hudsonrock"]
     assert source.available()
+
+
+def test_dnstwist_uses_the_scans_resolvers():
+    # dnstwist runs as its own process: without them it falls back to the system resolver, which
+    # a Droplet's local stub can't keep up with (every lookalike reported as a DNS failure)
+    chosen = {s.name: s for s in build_sources(fake_http({}), env={}, nameservers=["1.1.1.1", "8.8.8.8"])}
+    system = {s.name: s for s in build_sources(fake_http({}), env={})}
+
+    argv = chosen["dnstwist"].argv("example.com")
+    assert argv[argv.index("--nameservers") + 1] == "1.1.1.1,8.8.8.8"
+    assert "--nameservers" not in system["dnstwist"].argv("example.com")

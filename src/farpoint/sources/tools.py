@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from farpoint.models import Observation
 from farpoint.names import extract_hostnames
@@ -70,11 +70,16 @@ class Dnstwist(CommandSource):
     name = "dnstwist"
     progress_waiting = "running (dnstwist prints its results only when it finishes; often minutes)"
 
+    def __init__(self, nameservers: Sequence[str] = (), **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.nameservers = list(nameservers)
+
     def available(self) -> bool:
         return importlib.util.find_spec("dnstwist") is not None
 
     def argv(self, domain: str) -> list[str]:
-        return [sys.executable, "-m", "dnstwist", "--registered", "--format", "json", domain]
+        resolvers = ["--nameservers", ",".join(self.nameservers)] if self.nameservers else []
+        return [sys.executable, "-m", "dnstwist", "--registered", "--format", "json", *resolvers, domain]
 
     def parse(self, output: str, domain: str) -> Iterator[Observation]:
         rows = [r for r in json.loads(output or "[]") if r.get("fuzzer") != "*original"]

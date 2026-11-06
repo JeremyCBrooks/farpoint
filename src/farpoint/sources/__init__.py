@@ -12,7 +12,7 @@ from farpoint.sources.tools import Bbot, Dnstwist, Subfinder
 from farpoint.sources.web import CertSpotter, CrtSh, HackerTarget, Otx, RapidDns, Shodan, UrlScan, VirusTotal, Wayback
 
 
-def build_sources(http: httpx.Client, env: Mapping[str, str]) -> list[Source]:
+def build_sources(http: httpx.Client, env: Mapping[str, str], nameservers: Sequence[str] = ()) -> list[Source]:
     return [
         CrtSh(http),
         CertSpotter(http, env.get("CERTSPOTTER_API_KEY")),
@@ -26,7 +26,7 @@ def build_sources(http: httpx.Client, env: Mapping[str, str]) -> list[Source]:
         VirusTotal(http, env.get("VIRUSTOTAL_API_KEY")),
         Subfinder(),
         Bbot(),
-        Dnstwist(),
+        Dnstwist(nameservers),  # its own process: --nameserver reaches it only by being passed
     ]
 
 

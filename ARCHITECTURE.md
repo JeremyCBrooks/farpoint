@@ -228,7 +228,9 @@ observations. Unavailable sources are listed as skipped, not as failures.
   registered lookalike with dead nameservers also gets only failures, so a few such permutations are
   kept. When at least 10 of them make up more than half of what dnstwist reported, they are treated as
   resolver overload: they are dropped, and the number dropped is recorded as a `SourceFailure` that
-  keeps the rest of the output (a tool's parser can raise one after yielding).
+  keeps the rest of the output (a tool's parser can raise one after yielding). dnstwist is a separate
+  process, so `build_sources` hands it `--nameserver` as its `--nameservers`; without one it uses the
+  system resolver, and a small server's local stub resolver can fail nearly every lookup.
 
 **Partial results.** Each job collects into a list the pipeline can read mid-run (`_drain`). A source
 that fails on page 3 keeps pages 1 and 2. On Ctrl-C, pages already fetched by sources still running are

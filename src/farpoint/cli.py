@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     http = httpx.Client(timeout=args.timeout, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
-    all_sources = build_sources(http, os.environ)
+    all_sources = build_sources(http, os.environ, args.nameserver or ())
     if args.list_sources:
         for s in all_sources:
             print(f"{s.name:<14} {'ready' if s.available() else 'unavailable (missing key or binary)'}")

@@ -82,7 +82,7 @@ Results are then merged into the inventory in the output folder, and every outpu
 | `--list-sources` | Show every source and whether it is usable here (key or binary present). |
 | `--no-resolve` | Skip DNS resolution. Cannot be combined with `--guess`, `--tenants`, `--related` or `--fingerprint`. |
 | `--no-enrich` | Skip the RDAP and Shodan InternetDB lookups for addresses, and the registration and certificate lookups for lookalikes. |
-| `--nameserver IP` | DNS resolver to use instead of the system's. Repeat for several. |
+| `--nameserver IP` | DNS resolver to use instead of the system's, dnstwist included. Repeat for several. |
 | `--related` | Look for other domains the organisation owns. **Not passive.** |
 | `--related-rate N` | Start at most N `--related` lookups a second (default: no limit). Needs `--related`. |
 | `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms, and ask Microsoft how each domain signs in. **Not passive.** |

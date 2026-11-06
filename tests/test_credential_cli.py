@@ -111,7 +111,7 @@ def _refuse_sidecar_writes(monkeypatch):
 
 def _offline_scan(monkeypatch):
     """A scan with no sources, no DNS and no enrichment: it only records the input domain."""
-    monkeypatch.setattr(cli, "build_sources", lambda http, env: [])
+    monkeypatch.setattr(cli, "build_sources", lambda http, env, nameservers=(): [])
     return ["example.com", "--no-resolve", "--no-enrich"]
 
 
@@ -219,7 +219,7 @@ def test_failed_sidecar_and_fallback_saves_keep_a_recoverable_checkpoint(tmp_pat
 
     out = tmp_path / "out"
     path = write_import(tmp_path / "e.json", [exposure_row()])
-    monkeypatch.setattr(cli, "build_sources", lambda http, env: [SeedSource()])
+    monkeypatch.setattr(cli, "build_sources", lambda http, env, nameservers=(): [SeedSource()])
     out.mkdir()
     real = credential_store.write_atomic
 
@@ -325,7 +325,7 @@ def _counting_hudson(monkeypatch):
         return httpx.Response(200, json=hudson_body(employee_urls=[("https://vpn.example.com/remote?token=SENTINEL", 3)], employees=2))
 
     hudson = HudsonRock(fake_http({HUDSON_ROUTE: handler}), backoff=0)
-    monkeypatch.setattr(cli, "build_sources", lambda http, env: [hudson])
+    monkeypatch.setattr(cli, "build_sources", lambda http, env, nameservers=(): [hudson])
     return calls
 
 
