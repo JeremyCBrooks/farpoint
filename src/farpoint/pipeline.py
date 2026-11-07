@@ -24,7 +24,7 @@ from farpoint.probe import Prober, ScopedProber
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
 from farpoint.identity import SignIn, classify, m365_tenant_name, tenant_id
 from farpoint.lookalikes import RECENT_DAYS, LookalikeConfig
-from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
+from farpoint.models import KNOWN, Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
 from farpoint.related import TIERS as RELATED_TIERS
 from farpoint.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
 from farpoint.suffixes import registered as registered_domain
@@ -42,6 +42,7 @@ WILDCARD_PROBES = 3  # random names looked up per parent to tell a wildcard (gue
 RELATED_WORKERS = 8  # concurrent lookups for --related, whose ~1,800 per domain mostly go to registries
 MIN_SHARE = 1 + WILDCARD_PROBES  # a round's share always covers a guess under a parent not yet probed
 IMPLAUSIBLE_MIN, IMPLAUSIBLE_SHARE = 10, 0.5  # this many guesses under a parent, more than this share resolving
+ENRICH_ROUNDS = 3  # enrich, resolve the names it reported, enrich their new addresses: at most this many times
 
 
 @dataclass
@@ -65,6 +66,7 @@ class Pipeline:
     sign_in: SignIn | None = None  # how each scan domain signs in to Microsoft (with `tenants`)
     lookalikes: LookalikeConfig | None = None  # registration and certificate lookups for lookalikes that can mail or serve
     exclusions: Exclusions = field(default_factory=Exclusions)  # --out-of-scope: recorded, never contacted
+    known: Sequence[str] = ()  # the inventory's earlier hosts: resolved again (and fingerprinted while live) though no source reported them
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -78,6 +80,8 @@ class Pipeline:
             inv.add(Observation("input", domain))
         try:
             self._collect(inv)
+            for host in self.known:
+                inv.add(Observation(KNOWN, host))  # in scope only, like everything else
             if self.related:
                 self._related(inv)
             if self.lookup:
@@ -516,20 +520,33 @@ class Pipeline:
             inv.errors.append(SourceError(stage, parent, f"wildcard check got no answer; {unknown}"))
 
     def _enrich(self, inv: Inventory) -> None:
-        public = [ip for ip in inv.ips if is_public_ip(ip)]
-        jobs = {(e.name, ip): (lambda e=e, ip=ip: e.enrich(ip)) for e in self.enrichers for ip in public}
-        done, failed = [0], [0]
+        """Each public address's owner and history. In-scope names an enricher reports join the inventory
+        and are resolved, and the new addresses they resolve to are enriched in turn (a few rounds at most),
+        so later stages see them this run."""
+        done, failed, total = [0], [0], [0]
+        enriched: set[str] = set()
 
         def tick(ok: bool) -> None:
             done[0] += 1
             failed[0] += not ok
-            self.reporter.phase("enriching", done[0], len(jobs), failed[0])
+            self.reporter.phase("enriching", done[0], total[0], failed[0])
 
-        self.reporter.phase("enriching", 0, len(jobs))
-        for (name, ip), details in self._fan_out(inv, jobs, _limits(self.enrichers), on_done=tick):
-            inv.enrich(ip, details)
-            for hostname in details.hostnames:
-                inv.add(Observation(name, hostname, ip))
+        for _ in range(ENRICH_ROUNDS):
+            public = [ip for ip in inv.ips if is_public_ip(ip) and ip not in enriched]
+            if not public:
+                break
+            enriched.update(public)
+            jobs = {(e.name, ip): (lambda e=e, ip=ip: e.enrich(ip)) for e in self.enrichers for ip in public}
+            total[0] += len(jobs)
+            self.reporter.phase("enriching", done[0], total[0], failed[0])
+            known = set(inv.hosts)
+            for (name, ip), details in self._fan_out(inv, jobs, _limits(self.enrichers), on_done=tick):
+                inv.enrich(ip, details)
+                for hostname in details.hostnames:
+                    inv.add(Observation(name, hostname, ip))
+            if not self.lookup or not set(inv.hosts) - known:
+                break
+            self._resolve(inv, skip=known)
 
     def _lookalikes(self, inv: Inventory) -> None:
         """When each lookalike that can handle mail or serve a site was registered, and for recent ones

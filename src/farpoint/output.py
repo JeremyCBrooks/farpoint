@@ -53,6 +53,7 @@ def _host_rows(inv: Inventory) -> list[dict]:
             "sources": sorted(h.sources),
         }
         for h in sorted(inv.hosts.values(), key=lambda h: h.hostname)
+        if h.sources  # an earlier host looked at again that nothing vouched for (it didn't resolve): its row stays as it was
     ]
 
 

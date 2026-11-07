@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from farpoint.names import in_scope, normalize_hostname, normalize_ip
 
 
+KNOWN = ""  # Observation.source for a host the inventory already holds, looked at again: no new witness
+
+
 @dataclass(frozen=True)
 class Observation:
     """One raw fact from one source: 'hostname exists' and optionally 'it pointed at ip'."""
@@ -195,7 +198,8 @@ class Inventory:
         if self.scope_of(hostname) is None:
             return
         host = self.hosts.setdefault(hostname, HostRecord(hostname))
-        host.sources.add(obs.source)
+        if obs.source != KNOWN:
+            host.sources.add(obs.source)
         if ip:
             host.ips.add(ip)
             ip_rec = self.ips.setdefault(ip, IpRecord(ip))

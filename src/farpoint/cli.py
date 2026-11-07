@@ -318,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         rdap_domain=rdap.domain if args.fingerprint else None,
         lookalikes=None if args.no_enrich else LookalikeConfig(NetworkLookalikeLookups(rdap, CrtSh(http, retries=2)), fresh_registrations(prior_report, now_stamp())),
         exclusions=exclusions,
+        known=[] if args.no_resolve else [h["hostname"] for h in (prior_report or {}).get("hosts", [])],
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):

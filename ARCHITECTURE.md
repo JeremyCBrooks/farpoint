@@ -239,6 +239,14 @@ observations. Unavailable sources are listed as skipped, not as failures.
   process, so `build_sources` hands it `--nameserver` as its `--nameservers`; without one it uses the
   system resolver, and a small server's local stub resolver can fail nearly every lookup.
 
+**Earlier hosts.** After discovery, the CLI hands the pipeline every host in `--out`'s inventory
+(`Pipeline.known`). They enter through `Inventory.add` like everything else, so only those under this
+run's scan domains are kept, with the source `models.KNOWN` (no new witness, so it is never recorded).
+They are resolved and, while live, fingerprinted. A host that resolves gains source `dns` and its row
+is updated; one that doesn't is left out of the run report (`output._host_rows` skips hosts with no
+source), so its row stays as the last scan that saw it recorded it. It is still checked for dangling
+CNAMEs.
+
 **Partial results.** Each job collects into a list the pipeline can read mid-run (`_drain`). A source
 that fails on page 3 keeps pages 1 and 2. On Ctrl-C, pages already fetched by sources still running are
 added before saving.
@@ -392,8 +400,10 @@ resumes where it stopped.
 
 **Method** (`enrich.py`, `Pipeline._enrich`). Every public address gets an RDAP lookup (owner and
 network, via the IANA bootstrap registries) and a Shodan InternetDB lookup (historical ports, CVEs,
-hostnames, tags such as `cdn`). In-scope hostnames InternetDB reports join the inventory. Enrichment
-runs after guessing so guessed hosts' addresses are covered.
+hostnames, tags such as `cdn`). In-scope hostnames InternetDB reports join the inventory and are
+resolved, and the new addresses they resolve to are enriched in turn, for at most `ENRICH_ROUNDS` (3)
+rounds, so fingerprinting sees them in the same run. Enrichment runs after guessing so guessed hosts'
+addresses are covered.
 
 **Lookalike triage** (`lookalikes.py`, `Pipeline._lookalikes`). A lookalike's MX and nameservers come
 from dnstwist's output and, for TLD swaps, from `--related`'s own lookups; null MX (`MX 0 .`) and
@@ -822,9 +832,6 @@ against real DNS, `example.com` and NVD.
 
 ### Known limits of the design
 
-- Hostnames InternetDB reports during enrichment join the inventory after resolution, so they are not
-  resolved or fingerprinted until the next scan.
-- Fingerprinting covers hosts found live in this scan, not hosts known only from earlier scans.
 - Technology and CVE matching is by what services reveal and by version; products that hide their
   banner are missed, and CVE matches are leads to confirm.
 - DKIM is checked under common selectors only.

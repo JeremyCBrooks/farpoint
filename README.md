@@ -19,7 +19,9 @@ uv run farpoint example.com                 # passive scan; results in ./out/
 ```
 
 Open `out/hosts.csv` for the hostnames found and `out/ips.csv` for their addresses. Running again
-into the same folder adds to the inventory instead of replacing it.
+into the same folder adds to the inventory instead of replacing it, and looks again at the hosts
+earlier scans found under this scan's domains: they are resolved again and, with `--fingerprint`,
+probed while they are live.
 
 Common next steps:
 
@@ -531,8 +533,6 @@ kill the next scan into the same folder merges it automatically.
   leaves `mta_sts` `unknown`, an excluded nameserver leaves `axfr` blank. The summary counts the live
   hosts left alone. Fingerprints an earlier scan made of a host stay in the inventory until a scan
   looks at it again, so start a new `--out` if an earlier scan reached a host that is now excluded.
-- Fingerprinting covers the hosts found live in the current scan, not hosts known only from earlier
-  scans in `--out`.
 - Technology rules match what services reveal. Products that hide their name or version are missed.
   CVE matches are by version, so treat them as leads to confirm.
 - Favicon hashes are recorded but not matched against known products.
