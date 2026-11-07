@@ -391,6 +391,12 @@ def _this_run(report: dict, stamp: str) -> dict:
     return next((r for r in reversed(report["runs"]) if r["at"] == stamp), {})
 
 
+def _release(checkpoint: Checkpointer, report: dict, stamp: str) -> None:
+    """Clear the run's checkpoint, keeping its credential evidence when neither credentials.json nor a fallback holds it."""
+    run = _this_run(report, stamp).get("credentials", {})
+    checkpoint.clear(keep_credentials=bool(run.get("error") and not run.get("fallback")))
+
+
 def _credential_save_failed(report: dict, stamp: str) -> bool:
     """Warn when this run's credential evidence didn't reach credentials.json; value-free, names the fallback."""
     run = _this_run(report, stamp).get("credentials", {})
@@ -472,11 +478,15 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str], providers: lis
         if judge is None:
             print("interrupted: nothing changed", file=sys.stderr)
             return 130
+    checkpoint = Checkpointer(args.out, credentials=batch)
+    checkpoint.save_credentials()
     try:
         saved = write_outputs(Inventory(report["domains"]), args.out, stamp, assess=judge, credentials=batch)
     except ReportError as exc:
+        checkpoint.clear(keep_credentials=True)  # credential persistence may also have failed
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    _release(checkpoint, saved, stamp)
     _summarise_assessment(saved, args.out)
     _summarise_credentials(args.out, saved, rejected, _this_run(saved, stamp).get("credentials", {}).get("new", 0))
     print(f"output:     {args.out.resolve()}")
@@ -535,8 +545,7 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
         print(f"error: {exc}", file=sys.stderr)
         return 1
     this_run = _this_run(report, stamp)
-    credential_run = this_run.get("credentials", {})
-    checkpoint.clear(keep_credentials=bool(credential_run.get("error") and not credential_run.get("fallback")))
+    _release(checkpoint, report, stamp)
 
     new = this_run["new"]
     new_credentials = this_run.get("credentials", {}).get("new", 0)

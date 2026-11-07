@@ -224,6 +224,38 @@ def test_failed_sidecar_and_fallback_saves_keep_a_recoverable_checkpoint(tmp_pat
     assert not list(out.glob(".credential-checkpoint-*.json"))
 
 
+def test_credentials_only_keeps_a_recoverable_checkpoint_when_sidecar_and_fallback_fail(tmp_path, monkeypatch):
+    from farpoint import credential_store
+    from farpoint.output import recover_checkpoints
+
+    out = tmp_path / "out"
+    write_outputs(sample_inventory(), out, STAMP)
+    argv = _evidence(monkeypatch, exposure_row())
+    real = credential_store.write_atomic
+
+    def fail(path, *args, **kwargs):
+        if path.name == "credentials.json" or path.name.startswith("credentials.unmerged-"):
+            raise PermissionError("injected credential write failure")
+        return real(path, *args, **kwargs)
+
+    with monkeypatch.context() as failing:
+        failing.setattr(credential_store, "write_atomic", fail)
+        assert cli.main([*argv, "-o", str(out)]) == 1
+    assert not (out / "credentials.json").exists()
+    recover_checkpoints(out)
+    assert credential_store.load_credentials(out).data["exposures"][0]["identity"] == "alice@example.com"
+    assert not list(out.glob(".credential-checkpoint-*")) and not list(out.glob(".checkpoint-*"))
+
+
+def test_credentials_only_leaves_no_checkpoint_after_saving(tmp_path, monkeypatch):
+    out = tmp_path / "out"
+    write_outputs(sample_inventory(), out, STAMP)
+    argv = _evidence(monkeypatch, exposure_row())
+    assert cli.main([*argv, "-o", str(out)]) == 0
+    assert (out / "credentials.json").exists()
+    assert not list(out.glob(".credential-checkpoint-*")) and not list(out.glob(".checkpoint-*"))
+
+
 def test_assess_recreates_missing_credential_exports(tmp_path, monkeypatch):
     out = tmp_path / "out"
     write_outputs(sample_inventory(), out, STAMP)

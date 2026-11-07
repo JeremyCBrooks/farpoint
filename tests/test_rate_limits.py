@@ -136,6 +136,13 @@ def test_dns_persistent_timeout_is_unchecked_not_not_resolving():
     assert r.lookup("slow.example.com") == Resolution(timed_out=True)
 
 
+def test_dns_server_failure_is_unchecked_not_not_resolving():
+    # SERVFAIL says nothing about the name: a lame delegation or a struggling resolver, never "no such host"
+    r = _resolver({"A": [dns.resolver.NoNameservers()], "AAAA": [dns.resolver.NoNameservers()]})
+
+    assert r.lookup("flaky.example.com") == Resolution(timed_out=True)
+
+
 def test_dns_nxdomain_is_definitive_even_if_the_other_type_times_out():
     r = _resolver({"A": [dns.resolver.NXDOMAIN()], "AAAA": [dns.exception.Timeout()] * 2})
 

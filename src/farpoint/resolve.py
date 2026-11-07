@@ -12,7 +12,7 @@ import dns.resolver
 class Resolution:
     ips: tuple[str, ...] = ()
     cnames: tuple[str, ...] = ()
-    timed_out: bool = False  # no answer either way: the name is unchecked, not "doesn't resolve"
+    timed_out: bool = False  # no answer either way (a timeout or SERVFAIL): the name is unchecked, not "doesn't resolve"
     exists: bool = False  # the name has records, even if no address (an MX-only name)
 
     @property
@@ -21,8 +21,9 @@ class Resolution:
 
 
 class DnsResolver:
-    """A/AAAA lookups. A timeout is retried; a name that still times out, with no addresses and no NXDOMAIN
-    from the other record type, comes back as `timed_out` so it is recorded as unchecked."""
+    """A/AAAA lookups. A timeout is retried; a name that still times out or gets a server failure (SERVFAIL),
+    with no addresses and no NXDOMAIN from the other record type, comes back as `timed_out` so it is
+    recorded as unchecked."""
 
     def __init__(self, nameservers: list[str] | None = None, timeout: float = 5.0, retries: int = 1) -> None:
         self._resolver = dns.resolver.Resolver()
@@ -53,9 +54,7 @@ class DnsResolver:
             except dns.resolver.NoAnswer:
                 nodata = True
                 continue
-            except dns.resolver.NoNameservers:
-                continue
-            except dns.exception.Timeout:
+            except (dns.resolver.NoNameservers, dns.exception.Timeout):  # SERVFAIL, like a timeout, is no answer
                 timed_out = True
                 continue
             ips.extend(r.to_text() for r in answer)

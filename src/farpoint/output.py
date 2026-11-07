@@ -549,6 +549,18 @@ class Checkpointer:
         """Save `inv` plus `pending` (pages from jobs still running), unless saved within `interval`."""
         if self._last is not None and time.monotonic() - self._last < self.interval:
             return
+        self.save_credentials()
+        extra =[obs for observations in list((pending or {}).values()) for obs in list(observations)]
+        if extra:
+            inv = copy.deepcopy(inv)
+            for obs in extra:
+                inv.add(obs)
+        files.write_atomic(self.path, json.dumps({**run_report(inv), "at": self.started, "interrupted": True}), _FILE_MODE)
+        self._last = time.monotonic()
+
+    def save_credentials(self) -> None:
+        """Take the run's lock and write its credential evidence, once: a run that scans nothing still
+        needs it recoverable in case credentials.json and its fallback both can't be written."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self._lock_fh is None:
             self._lock_fh = open(self.lock_path, "w")
@@ -556,13 +568,6 @@ class Checkpointer:
         if self.credentials is not None and not self._credentials_written:
             files.write_atomic(self.credential_path, json.dumps(self.credentials.to_json()), files.OWNER_MODE)
             self._credentials_written = True
-        extra = [obs for observations in list((pending or {}).values()) for obs in list(observations)]
-        if extra:
-            inv = copy.deepcopy(inv)
-            for obs in extra:
-                inv.add(obs)
-        files.write_atomic(self.path, json.dumps({**run_report(inv), "at": self.started, "interrupted": True}), _FILE_MODE)
-        self._last = time.monotonic()
 
     def clear(self, *, keep_credentials: bool = False) -> None:
         """Release the run's lock, retaining unsaved credential evidence for later recovery when needed."""
