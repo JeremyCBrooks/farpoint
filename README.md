@@ -124,7 +124,7 @@ are then merged into the inventory in the output folder, and every output file i
 | Source | Name for `--only` / `--exclude` | Kind | Key (environment variable) |
 |---|---|---|---|
 | crt.sh | `crtsh` | Certificate transparency | none |
-| CertSpotter | `certspotter` | Certificate transparency | optional `CERTSPOTTER_API_KEY` |
+| CertSpotter | `certspotter` | Certificate transparency (paced: a large domain's pages can take minutes) | optional `CERTSPOTTER_API_KEY` |
 | HackerTarget | `hackertarget` | Passive DNS | optional `HACKERTARGET_API_KEY` |
 | Wayback Machine | `wayback` | Archived URLs | none |
 | AlienVault OTX | `otx` | Passive DNS | optional `OTX_API_KEY` (recommended: anonymous use is heavily rate-limited) |
@@ -422,7 +422,8 @@ ordinary question per port, and the answer is recorded for every name at the add
 
 Results go to `fingerprints.csv` with `transport` `udp` and endpoints like `vpn.example.com:500/udp`.
 A port that answers with ICMP port unreachable is closed and drops its old row; one that stays silent
-is unknown and keeps it. The checks are paced by `--probe-rate` and respect `--out-of-scope`. UDP
+is unknown and keeps it. Every UDP port asked is listed in `ips.csv`'s `udp_probed`, answered or not,
+so a quiet address reads as asked rather than never checked. The checks are paced by `--probe-rate` and respect `--out-of-scope`. UDP
 packets can't carry the `--engagement` ID.
 
 **Not passive:** the organisation's addresses see three datagrams each (four for DNS), and an IDS may
@@ -591,7 +592,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 |---|---|
 | `hosts.txt`, `ips.txt` | Sorted plain lists, for piping into other tools |
 | `hosts.csv` | hostname, resolves, ips, cnames, sources |
-| `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), tags, vulns, hostnames, sources |
+| `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), udp_probed (UDP ports `--udp` asked), tags, vulns, hostnames, sources |
 | `netblocks.csv` | The networks (as RDAP registers them) the inventory's addresses sit in, the organisation's own first: network, org, `hosting` (a cloud, CDN or hosting provider's network, whose other addresses are other customers'), `in_ranges` (yes, partly or no: how much `--ranges` covers), addresses, hosts, live_hosts, ips. Candidates to confirm with the organisation and pass to `--ranges` |
 | `code.csv` | With `--code`: repository, path, keyword, domain, url. Never the file's text |
 | `lookalikes.csv` | Registered lookalike domains: domain, addresses, mail servers, registration date, newest certificate, `capable` (mail, web: what it can do now), `flagged` (ready, parked), sources |
@@ -617,8 +618,10 @@ them after every scan, so edit neither the CSVs nor the lists by hand. Discovere
 across scans, while fingerprints and posture describe the latest look. Findings describe the latest
 `--assess`: a scan without it leaves them as they were.
 
-The folder also holds hidden working files: `.lock` while a scan saves, and `.checkpoint-*` and
-`.credential-checkpoint-*` files while a scan runs (see below). Two scans into one folder don't lose
+The folder also holds hidden working files: `.lock`, which a scan locks while it saves and which is
+left in place afterwards (it holds no data; deleting it while another scan waits on it could let two
+saves run at once), and `.checkpoint-*` and `.credential-checkpoint-*` files while a scan runs (see
+below). Two scans into one folder don't lose
 each other's results. A scan refuses to start if the existing `assets.json` can't be read.
 
 ## Progress, stopping and exit status
@@ -643,7 +646,12 @@ kill the next scan into the same folder merges it automatically.
 ## Scope and limits
 
 - Only names equal to or under a scan domain are kept. CNAME targets outside them are recorded on the
-  host but not followed.
+  host but not followed. DNS record names some datasets list (`_dmarc.example.com`,
+  `s1._domainkey.example.com`) aren't hosts, so they aren't kept either.
+- A WordPress plugin or theme's `?ver=` counts as its version only when it looks like a release
+  (`2.4.0`); a bare number such as `?ver=512` is a build counter, so the version is left unknown.
+- `--related` lookups that fail under one TLD (some registries never answer public resolvers) are one
+  error per TLD in `assets.json`, naming the variants it couldn't check.
 - `--out-of-scope` names and addresses are still recorded from public data, but farpoint never connects
   to them: no port sweep or service check, no mail-server check, no `AXFR` request to an excluded
   nameserver, no MTA-STS fetch from an excluded policy host, and `--guess` tests no name under an

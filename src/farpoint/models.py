@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from farpoint.names import in_scope, normalize_hostname, normalize_ip
+from farpoint.names import in_scope, is_record_name, normalize_hostname, normalize_ip
 
 
 KNOWN = ""  # Observation.source for a host the inventory already holds, looked at again: no new witness
@@ -47,6 +47,7 @@ class IpRecord:
     tags: set[str] = field(default_factory=set)  # Shodan's labels for the address (cdn, cloud, vpn, ...)
     open_ports: set[int] = field(default_factory=set)  # seen open by --fingerprint this run (`ports` is Shodan's history)
     probed_ports: set[int] = field(default_factory=set)  # every port --fingerprint tried this run
+    udp_probed: set[int] = field(default_factory=set)  # every UDP port --udp asked this run, answered or not
 
 
 @dataclass
@@ -203,7 +204,7 @@ class Inventory:
             rec.mx.update(h for raw in obs.mx if (h := normalize_hostname(raw)))  # drops "" (null MX) and "!ServFail"
             rec.ns.update(h for raw in obs.ns if (h := normalize_hostname(raw)))
             return
-        if self.scope_of(hostname) is None:
+        if self.scope_of(hostname) is None or is_record_name(hostname):
             return
         host = self.hosts.setdefault(hostname, HostRecord(hostname))
         if obs.source != KNOWN:

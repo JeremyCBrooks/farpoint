@@ -67,3 +67,26 @@ def test_a_filtering_resolvers_block_page_is_not_where_a_name_points():
 
     assert inv.lookalikes["examp1e.com"].ips == set() and inv.lookalikes["exampel.com"].ips == set()
     assert inv.hosts["www.example.com"].ips == {"192.0.2.7"}  # an IPv4-mapped answer is the IPv4 address
+
+
+def test_dns_record_names_are_not_hosts():
+    from farpoint.models import Inventory, Observation
+
+    inv = Inventory(["example.com"])
+    for name in ("_dmarc.example.com", "selector1._domainkey.example.com", "my_host.example.com"):
+        inv.add(Observation("subfinder", name))
+
+    assert set(inv.hosts) == {"my_host.example.com"}
+
+
+def test_record_names_earlier_scans_kept_as_hosts_are_dropped_on_merge():
+    from farpoint.output import merge_reports
+
+    prior = {"domains": ["example.com"], "hosts": [{"hostname": "_dmarc.example.com", "resolves": False, "ips": [], "cnames": [], "sources": ["shodan"]},
+                                                   {"hostname": "www.example.com", "resolves": True, "ips": [], "cnames": [], "sources": ["crtsh"]}],
+             "ips": [], "lookalikes": [], "runs": [], "updated_at": "2026-10-01T00:00:00Z"}
+    current = {"domains": ["example.com"], "hosts": [], "ips": [], "lookalikes": [], "errors": [], "skipped_sources": []}
+
+    merged = merge_reports(prior, current, "2026-11-01T00:00:00Z")
+
+    assert [h["hostname"] for h in merged["hosts"]] == ["www.example.com"]

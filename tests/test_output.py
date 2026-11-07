@@ -42,6 +42,7 @@ def test_host_and_ip_csvs_flatten_multi_values(tmp_path):
         "network": "93.184.216.0/24",
         "ports": "80 443",
         "open_ports": "",
+        "udp_probed": "",
         "tags": "",
         "vulns": "",
         "hostnames": "www.example.com",

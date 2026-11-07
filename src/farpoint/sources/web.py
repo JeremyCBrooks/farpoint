@@ -38,6 +38,9 @@ class CertSpotter(HttpSource):
     """Certificate transparency via SSLMate CertSpotter (key optional, raises rate limit)."""
 
     name = "certspotter"
+    max_concurrency = 1
+    min_interval = 1.0  # its limits are per hour: pages fetched in a burst run into them part-way
+    max_wait = 600.0  # and its Retry-After says when the window reopens, often minutes away
 
     def collect(self, domain: str) -> Iterator[Observation]:
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}

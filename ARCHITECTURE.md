@@ -131,7 +131,8 @@ Five rules shape every stage:
 Everything a discovery source or stage learns enters as an `Observation`: *source S saw hostname H,
 optionally pointing at IP I*. Sources do nothing else. `Inventory.add` is the single choke point that:
 
-- normalises the hostname and IP (`names.normalize_hostname`, `normalize_ip`), dropping garbage
+- normalises the hostname and IP (`names.normalize_hostname`, `normalize_ip`), dropping garbage and DNS
+  record names (`names.is_record_name`: a label starting with `_`); merging drops ones earlier runs kept
 - routes lookalikes to their own table, normalising their MX and NS values too (null MX and dnstwist's
   `!ServFail` markers are dropped)
 - drops anything out of scope
@@ -220,7 +221,8 @@ observations. Unavailable sources are listed as skipped, not as failures.
 
 - `HttpSource` (`sources/base.py`) provides throttling to the service's published rate (VirusTotal 4 a
   minute, Shodan and Hudson Rock 1 a second), retries with exponential backoff on transport errors, 5xx
-  and 429 (Hudson Rock gets one retry), and honours `Retry-After` up to a cap (60 seconds).
+  and 429 (Hudson Rock gets one retry), and honours `Retry-After` up to a cap (`max_wait`, 60 seconds; CertSpotter, whose limits are hourly,
+  waits up to 10 minutes, and paces its pages a second apart).
 - `CommandSource` wraps external tools (subfinder, bbot, dnstwist), runs them as tracked subprocesses so
   an interrupt kills them, and parses their output. subfinder and bbot are available only if they are
   on PATH and the program that starts them exists: an ELF binary's dynamic loader, or a script's `#!`
@@ -276,7 +278,8 @@ scanned.
    domain under the public suffix list (`co.de`, or a wildcard-only suffix such as `*.za`), as is a
    variant that is already a scan domain, a tenant domain or in scope. An NS lookup decides whether each
    variant is registered. Suffixes where a random name also has NS records are wildcard registries and
-   are dropped.
+   are dropped. NS lookups that fail are grouped by TLD (`_fan_out`'s `on_error`) into one `related-ns`
+   error per TLD naming the variants, since a registry that won't answer fails every name under it.
 3. **Profiling.** Each registered variant, and each scan domain, gets a `Profile`: nameservers, MX and
    A records. Each variant also gets one HTTP request to follow its redirects (HTTPS, then plain HTTP,
    with a fixed 15-second timeout), and addresses it shares with the scan domain get an RDAP owner
@@ -557,7 +560,8 @@ prober which nameserver an `AXFR` address belongs to, so a nameserver excluded b
    whose answer must echo our random initiator cookie, and whose vendor IDs are named from
    `data/ike_vendors.json`. An answer becomes a `ServiceRecord` with `transport` `udp`, keyed
    `host:port/udp` and copied to every name at the address. ICMP port unreachable (`closed`) adds the
-   endpoint to `Inventory.closed`; silence keeps the old row. Assessment judges UDP per address
+   endpoint to `Inventory.closed`; silence keeps the old row. Every port asked goes in
+   `IpRecord.udp_probed` (`ips.csv`'s `udp_probed`), so a silent address shows it was asked. Assessment judges UDP per address
    (`assess.EXPOSED_UDP`, and `open-resolver`), like TCP's exposed ports.
 4. **Domain posture** (`posture.assess_domain`), per scan domain, almost all through DNS:
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
@@ -701,7 +705,9 @@ under a directory lock:
    their checkpoints are 0600.
 
 The directory lock is `.lock` in the output folder (`files.py`), held while a run merges and writes, so
-two scans into one folder serialise their saves instead of losing each other's results.
+two scans into one folder serialise their saves instead of losing each other's results. The file is
+never deleted: a run already waiting on it would otherwise hold a lock on the deleted file while the
+next run locks a new one, and both would save at once.
 
 With credentials, step 0 comes first: the batch is merged into and saved to `credentials.json`
 (owner-only) *before* the inventory is read, so an inventory that can't be merged never costs the

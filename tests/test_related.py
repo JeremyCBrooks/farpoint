@@ -242,7 +242,7 @@ def test_a_lookup_that_times_out_is_an_error_not_unregistered(monkeypatch):
             return super().records(name, rdtype)
 
     inv, _ = run(Flaky(zones={"example.com": {"NS": ["ns1.example.com"]}}))
-    assert ("related-ns", "example.de") in {(e.source, e.target) for e in inv.errors}
+    assert any(e.source == "related-ns" and e.target == ".de" and "example.de" in e.message for e in inv.errors)
     assert "example.de" not in inv.related_checked
 
 
@@ -268,3 +268,21 @@ def test_an_untied_variant_keeps_its_mail_and_nameservers_as_a_lookalike(monkeyp
 
     assert inv.lookalikes["example.io"].mx == {"mx.parking.net"}
     assert inv.lookalikes["example.io"].ns == {"ns.parking.net"}
+
+
+def test_lookups_that_time_out_under_one_suffix_are_one_error(monkeypatch):
+    from farpoint import pipeline
+
+    monkeypatch.setattr(pipeline, "bundled_suffixes", lambda: ("ly", "com.ly", "net.ly", "de"))
+
+    class TimingOut(FakeNet):
+        def records(self, name, rdtype):
+            if name.endswith(".ly"):
+                raise TimeoutError("The resolution lifetime expired")
+            return super().records(name, rdtype)
+
+    inv = Pipeline(sources=[], related=TimingOut({})).run(["example.com"])
+
+    errors = [e for e in inv.errors if e.source == "related-ns"]
+    assert len(errors) == 1 and errors[0].target == ".ly"
+    assert "3 names" in errors[0].message and "example.com.ly" in errors[0].message

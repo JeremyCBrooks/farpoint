@@ -66,3 +66,13 @@ def test_a_login_page_any_site_can_frame_is_a_clickjacking_finding_and_a_protect
     for header in (("x-frame-options", "DENY"), ("content-security-policy", "default-src 'self'; frame-ancestors 'none'")):
         assert "login-frameable" not in findings(service(HttpResult(200, [header], login)))
     assert "login-frameable" not in findings(service(HttpResult(200, [], b"<title>no login here</title>")))
+
+
+def test_a_wordpress_assets_build_counter_is_not_taken_for_its_version():
+    from farpoint.fingerprint import _wordpress_assets
+
+    body = ("/wp-content/plugins/example-popups/assets/site.js?ver=512 "
+            "/wp-content/plugins/example-forms/js/index.js?ver=2.4.0 /wp-content/themes/example-theme/style.css?ver=3.0.2")
+    found = {t.product: t.version for t in _wordpress_assets(body)}
+
+    assert found == {"example-popups": None, "example-forms": "2.4.0", "example-theme": "3.0.2"}

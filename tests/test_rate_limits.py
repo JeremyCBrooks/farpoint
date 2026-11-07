@@ -209,3 +209,20 @@ def test_a_throttled_source_does_not_starve_other_sources():
 
     assert slow.timed_out == 0  # fast finished every domain while slow's jobs were still queued
     assert fast.done == len(domains)
+
+
+def test_certspotter_paces_its_pages_and_waits_out_a_long_retry_after(sleeps):
+    import httpx
+
+    from conftest import fake_http
+    from farpoint.sources.web import CertSpotter
+
+    page = [{"id": "1", "dns_names": ["a.example.com"]}]
+    http = fake_http({"api.certspotter.com/v1/issuances": [httpx.Response(200, json=page), httpx.Response(429, headers={"Retry-After": "300"}),
+                                                           httpx.Response(200, json=[{"id": "2", "dns_names": ["b.example.com"]}]), httpx.Response(200, json=[])]})
+
+    got = {o.hostname for o in CertSpotter(http, "key").collect("example.com")}
+
+    assert got == {"a.example.com", "b.example.com"}
+    assert 300 in sleeps  # CertSpotter's hour-long windows: its Retry-After is waited out, not cut to a minute
+    assert CertSpotter(http, "key").min_interval >= 1

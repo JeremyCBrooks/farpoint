@@ -18,3 +18,14 @@ def test_csv_cells_that_spreadsheets_would_run_are_quoted(tmp_path):
     assert set(cells) == {*(f"'{v}" for v in risky), "plain", "two words"}
     assert all(c.startswith("'") for c in cells if c not in ("plain", "two words"))
     assert json.loads((tmp_path / "assets.json").read_text())["tenants"][0]["evidence"][0].startswith(("+", "-", "=", "@", "\t", "\r"))
+
+
+def test_the_directory_lock_file_outlives_a_save(tmp_path):
+    from farpoint import files
+
+    with files.locked(tmp_path):
+        pass
+
+    # Deleting it would let a run that is already waiting on the old file and one that creates a new
+    # file both hold "the" lock: kept on purpose, and documented as kept.
+    assert (tmp_path / ".lock").exists()

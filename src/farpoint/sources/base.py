@@ -70,6 +70,7 @@ class HttpSource:
     max_pages = 10
     max_concurrency = 4
     min_interval = 0.0
+    max_wait = MAX_WAIT  # the longest Retry-After honoured; a source whose limits reset hourly may wait longer
 
     def __init__(self, http: httpx.Client, api_key: str | None = None, *, retries: int = 4, backoff: float = 2.0) -> None:
         self.http = http
@@ -121,7 +122,7 @@ class HttpSource:
                         raise SourceFailure(f"{reason} {response.reason_phrase} after {attempts} attempts: {response.url}")
                     retry_after = retry_after_seconds(response.headers.get("Retry-After", ""))
                     if retry_after is not None:
-                        wait = min(retry_after, MAX_WAIT)
+                        wait = min(retry_after, self.max_wait)
                 message = f"{reason}, retrying in {wait:.0f}s ({attempt + 2}/{attempts})"
                 log.info("%s: %s", self.name, message)
                 runtime.status(message)

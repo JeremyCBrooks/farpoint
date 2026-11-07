@@ -129,6 +129,7 @@ class Pipeline:
         limits: dict[str, int] | None = None,
         rows: bool = False,
         on_done: Callable[[bool], None] | None = None,
+        on_error: Callable[[Key, Exception], bool] | None = None,
     ) -> Iterable[tuple[Key, object]]:
         """Run jobs concurrently; yield (key, result) for successes, record failures on the inventory.
 
@@ -175,7 +176,10 @@ class Pipeline:
                     continue
                 except Exception as exc:  # one bad source must never sink the run
                     ok = False
-                    message = _record_failure(inv, name, target, exc)
+                    if on_error and on_error(key, exc):  # the stage reports it itself
+                        message = describe(exc)
+                    else:
+                        message = _record_failure(inv, name, target, exc)
                     if rows:
                         self.reporter.job_finished(key, 0, message)
                 else:
@@ -244,7 +248,7 @@ class Pipeline:
         suffixes = bundled_suffixes()
         done, failed, total = [0], [0], [0]
 
-        def run(kind: str, jobs: dict[str, Callable]) -> dict[str, object]:
+        def run(kind: str, jobs: dict[str, Callable], on_error: Callable[[Key, Exception], bool] | None = None) -> dict[str, object]:
             total[0] += len(jobs)
 
             def tick(ok: bool) -> None:
@@ -253,7 +257,7 @@ class Pipeline:
                 self.reporter.phase("related", done[0], total[0], failed[0])
 
             keyed = {(kind, target): fn for target, fn in jobs.items()}
-            return {target: result for (_, target), result in self._fan_out(inv, keyed, {kind: RELATED_WORKERS}, on_done=tick)}
+            return {target: result for (_, target), result in self._fan_out(inv, keyed, {kind: RELATED_WORKERS}, on_done=tick, on_error=on_error)}
 
         tenants = run("related-m365", {d: (lambda d=d: probes.tenant_domains(d)) for d in inv.domains})
         own = set(inv.domains)
@@ -271,7 +275,19 @@ class Pipeline:
             for v in variants(d, suffixes):
                 if v not in own and not inv.scope_of(v):
                     candidates.setdefault(v, []).append(d)
-        ns = run("related-ns", {v: (lambda v=v: probes.records(v, "NS")) for v in candidates})
+        failed_under: dict[str, list[tuple[str, Exception]]] = {}  # TLD -> variants whose NS lookup failed
+
+        def ns_failed(key: Key, exc: Exception) -> bool:
+            failed_under.setdefault(key[1].rsplit(".", 1)[-1], []).append((key[1], exc))
+            return True
+
+        ns = run("related-ns", {v: (lambda v=v: probes.records(v, "NS")) for v in candidates}, ns_failed)
+        for tld, failures in sorted(failed_under.items()):  # one registry that won't answer is one error, not one per name
+            names = sorted(name for name, _ in failures)
+            shown = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+            message = f"NS lookup failed for {len(names)} name{'s' if len(names) != 1 else ''} under .{tld} ({shown}): {describe(failures[0][1])}"
+            log.warning("related-ns failed under .%s: %s", tld, message)
+            inv.errors.append(SourceError("related-ns", f".{tld}", message))
         inv.related_checked.update(ns)  # looked up (a timeout is an error, not "unregistered")
         found_under = {split(v)[1] for v, r in ns.items() if r}
         wild = {s for s, r in run("related-wildcard", {s: (lambda s=s: probes.records(random_under(s), "NS")) for s in found_under}).items() if r}
@@ -843,6 +859,7 @@ class Pipeline:
 
         progress = _Progress(self.reporter, "udp", len(hosts_at))
         for (_, ip), answers in self._fan_out(inv, {("udp", ip): (lambda ip=ip: ask(ip)) for ip in hosts_at}, on_done=progress.tick):
+            inv.ips[ip].udp_probed.update(port for port, _, _ in answers)
             for port, state, service in answers:
                 for host in hosts_at[ip]:
                     if state == "closed":  # ICMP port unreachable: its old row goes; a silence keeps it

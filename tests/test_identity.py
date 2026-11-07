@@ -183,3 +183,8 @@ def test_a_tenant_later_found_to_be_someone_elses_leaves_the_running_inventory(t
     report = write_outputs(later, tmp_path, "2026-10-02T00:00:00Z")
 
     assert not {t["tenant"] for t in report["tenants"]} & {"example.onmicrosoft.com", "example.sharepoint.com"}
+
+
+def test_godaddys_federated_microsoft_365_sign_in_is_named():
+    inv = scan(FakeSignIn({"example.com": realm("Federated", "https://sso.godaddy.com/?realm=pass&app=o365")}), ["example.com"])
+    assert (inv.identity["example.com"]["provider"], inv.identity["example.com"]["sign_in_host"]) == ("GoDaddy", "sso.godaddy.com")

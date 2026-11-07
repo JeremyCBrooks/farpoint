@@ -114,3 +114,16 @@ def test_without_udp_nothing_is_sent_and_a_refused_port_drops_its_old_row(tmp_pa
     endpoints = {r["endpoint"] for r in report["fingerprints"]}
     assert "gw.example.com:123/udp" not in endpoints and "gw.example.com:500/udp" in endpoints
     assert {r["transport"] for r in report["fingerprints"] if r["endpoint"].endswith("/udp")} == {"udp"}
+
+
+def test_every_udp_port_asked_is_recorded_on_its_address_even_when_nothing_answered(tmp_path):
+    pipeline, prober = scenario(UDP_PORTS)
+    prober.udp_ = {}  # all silent
+
+    inv = pipeline.run([D])
+    report = write_outputs(inv, tmp_path, "2026-11-01T00:00:00Z")
+
+    rows = {r["ip"]: r for r in report["ips"]}
+    assert rows[OURS]["udp_probed"] == [53, 123, 500] and "udp_probed" not in rows[CDN]  # the CDN's machine isn't asked
+    assert not [k for k in inv.services if k.endswith("/udp")]
+    assert "udp_probed" in (tmp_path / "ips.csv").read_text().splitlines()[0]

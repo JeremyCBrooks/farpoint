@@ -25,7 +25,7 @@ from farpoint.credentials import CredentialBatch
 from farpoint.files import now_stamp, stamp as _stamp
 from farpoint.guess import RETRY_DAYS
 from farpoint.models import Inventory, Observation, describe
-from farpoint.names import normalize_ip
+from farpoint.names import is_record_name, normalize_ip
 from farpoint.related import TIERS as _RELATED_TIERS
 from farpoint.tenants import TIES as _TIES
 
@@ -74,6 +74,7 @@ def _ip_rows(inv: Inventory) -> list[dict]:
             "sources": sorted(r.sources),
             **({"tags": sorted(r.tags)} if r.tags else {}),
             **({"open_ports": sorted(r.open_ports)} if r.probed_ports else {}),  # only once swept: else keep the last sweep's
+            **({"udp_probed": sorted(r.udp_probed)} if r.udp_probed else {}),  # what --udp asked, answered or not
         }
         for r in (inv.ips[ip] for ip in _ips(inv.ips))
         if not (inv.range_only(r.ip) and not (r.ports or r.open_ports or r.vulns or r.tags))  # an address in --ranges where nothing was found
@@ -140,7 +141,7 @@ class ReportError(Exception):
 
 _ROW_LISTS = {
     "hosts": ("hostname", ("ips", "cnames", "sources")),
-    "ips": ("ip", ("ports", "vulns", "hostnames", "sources", "tags", "open_ports")),
+    "ips": ("ip", ("ports", "vulns", "hostnames", "sources", "tags", "open_ports", "udp_probed")),
     "lookalikes": ("domain", ("ips", "current_ips", "mx", "ns", "sources")),
     "tenants": ("tenant", ("evidence", "ips", "cnames", "hosts")),
     "related": ("domain", ("evidence",)),
@@ -275,7 +276,8 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         }
 
     gone = {h["hostname"] for h in current["hosts"] if h.get("rechecked")}  # no longer exist: no new sighting, so last_seen stays
-    prior_hosts = [{**h, "resolves": False} if h["hostname"] in gone else h for h in prior.get("hosts", [])]
+    prior_hosts = [{**h, "resolves": False} if h["hostname"] in gone else h for h in prior.get("hosts", [])
+                   if not is_record_name(h["hostname"])]  # a DNS record name earlier scans kept as a host
     current_hosts = [h for h in current["hosts"] if not h.get("rechecked")]
     hosts, new_hosts = _merge_rows(prior_hosts, current_hosts, "hostname", host, stamp, prior_stamp)
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
@@ -509,7 +511,7 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
     write("hosts.txt", "".join(f"{h['hostname']}\n" for h in report["hosts"]))
     write("ips.txt", "".join(f"{r['ip']}\n" for r in report["ips"]))
     write("hosts.csv", files.csv_text(report["hosts"], ["hostname", "resolves", "ips", "cnames", "sources", *seen]))
-    write("ips.csv", files.csv_text(report["ips"], ["ip", "org", "network", "ports", "open_ports", "tags", "vulns", "hostnames", "sources", *seen]))
+    write("ips.csv", files.csv_text(report["ips"], ["ip", "org", "network", "ports", "open_ports", "udp_probed", "tags", "vulns", "hostnames", "sources", *seen]))
     from farpoint.lookalikes import capable
 
     flagged = {f["target"]: f["kind"].removeprefix("lookalike-") for f in report.get("findings", []) if f["kind"] in ("lookalike-ready", "lookalike-parked")}

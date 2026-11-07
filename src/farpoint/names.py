@@ -43,6 +43,11 @@ def normalize_ip(raw: str | None) -> str | None:
     return str(ip)
 
 
+def is_record_name(hostname: str) -> bool:
+    """A DNS record's owner name rather than a host: a label starting with _ (_dmarc, s1._domainkey, _sip._tls)."""
+    return any(label.startswith("_") for label in hostname.split("."))
+
+
 def is_public_ip(ip: str) -> bool:
     return ipaddress.ip_address(ip).is_global
 

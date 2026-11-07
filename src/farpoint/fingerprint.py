@@ -705,7 +705,8 @@ def _wordpress_assets(body: str) -> list[Tech]:
     """Plugins and themes a WordPress page loads with ?ver=: their versions, for free."""
     seen: dict[tuple[str, str], str] = {}
     for kind, slug, version in _WP_ASSET.findall(body):
-        seen.setdefault((kind.lower(), slug.lower()), None if _CACHE_BUSTER.fullmatch(version) else version)
+        # A release has a dot (2.4.0); a bare number (?ver=512) is a build counter or timestamp.
+        seen.setdefault((kind.lower(), slug.lower()), version if "." in version.strip(".") and not _CACHE_BUSTER.fullmatch(version) else None)
     return [
         Tech(f"WordPress {kind[:-1]} {slug}", "cms-plugin", None, slug, version, None, f"asset ?ver={version}" if version else "asset path")
         for (kind, slug), version in sorted(seen.items())
