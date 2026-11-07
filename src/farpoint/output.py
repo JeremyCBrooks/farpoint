@@ -96,6 +96,8 @@ def _fingerprint_rows(inv: Inventory) -> list[dict]:
             row["paths"] = s.paths
         if s.archived:
             row["archived"] = {**s.archived, "tech": [t.row() for t in s.archived["tech"]]}
+        if s.transport != "tcp":
+            row["transport"] = s.transport
         rows.append(row)
     return rows
 
@@ -381,6 +383,7 @@ def _fingerprint_csv_rows(report: dict) -> list[dict]:
         archived = r.get("archived")
         rows.append({
             **r,
+            "transport": r.get("transport", "tcp"),
             "tech": [_tech_label(t) for t in r.get("tech", [])],
             "archived": f"{archived['captured']} {archived['source']}: " + ", ".join(sorted(_tech_label(t) for t in archived["tech"])) if archived else None,
             "cert_subject": tls.get("subject"),
@@ -410,7 +413,7 @@ def _posture_csv_rows(report: dict) -> list[dict]:
     return rows
 
 
-FINGERPRINT_FIELDS = ["endpoint", "hostname", "ip", "port", "service", "tech", "status", "title", "server", "location", "signals",
+FINGERPRINT_FIELDS = ["endpoint", "hostname", "ip", "port", "transport", "service", "tech", "status", "title", "server", "location", "signals",
                       "cert_subject", "cert_issuer", "cert_expires", "tls_version", "legacy_tls", "banner", "favicon", "paths", "cookies", "archived"]
 POSTURE_FIELDS = ["domain", "mail_provider", "mx", "spf_all", "spf_lookups", "spf_missing_includes", "dmarc_policy", "dmarc_subdomain_policy",
                   "dmarc_pct", "dkim", "mta_sts", "tls_rpt", "mx_starttls", "ns_providers", "dnssec", "caa", "axfr", "wildcard",

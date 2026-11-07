@@ -32,3 +32,12 @@ def test_example_com_posture():
 def test_nvd_lists_cves_for_an_old_nginx():
     cves = Nvd(httpx.Client(timeout=60)).cves("cpe:2.3:a:f5:nginx:1.18.0")
     assert "CVE-2021-23017" in {c["id"] for c in cves}
+
+
+def test_udp_checks_tell_a_public_resolver_and_an_ntp_server_by_their_answers():
+    from farpoint.udp import check
+
+    state, resolver = check(NetworkProber(), "one.one.one.one", "1.1.1.1", 53)
+    assert state == "open" and resolver.service == "dns" and "open-resolver" in resolver.signals  # a public resolver by design
+    state, ntp = check(NetworkProber(), "time.cloudflare.com", socket.gethostbyname("time.cloudflare.com"), 123)
+    assert state == "open" and ntp.service == "ntp" and ntp.banner.startswith("NTP version")

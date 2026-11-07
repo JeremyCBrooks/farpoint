@@ -16,7 +16,7 @@ from farpoint.fingerprint import (
     parse_ports,
     takeover_platform,
 )
-from farpoint.probe import HttpResult, SmtpResult, TlsResult, UnsupportedHere, cert_summary
+from farpoint.probe import HttpResult, SmtpResult, TlsResult, UdpResult, UnsupportedHere, cert_summary
 
 
 def make_cert(cn="www.example.com", sans=("www.example.com",), days=90, self_signed=False, key_size=2048):
@@ -76,6 +76,11 @@ class FakeProber:
 
     def fetch(self, url):
         return None
+
+    def udp(self, ip, port, payload):
+        self.calls.append(("udp", ip, port))
+        answer = getattr(self, "udp_", {}).get((ip, port))  # (ip, port) -> payload -> UdpResult
+        return answer(payload) if answer else UdpResult("filtered", b"")
 
 
 def test_murmur3_matches_the_reference_implementation():

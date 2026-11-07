@@ -58,6 +58,11 @@ EXPOSED = {
     143: ("low", "IMAP (cleartext)"),
     22: ("low", "SSH"),
 }
+# UDP services --udp asks, by port: what an answer from the internet means.
+EXPOSED_UDP = {
+    500: ("medium", "IKE (an IPsec VPN gateway)"),
+    123: ("low", "NTP"),
+}
 HIGH_PANELS = {"Jenkins", "GitLab", "Grafana", "Kibana", "phpMyAdmin", "Portainer", "Webmin", "cPanel / WHM", "Plesk", "SonarQube",
                "Microsoft Exchange OWA", "Microsoft Exchange ECP", "VMware vCenter / ESXi", "Citrix StoreFront", "Microsoft RD Web Access"}
 MEDIUM_PANELS = {"Atlassian Jira", "Atlassian Confluence", "Swagger UI", "Zimbra", "Roundcube", "SmarterMail", "Microsoft AD FS",
@@ -373,16 +378,31 @@ def _wildcard_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
 def _exposed_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
     """One finding per address and port: the service runs on the machine, whichever names point at it.
     Elasticsearch, Docker, WinRM and Kubernetes answer HTTP and are just as exposed."""
-    rows: dict[tuple[str, int], list[Mapping]] = {}
+    rows: dict[tuple[str, int, str], list[Mapping]] = {}
     for r in fingerprints:
-        if r.get("port") in EXPOSED:
-            rows.setdefault((r.get("ip") or r["hostname"], r["port"]), []).append(r)
+        transport = r.get("transport", "tcp")
+        if r.get("port") in (EXPOSED_UDP if transport == "udp" else EXPOSED):
+            rows.setdefault((r.get("ip") or r["hostname"], r["port"], transport), []).append(r)
+    resolvers: dict[tuple[str, int, str], list[Mapping]] = {}
+    for r in fingerprints:
+        if r.get("transport") == "udp" and "open-resolver" in r.get("signals", []):
+            resolvers.setdefault((r.get("ip") or r["hostname"], r["port"], "udp"), []).append(r)
     out = []
-    for (address, port), found in sorted(rows.items()):
-        level, what = EXPOSED[port]
-        target = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
-        out.extend(_seen([_finding(level, "exposed-service", target, f"{what} answers on port {port} from the internet", sorted(r["hostname"] for r in found))], *found))
+    for (address, port, transport), found in sorted(rows.items()):
+        level, what = (EXPOSED_UDP if transport == "udp" else EXPOSED)[port]
+        target = _address_target(address, port, transport)
+        detail = f"{what} answers on {transport.upper() + ' ' if transport == 'udp' else ''}port {port} from the internet"
+        evidence = sorted(r["hostname"] for r in found) + sorted({r["banner"] for r in found if transport == "udp" and r.get("banner")})
+        out.extend(_seen([_finding(level, "exposed-service", target, detail, evidence)], *found))
+    for (address, port, transport), found in sorted(resolvers.items()):
+        detail = "a DNS server that resolves any name for anyone: abused to amplify DDoS attacks, and open to cache poisoning"
+        out.extend(_seen([_finding("medium", "open-resolver", _address_target(address, port, transport), detail, sorted(r["hostname"] for r in found))], *found))
     return out
+
+
+def _address_target(address: str, port: int, transport: str = "tcp") -> str:
+    target = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+    return f"{target}/udp" if transport == "udp" else target
 
 
 def _days_left(tls: Mapping, today: date) -> int | None:

@@ -57,6 +57,12 @@ class HttpResult:
 
 
 @dataclass
+class UdpResult:
+    state: str  # "open" (something answered), "closed" (ICMP port unreachable) or "filtered" (no answer)
+    data: bytes = b""
+
+
+@dataclass
 class SmtpResult:
     banner: str = ""
     ehlo: list[str] = field(default_factory=list)
@@ -80,6 +86,8 @@ class Prober(Protocol):
     def axfr(self, nameserver_ip: str, domain: str) -> int | None: ...  # records transferred (0: refused, None: no answer)
 
     def fetch(self, url: str) -> HttpResult | None: ...  # a plain HTTPS GET with certificate checks (MTA-STS policy)
+
+    def udp(self, ip: str, port: int, payload: bytes) -> UdpResult: ...  # one datagram out, the first one back (--udp)
 
 
 def _context(verify: bool = False, version: str | None = None) -> ssl.SSLContext:
@@ -269,6 +277,29 @@ class NetworkProber:
             pass
         return result
 
+    def udp(self, ip: str, port: int, payload: bytes) -> UdpResult:
+        """One datagram, and the first answer within the timeout. A connected socket hears ICMP port
+        unreachable as a refusal, which is the only way to tell a closed UDP port from a quiet one."""
+
+        def go() -> UdpResult:
+            family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(CONNECT_TIMEOUT)
+                try:
+                    sock.connect((ip, port))
+                    sock.send(payload)
+                    return UdpResult("open", sock.recv(4096))
+                except ConnectionRefusedError:
+                    return UdpResult("closed")
+                except (TimeoutError, socket.timeout):
+                    return UdpResult("filtered")
+                except ConnectionResetError:  # Windows reports ICMP port unreachable this way
+                    return UdpResult("closed")
+                except OSError:
+                    return UdpResult("filtered")
+
+        return self._guard(ip, go)
+
     def axfr(self, nameserver_ip: str, domain: str) -> int | None:
         def go() -> int | None:
             try:
@@ -361,6 +392,10 @@ class ScopedProber:
     def fetch(self, url: str) -> HttpResult | None:
         self._check(host=urlsplit(url).hostname or "")
         return self._prober.fetch(url)
+
+    def udp(self, ip: str, port: int, payload: bytes) -> UdpResult:
+        self._check(ip=ip)
+        return self._prober.udp(ip, port, payload)
 
     def __getattr__(self, name: str):  # protocol methods added later must be guarded here, not passed through unchecked
         raise AttributeError(f"ScopedProber does not guard {name!r}")

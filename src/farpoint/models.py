@@ -133,10 +133,11 @@ class ServiceRecord:
     tech: list[Tech] = field(default_factory=list)
     signals: list[str] = field(default_factory=list)  # e.g. "directory-listing", "basic-auth", "git-exposed"
     archived: dict | None = None  # when a bot defence hid it: an archived copy's technologies (see fingerprint.from_capture)
+    transport: str = "tcp"  # or "udp" (--udp)
 
     @property
     def key(self) -> str:
-        return f"{self.hostname}:{self.port}"
+        return f"{self.hostname}:{self.port}" + ("/udp" if self.transport == "udp" else "")
 
 
 @dataclass(frozen=True)

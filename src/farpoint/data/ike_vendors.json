@@ -1,0 +1,11 @@
+{
+ "_comment": "IKE vendor ID payloads farpoint.udp names, by hex prefix. Only list an ID whose meaning is published (an RFC, or the vendor's own documentation): a wrong name misleads every report that shows it.",
+ "vendors": [
+  {"prefix": "afcad71368a1f1c96b8696fc77570100", "name": "Dead Peer Detection (RFC 3706)"},
+  {"prefix": "4a131c81070358455c5728f20e95452f", "name": "NAT Traversal (RFC 3947)"},
+  {"prefix": "90cb80913ebb696e086381b5ec427b1f", "name": "NAT Traversal (draft 02)"},
+  {"prefix": "12f5f28c457168a9702d9fe274cc", "name": "Cisco Unity"},
+  {"prefix": "09002689dfd6b712", "name": "XAUTH"},
+  {"prefix": "4048b7d56ebce88525e7de7f00d6c2d3", "name": "IKE Fragmentation"}
+ ]
+}

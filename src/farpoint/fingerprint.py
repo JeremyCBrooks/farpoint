@@ -64,6 +64,7 @@ class FingerprintConfig:
     rate: float | None = 20.0  # connections a second, across all threads
     legacy_tls: bool = True  # also check whether TLS 1.0/1.1 are still accepted (two extra handshakes)
     axfr: bool = True  # ask the nameservers the organisation runs itself for a zone transfer
+    udp: tuple[int, ...] = ()  # UDP ports to ask (--udp: farpoint.udp.UDP_PORTS), on the organisation's own addresses only
 
 
 def parse_ports(value: str) -> tuple[int, ...]:

@@ -98,6 +98,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `--ports LIST` | Ports `--fingerprint` checks. `22,443,8000-8010` replaces the defaults, `+8081` adds to them, `none` checks only 80 and 443. |
 | `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt`). |
 | `--probe-rate N` | Start at most N `--fingerprint` port checks and service checks a second across the scan (default 20). A service check makes several connections. |
+| `--udp` | With `--fingerprint`, also ask UDP DNS (53), NTP (123) and IKE (500) on the organisation's own addresses. See [UDP](#udp---udp). **Not passive.** |
 | `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
 | `--no-axfr` | Skip `--fingerprint`'s zone-transfer (`AXFR`) requests. |
 | `--no-archive` | Don't look up archived copies (Wayback Machine) of the web services a bot defence hid from `--fingerprint`. |
@@ -313,6 +314,29 @@ the user agent `farpoint/0.1 (host fingerprinting)`, or `farpoint/0.1 (host fing
 be logged as reconnaissance. `--ports none` reduces the sweep to ports 80 and 443, and `--no-axfr`
 drops the zone-transfer requests.
 
+### UDP (`--udp`)
+
+TCP connects can't see UDP services, and an IPsec VPN gateway (IKE on UDP 500) answers only there.
+With `--udp`, each of the organisation's own addresses (never a CDN's or SaaS front end's) gets one
+ordinary question per port, and the answer is recorded for every name at the address:
+
+- **DNS (53)**: a recursive query for a name outside the organisation's domains (`www.iana.org`). A
+  server that resolves it for anyone is an open resolver. Also `version.bind`, which many servers
+  answer with their software.
+- **NTP (123)**: one client time request. Never the `monlist` or other mode 6/7 queries that amplify.
+- **IKE (500)**: the first message of an IKEv1 Main Mode exchange with one common proposal. Whether
+  the gateway accepts or refuses, its answer carries vendor IDs (named from
+  `src/farpoint/data/ike_vendors.json`). Never Aggressive Mode, whose answer includes a crackable hash
+  of the pre-shared key.
+
+Results go to `fingerprints.csv` with `transport` `udp` and endpoints like `vpn.example.com:500/udp`.
+A port that answers with ICMP port unreachable is closed and drops its old row; one that stays silent
+is unknown and keeps it. The checks are paced by `--probe-rate` and respect `--out-of-scope`. UDP
+packets can't carry the `--engagement` ID.
+
+**Not passive:** the organisation's addresses see three datagrams each (four for DNS), and an IDS may
+log the IKE proposal as a VPN scan.
+
 ### Bot defences
 
 A bot defence may answer the scan instead of the site. Such a service gets the signal
@@ -345,8 +369,8 @@ is listed in [Finding kinds](#finding-kinds).
 | Level | Examples |
 |---|---|
 | high | RDP, SMB, Telnet, VNC, WinRM, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; managed file transfer (MOVEit, GoAnywhere, Cleo, Axway, Kiteworks); admin panels such as Jenkins, GitLab, Grafana, vCenter and Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); a public bucket listing; expired certificates; subdomain takeovers; no SPF, or SPF `+all`; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register); a parked scan domain still listed in the organisation's Microsoft 365 tenant; a recently registered lookalike that can handle mail or serve a site |
-| medium | Jira, Confluence, Swagger UI and webmail open to the internet; FTP and LDAP; self-signed, mismatched, weak-key or SHA-1 certificates; certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves); TLS 1.0/1.1; plain HTTP with no HTTPS; directory listings; default server pages; Basic or NTLM login prompts; stack traces; CORS open to any origin with credentials; dev/test/staging hosts on the internet; SPF that doesn't reject, is duplicated or needs over 10 lookups; DMARC `pct` below 100 or `sp=none`; a broken MTA-STS policy; mail servers without STARTTLS; weak DKIM keys; BGP open to the internet; a parked scan domain; a recently registered lookalike that is only parked; sign-in federated to a self-hosted ADFS server |
-| low | missing HSTS, or HTTP not redirecting to HTTPS; cookies set over HTTPS without `Secure`; a login page any site can frame; wildcard certificates covering the organisation's names; a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS); SPF at exactly 10 lookups; internal names in certificates; broken CNAMEs; no DNSSEC, CAA, MTA-STS or DKIM found; a single nameserver; no transfer lock; version-revealing headers or plugin versions; POP3, IMAP and SSH open |
+| medium | Jira, Confluence, Swagger UI and webmail open to the internet; FTP and LDAP; an open DNS resolver and an IPsec VPN gateway (IKE) found by `--udp`; self-signed, mismatched, weak-key or SHA-1 certificates; certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves); TLS 1.0/1.1; plain HTTP with no HTTPS; directory listings; default server pages; Basic or NTLM login prompts; stack traces; CORS open to any origin with credentials; dev/test/staging hosts on the internet; SPF that doesn't reject, is duplicated or needs over 10 lookups; DMARC `pct` below 100 or `sp=none`; a broken MTA-STS policy; mail servers without STARTTLS; weak DKIM keys; BGP open to the internet; a parked scan domain; a recently registered lookalike that is only parked; sign-in federated to a self-hosted ADFS server |
+| low | missing HSTS, or HTTP not redirecting to HTTPS; cookies set over HTTPS without `Secure`; a login page any site can frame; wildcard certificates covering the organisation's names; a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS); SPF at exactly 10 lookups; internal names in certificates; NTP open (`--udp`); broken CNAMEs; no DNSSEC, CAA, MTA-STS or DKIM found; a single nameserver; no transfer lock; version-revealing headers or plugin versions; POP3, IMAP and SSH open |
 
 Each product version fingerprinting identified is checked against NVD for CVEs and against CISA's
 Known Exploited Vulnerabilities catalogue. NVD answers are cached in `assets.json` for a week. Without
@@ -482,7 +506,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames |
-| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed |
+| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, transport (`tcp`, or `udp` with `--udp`), service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed |
 | `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, MX, SPF (record, `all`, lookups, missing includes), DMARC (record, policy, subdomain policy, pct), DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registrar, created, expires, transfer lock |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
@@ -580,7 +604,7 @@ The `kind` column of `findings.csv`, by area. Where a kind can take more than on
 
 | Area | Kinds |
 |---|---|
-| Exposed services | `exposed-service` (high, medium or low by port), `edge-device`, `file-transfer`, `admin-interface` (high or medium by product), `non-production-exposed` |
+| Exposed services | `exposed-service` (high, medium or low by port; UDP ones as `ip:port/udp`), `open-resolver`, `edge-device`, `file-transfer`, `admin-interface` (high or medium by product), `non-production-exposed` |
 | Software | `end-of-life`, `known-vulnerable-version` (by CVSS and exploitation), `shodan-cves`, `plugin-version` |
 | Web | `git-exposed`, `bucket-listing`, `directory-listing`, `default-page`, `basic-auth`, `ntlm-auth`, `error-detail`, `cors-any-origin-with-credentials`, `version-disclosure`, `cleartext-http`, `no-https-redirect`, `no-hsts`, `cookie-without-secure`, `login-frameable` |
 | Certificates and TLS | `certificate-expired`, `certificate-expiring`, `certificate-self-signed`, `certificate-mismatch`, `weak-certificate-key`, `weak-certificate-signature`, `wildcard-certificate`, `internal-names-in-certificate`, `legacy-tls` |

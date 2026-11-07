@@ -32,6 +32,7 @@ from farpoint.names import Exclusions, is_public_ip, normalize_ip
 from farpoint.progress import NullReporter, ProgressReporter
 from farpoint.resolve import Resolution
 from farpoint.sources.base import Source
+from farpoint.udp import check as udp_check
 from farpoint.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, named_after, org_modifiers, org_tokens, plan, random_name, registered
 
 log = logging.getLogger(__name__)
@@ -698,9 +699,40 @@ class Pipeline:
                     inv.dangling[service.hostname] = {"reason": f"serves {signal.split(':', 1)[1]}'s page for an unclaimed name", "claimable": True}
         # A name that resolves now has nothing dangling, unless its page just said otherwise (above).
         inv.dangling_checked.update(h for h, r in inv.hosts.items() if r.resolves)
+        if config.udp:
+            self._udp(inv, {ip: hosts for ip, hosts in hosts_at.items() if ip not in shared}, pace)
         if self.archive:
             self._archived(inv)
         self._posture(inv)
+
+    def _udp(self, inv: Inventory, hosts_at: Mapping[str, list[str]], pace: Callable[[], None]) -> None:
+        """--udp: each of the organisation's own addresses asked once per UDP port (farpoint.udp), the
+        answer recorded for every name there. A shared front end's address is the provider's machine: never asked."""
+        ports = self.fingerprint.udp
+
+        def ask(ip: str) -> list[tuple[int, str, object]]:
+            found = []
+            for port in ports:
+                pace()
+                runtime.status(f"udp {port}")
+                found.append((port, *udp_check(self.prober, hosts_at[ip][0], ip, port)))
+            return found
+
+        done, failed = [0], [0]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("udp", done[0], len(hosts_at), failed[0])
+
+        self.reporter.phase("udp", 0, len(hosts_at))
+        for (_, ip), answers in self._fan_out(inv, {("udp", ip): (lambda ip=ip: ask(ip)) for ip in hosts_at}, on_done=tick):
+            for port, state, service in answers:
+                for host in hosts_at[ip]:
+                    if state == "closed":  # ICMP port unreachable: its old row goes; a silence keeps it
+                        inv.closed.add(f"{host}:{port}/udp")
+                    elif service is not None:
+                        inv.services[f"{host}:{port}/udp"] = for_host(service, host)
 
     def _archived(self, inv: Inventory) -> None:
         """For web services a bot defence hid, what the newest archived copy of the host's homepage shows.

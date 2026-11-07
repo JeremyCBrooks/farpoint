@@ -111,6 +111,9 @@ def test_cli_checks_its_new_flags(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cli.main(["example.com", "--fingerprint", "--ports", "1-65535", "-o", str(tmp_path)])
     assert "too wide" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        cli.main(["example.com", "--udp", "-o", str(tmp_path)])
+    assert "--udp is part of --fingerprint" in capsys.readouterr().err
     assert cli.main(["--assess", "-o", str(tmp_path / "empty")]) == 2
     assert "no inventory" in capsys.readouterr().err
 

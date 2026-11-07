@@ -494,6 +494,15 @@ names). Posture turns `OutOfScope` into unknown answers: `mta_sts` `unknown`, `a
    `archived` field, never in `tech`, so it feeds no CVE lookup or finding: `assess.technologies` lists
    it with `seen` `archive`, without end-of-life or CVE counts. A copy that is itself a bot defence's
    page is dropped. `--no-archive` leaves the `Archive` out.
+   **UDP** (`udp.py`, `Pipeline._udp`, with `--udp`). After the TCP services, each non-shared address
+   is asked once per port in `FingerprintConfig.udp` through `Prober.udp` (one datagram, the first one
+   back): DNS gets a recursive query for `udp.RECURSION_TEST_NAME` (an answer with RA set is
+   `open-resolver`) and `version.bind`; NTP a mode 3 client request; IKE an IKEv1 Main Mode proposal
+   whose answer must echo our random initiator cookie, and whose vendor IDs are named from
+   `data/ike_vendors.json`. An answer becomes a `ServiceRecord` with `transport` `udp`, keyed
+   `host:port/udp` and copied to every name at the address. ICMP port unreachable (`closed`) adds the
+   endpoint to `Inventory.closed`; silence keeps the old row. Assessment judges UDP per address
+   (`assess.EXPOSED_UDP`, and `open-resolver`), like TCP's exposed ports.
 4. **Domain posture** (`posture.assess_domain`), per scan domain, almost all through DNS:
    - mail: provider from MX; SPF (`all`, lookup count against RFC 7208's 10, includes that don't
      exist or sit on unregistered domains); DMARC `p`, `sp`, `pct`; DKIM key sizes under 32 common
@@ -821,6 +830,7 @@ results reached the inventory or its fallback can still be cleared.
 | `bot_defences.json` | fingerprinting, posture | bot defence pages: vendor, challenge or block, matchers |
 | `takeover.json` | fingerprinting | claimable platforms and their "unclaimed" page signatures |
 | `dkim_selectors.txt` | posture | the common DKIM selectors checked |
+| `ike_vendors.json` | `--udp` | IKE vendor ID prefixes and what they name |
 | `dns_providers.json` | posture | managed DNS services that can't allow a zone transfer, so aren't asked |
 | `eol.json` | assessment | end-of-life dates by product and version |
 | `parking.json` | assessment | parking services by parking nameserver, mail and parked-page address; registrars' and DNS hosts' shared default nameservers |
