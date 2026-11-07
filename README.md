@@ -78,6 +78,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `domains` | Root domains to map. A URL is accepted and reduced to its hostname. |
 | `-f, --file FILE` | Read domains from a file, one per line. Lines starting with `#` are ignored. |
 | `-o, --out DIR` | Output folder and inventory (default `./out`). |
+| `--out-of-scope ENTRIES` | Names and addresses your authorisation carves out, comma-separated, or `@FILE` with one per line (`#` comments allowed). Repeatable. A name covers itself and every name under it (`shop.example.com` covers `eu.shop.example.com`); an address or range (`198.51.100.0/24`) covers every name that resolves into it. See [Scope and limits](#scope-and-limits). |
 | `--only LIST` | Run only these discovery sources, comma-separated, by the names in the [Discovery](#discovery) table. |
 | `--exclude LIST` | Skip these discovery sources. `dnstwist` is the slowest (several minutes). |
 | `--list-sources` | Show every source and whether it is usable here (key or binary present). |
@@ -523,6 +524,13 @@ kill the next scan into the same folder merges it automatically.
 
 - Only names equal to or under a scan domain are kept. CNAME targets outside them are recorded on the
   host but not followed.
+- `--out-of-scope` names and addresses are still recorded from public data, but farpoint never connects
+  to them: no port sweep or service check, no mail-server check, no `AXFR` request to an excluded
+  nameserver, no MTA-STS fetch from an excluded policy host, and `--guess` tests no name under an
+  excluded one. A check that was skipped this way is unknown, never missing: an excluded MTA-STS host
+  leaves `mta_sts` `unknown`, an excluded nameserver leaves `axfr` blank. The summary counts the live
+  hosts left alone. Fingerprints an earlier scan made of a host stay in the inventory until a scan
+  looks at it again, so start a new `--out` if an earlier scan reached a host that is now excluded.
 - Fingerprinting covers the hosts found live in the current scan, not hosts known only from earlier
   scans in `--out`.
 - Technology rules match what services reveal. Products that hide their name or version are missed.

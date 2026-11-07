@@ -27,7 +27,7 @@ from farpoint.guess import GuessConfig
 from farpoint.identity import MicrosoftSignIn
 from farpoint.lookalikes import LookalikeConfig, NetworkLookalikeLookups, fresh_registrations
 from farpoint.models import Inventory
-from farpoint.names import parse_domains
+from farpoint.names import Exclusions, parse_domains
 from farpoint.pipeline import Pipeline
 from farpoint.output import Checkpointer, ReportError, load_report, now_stamp, preview, recover_checkpoints, rewrite, write_outputs
 from farpoint.archive import WaybackArchive
@@ -47,6 +47,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("domains", nargs="*", help="root domains to map")
     p.add_argument("-f", "--file", type=Path, help="file with one domain per line (# comments allowed)")
     p.add_argument("-o", "--out", type=Path, default=Path("out"), help="output directory (default: ./out)")
+    p.add_argument(
+        "--out-of-scope",
+        action="append",
+        default=[],
+        metavar="ENTRIES",
+        help="names (and everything under them) and addresses or ranges the authorisation carves out, comma-separated, "
+        "or @FILE with one per line; repeatable. They are still recorded from public data, never contacted",
+    )
     p.add_argument("--only", default="", help="comma-separated sources to run (see --list-sources)")
     p.add_argument("--exclude", default="", help="comma-separated sources to skip")
     p.add_argument("--no-resolve", action="store_true", help="skip DNS resolution of discovered names")
@@ -130,6 +138,19 @@ def _parser() -> argparse.ArgumentParser:
 
 def _csv(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+def parse_exclusions(values: list[str]) -> Exclusions:
+    """--out-of-scope values: comma-separated entries, or @FILE with one per line (# comments allowed).
+    Raises ValueError naming a bad entry, OSError for an unreadable file."""
+    entries: list[str] = []
+    for value in values:
+        if value.startswith("@"):
+            lines = Path(value[1:]).read_text(encoding="utf-8").splitlines()
+            entries += [line.split("#", 1)[0].strip() for line in lines]
+        else:
+            entries += _csv(value)
+    return Exclusions.parse(e for e in entries if e)
 
 
 def load_dotenv(path: Path) -> None:
@@ -250,6 +271,10 @@ def main(argv: list[str] | None = None) -> int:
         sources = select_sources(all_sources, only=_csv(args.only), exclude=_csv(args.exclude))
     except ValueError as exc:
         parser.error(str(exc))
+    try:
+        exclusions = parse_exclusions(args.out_of_scope)
+    except (ValueError, OSError) as exc:
+        parser.error(f"--out-of-scope: {exc}")
 
     stamp = now_stamp()
     try:
@@ -287,11 +312,12 @@ def main(argv: list[str] | None = None) -> int:
         related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
         related_rate=args.related_rate,
         fingerprint=fingerprint if args.fingerprint else None,
-        prober=NetworkProber(engagement=args.engagement) if args.fingerprint else None,
+        prober=NetworkProber(engagement=args.engagement, exclusions=exclusions) if args.fingerprint else None,
         archive=WaybackArchive(http, retries=2) if args.fingerprint and not args.no_archive else None,
         dns=resolver,
         rdap_domain=rdap.domain if args.fingerprint else None,
         lookalikes=None if args.no_enrich else LookalikeConfig(NetworkLookalikeLookups(rdap, CrtSh(http, retries=2)), fresh_registrations(prior_report, now_stamp())),
+        exclusions=exclusions,
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -569,6 +595,8 @@ def _save_and_summarise(inv, out: Path, checkpoint: Checkpointer, stamp: str | N
     if inv.services or judge:
         _summarise_assessment(report, out)
     _summarise_credentials(out, report, rejected, new_credentials)
+    if inv.excluded:
+        print(f"excluded:   {plural(len(inv.excluded), 'live host')} left alone (--out-of-scope)")
     if inv.skipped:
         print(f"skipped:    {', '.join(inv.skipped)} (no API key / not installed)")
     if inv.errors:

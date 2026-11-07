@@ -171,6 +171,7 @@ class Inventory:
         self.identity: dict[str, dict] = {}  # scan domain -> how it signs in to Microsoft (farpoint.identity)
         self.dangling: dict[str, dict] = {}  # hostname -> {"reason", "claimable"}: a CNAME into nothing
         self.dangling_checked: set[str] = set()  # hostnames checked for that this run
+        self.excluded: set[str] = set()  # live hosts --fingerprint left alone: --out-of-scope by name or address
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial

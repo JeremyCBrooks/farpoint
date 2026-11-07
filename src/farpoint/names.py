@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 _LABEL = r"(?!-)[a-z0-9_-]{1,63}(?<!-)"
@@ -48,6 +49,49 @@ def is_public_ip(ip: str) -> bool:
 
 def in_scope(hostname: str, domain: str) -> bool:
     return hostname == domain or hostname.endswith("." + domain)
+
+
+@dataclass(frozen=True)
+class Exclusions:
+    """What the authorisation carves out of the scan domains (--out-of-scope): a name excludes itself and
+    every name under it, an address or range every address in it. Excluded hosts are still recorded
+    from public data; farpoint never contacts them."""
+
+    names: frozenset[str] = frozenset()
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+
+    @classmethod
+    def parse(cls, entries: Iterable[str]) -> Exclusions:
+        names, networks = set(), []
+        for raw in entries:
+            entry = raw.strip()
+            if not entry:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(entry, strict=False))
+                continue
+            except ValueError:
+                pass
+            name = normalize_hostname(entry)
+            if name is None or entry.startswith("*"):
+                raise ValueError(f"{entry!r} is not a hostname or address range")
+            names.add(name)
+        return cls(frozenset(names), tuple(networks))
+
+    def __bool__(self) -> bool:
+        return bool(self.names or self.networks)
+
+    def host(self, hostname: str) -> bool:
+        return any(in_scope(hostname, n) for n in self.names)
+
+    def ip(self, ip: str) -> bool:
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped
+        return any(addr in net for net in self.networks if net.version == addr.version)
 
 
 def extract_hostnames(text: str, domain: str) -> set[str]:

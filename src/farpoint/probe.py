@@ -146,9 +146,10 @@ class NetworkProber:
     """The real network. At most PER_IP connections to one address at a time; every call checks for Ctrl-C.
     `engagement` goes in the User-Agent so the organisation can tell who is probing (see user_agent)."""
 
-    def __init__(self, timeout: float = READ_TIMEOUT, engagement: str | None = None) -> None:
+    def __init__(self, timeout: float = READ_TIMEOUT, engagement: str | None = None, exclusions=None) -> None:
         self.timeout = timeout
         self.user_agent = user_agent(engagement)
+        self.exclusions = exclusions  # names.Exclusions: addresses never connected to, whichever name led there
         self._lock = threading.Lock()
         self._slots: dict[str, threading.BoundedSemaphore] = {}
 
@@ -158,6 +159,8 @@ class NetworkProber:
 
     def _guard(self, ip: str, fn: Callable):
         runtime.check()
+        if self.exclusions and self.exclusions.ip(ip):
+            raise OutOfScope(ip)
         with self._slot(ip):
             runtime.count_request()
             return fn()
@@ -314,6 +317,53 @@ class NetworkProber:
             except _Unreachable:
                 continue
         return None
+
+
+class OutOfScope(Exception):
+    """The name or address was carved out of the scan (--out-of-scope): nothing was sent, so the answer is unknown."""
+
+
+class ScopedProber:
+    """`prober`, refusing every call to an excluded name or address (raises OutOfScope before anything is sent).
+    The stages leave excluded hosts out of their plans; this makes sure nothing reaches one anyway."""
+
+    def __init__(self, prober: Prober, exclusions) -> None:
+        self._prober, self._ex = prober, exclusions
+
+    def _check(self, host: str | None = None, ip: str | None = None) -> None:
+        if (host and self._ex.host(host.lower().rstrip("."))) or (ip and self._ex.ip(ip)):
+            raise OutOfScope(host or ip)
+
+    def connect(self, ip: str, port: int) -> str:
+        self._check(ip=ip)
+        return self._prober.connect(ip, port)
+
+    def banner(self, ip: str, port: int, wait: float = 3.0) -> bytes:
+        self._check(ip=ip)
+        return self._prober.banner(ip, port, wait)
+
+    def tls(self, host: str, ip: str, port: int, version: str | None = None) -> TlsResult | None:
+        self._check(host, ip)
+        return self._prober.tls(host, ip, port, version)
+
+    def http(self, scheme: str, host: str, ip: str, port: int, path: str = "/") -> HttpResult | None:
+        self._check(host, ip)
+        return self._prober.http(scheme, host, ip, port, path)
+
+    def smtp(self, host: str, ip: str, port: int = 25) -> SmtpResult:
+        self._check(host, ip)
+        return self._prober.smtp(host, ip, port)
+
+    def axfr(self, nameserver_ip: str, domain: str) -> int | None:
+        self._check(ip=nameserver_ip)
+        return self._prober.axfr(nameserver_ip, domain)
+
+    def fetch(self, url: str) -> HttpResult | None:
+        self._check(host=urlsplit(url).hostname or "")
+        return self._prober.fetch(url)
+
+    def __getattr__(self, name: str):  # protocol methods added later must be guarded here, not passed through unchecked
+        raise AttributeError(f"ScopedProber does not guard {name!r}")
 
 
 class _Unreachable(Exception):

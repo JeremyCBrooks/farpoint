@@ -20,7 +20,7 @@ from farpoint.fingerprint import (
     takeover_platform, was_turned_away,
 )
 from farpoint.posture import Dns, assess_domain, check_mx, hosted
-from farpoint.probe import Prober
+from farpoint.probe import Prober, ScopedProber
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
 from farpoint.identity import SignIn, classify, m365_tenant_name, tenant_id
 from farpoint.lookalikes import RECENT_DAYS, LookalikeConfig
@@ -28,7 +28,7 @@ from farpoint.models import Inventory, Observation, RelatedRecord, SourceError, 
 from farpoint.related import TIERS as RELATED_TIERS
 from farpoint.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
 from farpoint.suffixes import registered as registered_domain
-from farpoint.names import is_public_ip, normalize_ip
+from farpoint.names import Exclusions, is_public_ip, normalize_ip
 from farpoint.progress import NullReporter, ProgressReporter
 from farpoint.resolve import Resolution
 from farpoint.sources.base import Source
@@ -64,6 +64,7 @@ class Pipeline:
     rdap_domain: Callable[[str], Mapping] | None = None  # a registered domain's RDAP record
     sign_in: SignIn | None = None  # how each scan domain signs in to Microsoft (with `tenants`)
     lookalikes: LookalikeConfig | None = None  # registration and certificate lookups for lookalikes that can mail or serve
+    exclusions: Exclusions = field(default_factory=Exclusions)  # --out-of-scope: recorded, never contacted
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -71,6 +72,8 @@ class Pipeline:
 
         Cancellation is process-wide (see farpoint.runtime): call runtime.reset() before re-running."""
         inv = Inventory(domains)
+        if self.exclusions and self.prober and not isinstance(self.prober, ScopedProber):
+            self.prober = ScopedProber(self.prober, self.exclusions)  # whatever a stage plans, nothing reaches an excluded host
         for domain in inv.domains:
             inv.add(Observation("input", domain))
         try:
@@ -412,7 +415,7 @@ class Pipeline:
                     hosts[h] = hosts.get(h, set()) | r.cnames
                 tenants = {**config.tenants, **{t.hostname: t.domain for t in inv.tenants.values() if t.verified}}
                 model = Taxonomy(hosts, inv.domains, config.prior, weak={h for h in hosts if not has_address(h)}, tenants=tenants)
-            batch, probing, spent = self._pick(model, inv.domains, tried, caps, wildcards)
+            batch, probing, spent = self._pick(model, inv.domains, tried, caps, wildcards, self.exclusions.host)
             for d, n in spent.items():
                 budget[d] -= n
             if not batch:
@@ -454,11 +457,12 @@ class Pipeline:
 
     @staticmethod
     def _pick(
-        model: Taxonomy, domains: Sequence[str], tried: set[str], caps: Mapping[str, int], wildcards: Mapping[str, object]
+        model: Taxonomy, domains: Sequence[str], tried: set[str], caps: Mapping[str, int], wildcards: Mapping[str, object],
+        excluded: Callable[[str], bool] = lambda name: False,
     ) -> tuple[dict[str, str], set[str], dict[str, int]]:
         """The best untried candidates per domain ({name: domain}), the parents still to probe for
         wildcards, and the lookups that costs per domain (one per candidate plus the probes it needs),
-        at most `caps`."""
+        at most `caps`. Names `excluded` (--out-of-scope) are never offered."""
         batch: dict[str, str] = {}
         probing: set[str] = set()
         spent = dict.fromkeys(domains, 0)
@@ -469,7 +473,7 @@ class Pipeline:
                     break
                 parent = parent_of(name)
                 cost = 1 + (WILDCARD_PROBES if parent not in wildcards and parent not in probing else 0)
-                if name in tried or cost > left:
+                if name in tried or cost > left or excluded(name):
                     continue
                 spent[domain] += cost
                 if parent not in wildcards:
@@ -605,8 +609,13 @@ class Pipeline:
         for host, record in sorted(inv.hosts.items()):
             # Only what DNS answers now: an address from passive-DNS history may belong to someone else today.
             public = sorted((ip for ip in record.resolved_ips if ip in inv.ips and is_public_ip(ip)), key=_ip_key)
-            if record.resolves and public:
-                targets[host] = public[0]
+            if not (record.resolves and public):
+                continue
+            allowed = [] if self.exclusions.host(host) else [ip for ip in public if not self.exclusions.ip(ip)]
+            if allowed:
+                targets[host] = allowed[0]
+            else:
+                inv.excluded.add(host)
         hosts_at: dict[str, list[str]] = {}
         for host, ip in targets.items():
             hosts_at.setdefault(ip, []).append(host)
@@ -729,7 +738,7 @@ class Pipeline:
                 inv.dangling[target] = result
         # Only mail servers named under the organisation's own domains: a hosted provider's or an ISP's are theirs.
         mx_hosts = sorted({m for p in inv.posture.values() for m in p.get("mx", []) if own(m) and not hosted(m)})
-        mx_jobs = {("mx", m): (lambda m=m: _mx(self.lookup, self.prober, m)) for m in mx_hosts}
+        mx_jobs = {("mx", m): (lambda m=m: _mx(self.lookup, self.prober, m, self.exclusions)) for m in mx_hosts}
         total[0] += len(mx_jobs)
         health = {m: r for (_, m), r in self._fan_out(inv, mx_jobs, on_done=counter) if r}
         for row in inv.posture.values():
@@ -768,9 +777,11 @@ def _dangling(dns: Dns, inv: Inventory, host: str) -> dict | None:
     return {"reason": f"CNAME to {target}, which does not exist", "claimable": False}
 
 
-def _mx(lookup: Callable[[str], Resolution], prober: Prober, host: str) -> dict | None:
+def _mx(lookup: Callable[[str], Resolution], prober: Prober, host: str, exclusions: Exclusions = Exclusions()) -> dict | None:
+    if exclusions.host(host):
+        return None
     res = lookup(host)
-    ip = next((ip for ip in res.ips if is_public_ip(ip)), None)
+    ip = next((ip for ip in res.ips if is_public_ip(ip) and not exclusions.ip(ip)), None)
     return check_mx(prober, host, ip) if ip else None
 
 

@@ -23,7 +23,7 @@ from typing import Protocol
 from farpoint import runtime
 from farpoint.models import describe
 from farpoint.fingerprint import turned_away
-from farpoint.probe import Prober, cert_summary
+from farpoint.probe import OutOfScope, Prober, cert_summary
 from farpoint.suffixes import registered
 
 MAX_SPF_LOOKUPS = 10  # RFC 7208: more makes the record fail (permerror), so mail is unauthenticated
@@ -236,12 +236,19 @@ def check_mta_sts(dns: Dns, prober: Prober, domain: str) -> dict:
     record = next((t for t in dns.txt(f"_mta-sts.{domain}") if t.lower().startswith("v=stsv1")), None)
     out: dict = {"mta_sts": None}
     if record:
-        policy = prober.fetch(f"https://mta-sts.{domain}/.well-known/mta-sts.txt")
+        try:
+            policy = prober.fetch(f"https://mta-sts.{domain}/.well-known/mta-sts.txt")
+        except OutOfScope:  # nobody asked: unknown, never broken
+            policy = None
+            out["mta_sts"] = "unknown"
+            out["mta_sts_error"] = f"mta-sts.{domain} is out of scope (--out-of-scope), so mta_sts is unknown"
         # A bot defence, rate limit or outage is about the asker or the moment. A plain 401/403 refuses
         # sending servers too, so that policy is broken.
         # A defence's page can come with any status, 200 included.
         defence = turned_away(policy) if policy is not None else None
-        if policy is not None and (defence or policy.status == 429 or policy.status >= 500):
+        if out["mta_sts"] == "unknown":
+            pass
+        elif policy is not None and (defence or policy.status == 429 or policy.status >= 500):
             out["mta_sts"] = "unknown"  # a bot defence, rate limit or outage: the policy itself wasn't seen
             who = f"a bot defence ({defence[1]}) answered for the MTA-STS policy host" if defence else "the MTA-STS policy host answered"
             out["mta_sts_error"] = f"{who} with HTTP {policy.status}, so mta_sts is unknown"
@@ -271,7 +278,10 @@ def check_dns(dns: Dns, prober: Prober, domain: str, axfr: bool = True) -> dict:
         except Exception:  # noqa: BLE001 - this nameserver's address is unknown: skip it
             continue
         for ip in address:
-            records = prober.axfr(ip, domain)
+            try:
+                records = prober.axfr(ip, domain)
+            except OutOfScope:  # not asked: whether it would hand the zone out is unknown
+                records = None
             answered |= records is not None
             unanswered |= records is None
             if records:

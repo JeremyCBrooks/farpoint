@@ -427,6 +427,14 @@ the lookalike; a failed lookup keeps the last registration answer. `--no-enrich`
 DNS history is excluded: an old address may belong to someone else today. Each host is probed at one
 address.
 
+**Exclusions** (`names.Exclusions`, `--out-of-scope`). A host excluded by name, or whose every public
+address is excluded, is left out of the targets and counted in `Inventory.excluded`; `--guess` never
+offers a name under an excluded one (`Pipeline._pick`), and self-run mail servers that are excluded are
+not checked. As a backstop, `Pipeline.run` wraps the prober in `probe.ScopedProber`, which raises
+`probe.OutOfScope` before any call to an excluded name or address, and `NetworkProber` refuses excluded
+addresses in `_guard`, which every connection passes through (it covers `fetch`, which resolves its own
+names). Posture turns `OutOfScope` into unknown answers: `mta_sts` `unknown`, `axfr` blank.
+
 **Shared front ends** (`fingerprint.shared_address`). An address owned by a CDN or SaaS provider
 (from RDAP org, InternetDB tags and the hosts' CNAMEs) is the provider's machine, so only ports 80 and
 443 are tried there. Addresses behind CNAMEs to cloud VMs or load balancers count as the organisation's.
