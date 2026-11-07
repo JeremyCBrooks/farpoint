@@ -100,6 +100,8 @@ def _fingerprint_rows(inv: Inventory) -> list[dict]:
             row["archived"] = {**s.archived, "tech": [t.row() for t in s.archived["tech"]]}
         if s.transport != "tcp":
             row["transport"] = s.transport
+        if s.api_paths:
+            row["api_paths"] = s.api_paths
         rows.append(row)
     return rows
 
@@ -476,7 +478,8 @@ def _posture_csv_rows(report: dict) -> list[dict]:
 
 
 FINGERPRINT_FIELDS = ["endpoint", "hostname", "ip", "port", "transport", "service", "tech", "status", "title", "server", "location", "signals",
-                      "cert_subject", "cert_issuer", "cert_expires", "tls_version", "legacy_tls", "banner", "favicon", "paths", "cookies", "archived"]
+                      "cert_subject", "cert_issuer", "cert_expires", "tls_version", "legacy_tls", "banner", "favicon", "paths", "cookies", "archived",
+                      "api_paths"]
 POSTURE_FIELDS = ["domain", "mail_provider", "mx", "spf_all", "spf_lookups", "spf_missing_includes", "dmarc_policy", "dmarc_subdomain_policy",
                   "dmarc_pct", "dkim", "mta_sts", "tls_rpt", "mx_starttls", "ns_providers", "dnssec", "caa", "axfr", "wildcard",
                   "registrar", "created", "expires", "transfer_lock", "spf", "dmarc"]

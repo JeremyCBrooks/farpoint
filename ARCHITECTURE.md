@@ -532,6 +532,12 @@ names). Posture turns `OutOfScope` into unknown answers: `mta_sts` `unknown`, `a
    `archived` field, never in `tech`, so it feeds no CVE lookup or finding: `assess.technologies` lists
    it with `seen` `archive`, without end-of-life or CVE counts. A copy that is itself a bot defence's
    page is dropped. `--no-archive` leaves the `Archive` out.
+   **Scripts** (`fingerprint._scripts`, with `--scripts`). After the homepage, up to `MAX_SCRIPTS` of
+   its `<script src>` URLs that are the same service (`_same_service`) are fetched. API paths in their
+   string literals become `ServiceRecord.api_paths`; hostnames in the page and scripts become
+   `ServiceRecord.links`, which is never saved: `Pipeline._fingerprint` adds them through
+   `Inventory.add` (source `javascript`, so only in-scope ones stay) and resolves the new ones.
+
    **UDP** (`udp.py`, `Pipeline._udp`, with `--udp`). After the TCP services, each non-shared address
    is asked once per port in `FingerprintConfig.udp` through `Prober.udp` (one datagram, the first one
    back): DNS gets a recursive query for `udp.RECURSION_TEST_NAME` (an answer with RA set is

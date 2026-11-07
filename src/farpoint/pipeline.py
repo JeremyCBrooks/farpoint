@@ -824,6 +824,13 @@ class Pipeline:
                     inv.dangling[service.hostname] = {"reason": f"serves {signal.split(':', 1)[1]}'s page for an unclaimed name", "claimable": True}
         # A name that resolves now has nothing dangling, unless its page just said otherwise (above).
         inv.dangling_checked.update(h for h, r in inv.hosts.items() if r.resolves)
+        if config.scripts:  # names the organisation's own pages and scripts mention: resolved now, probed next scan
+            known = set(inv.hosts)
+            for service in list(inv.services.values()):
+                for name in service.links:
+                    inv.add(Observation("javascript", name))
+            if set(inv.hosts) - known:
+                self._resolve(inv, skip=known)
         if config.udp:
             self._udp(inv, {ip: hosts for ip, hosts in hosts_at.items() if ip not in shared}, pace)
         if self.archive:

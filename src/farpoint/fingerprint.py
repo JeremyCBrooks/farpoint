@@ -48,6 +48,11 @@ HTTP_FIRST = frozenset({80, 2375, 5985, 8000, 8080, 8888, 9200})
 TLS_ONLY = frozenset({465, 636, 990, 993, 995})  # implicit TLS, not web: the certificate is what we learn
 SILENT = frozenset({53, 445, 1433, 1521, 3389, 5432, 6379, 27017})  # binary protocols: open is all we learn
 MAX_REDIRECTS = 3
+MAX_SCRIPTS = 5  # same-service scripts fetched per web service with --scripts
+MAX_API_PATHS = 50
+_SCRIPT_SRC = re.compile(rb"<script[^>]+src=[\"']([^\"']+)", re.I)
+_HOSTNAME_IN_TEXT = re.compile(r"(?<![\w.-])((?:[a-z0-9_-]+\.)+[a-z][a-z0-9-]{1,62})(?![\w-])", re.I)
+_API_PATH = re.compile(r"[\"'`](/(?:api|v\d+|graphql|rest|internal|admin|auth|oauth2?|services?)(?:/[^\"'`\s<>?#]*)?)")
 
 # Headers whose values change on every request, or that carry nothing about the software.
 _DROP_HEADERS = frozenset({
@@ -65,6 +70,7 @@ class FingerprintConfig:
     legacy_tls: bool = True  # also check whether TLS 1.0/1.1 are still accepted (two extra handshakes)
     axfr: bool = True  # ask the nameservers the organisation runs itself for a zone transfer
     udp: tuple[int, ...] = ()  # UDP ports to ask (--udp: farpoint.udp.UDP_PORTS), on the organisation's own addresses only
+    scripts: bool = False  # --scripts: fetch the homepage's own scripts for the hostnames and API paths they name
 
 
 def parse_ports(value: str) -> tuple[int, ...]:
@@ -584,6 +590,8 @@ def _web(prober: Prober, rec: ServiceRecord, ev: Evidence, scheme: str, config: 
         rec.favicon = favicon_hash(got.body)
         ev.favicon = str(rec.favicon)
 
+    if config.scripts:
+        _scripts(prober, rec, resp, scheme, path)
     for p in config.paths:
         got = prober.http(scheme, host, ip, port, p)
         if got is None:
@@ -592,6 +600,29 @@ def _web(prober: Prober, rec: ServiceRecord, ev: Evidence, scheme: str, config: 
         if rec.paths[p].get("note") == "git repository exposed":
             rec.signals.append("git-exposed")
     return True
+
+
+def _scripts(prober: Prober, rec: ServiceRecord, home: HttpResult, scheme: str, path: str) -> None:
+    """The homepage's own scripts (same scheme, host and port: never a third party's, nor another of the
+    host's ports), up to MAX_SCRIPTS: the API paths they call, and every hostname the page and they name."""
+    host, ip, port = rec.hostname, rec.ip, rec.port
+    texts = [_text(home.body)]
+    seen: set[str] = set()
+    for src in _SCRIPT_SRC.findall(home.body):
+        target = urljoin(f"{scheme}://{host}:{port}{path}", html.unescape(_text(src)))
+        if not _same_service(target, scheme, host, port):
+            continue
+        parts = urlsplit(target)
+        wanted = parts.path + (f"?{parts.query}" if parts.query else "")
+        if wanted in seen or len(seen) >= MAX_SCRIPTS:
+            continue
+        seen.add(wanted)
+        runtime.check()
+        got = prober.http(scheme, host, ip, port, wanted)
+        if got is not None and got.status == 200 and got.body:
+            texts.append(_text(got.body))
+    rec.api_paths = sorted({m for t in texts[1:] for m in _API_PATH.findall(t)})[:MAX_API_PATHS]
+    rec.links = sorted({m.lower() for t in texts for m in _HOSTNAME_IN_TEXT.findall(t)})
 
 
 def _path_note(path: str, got: HttpResult, home: HttpResult) -> str | None:

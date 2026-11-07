@@ -127,6 +127,12 @@ def _parser() -> argparse.ArgumentParser:
         help="with --fingerprint: also ask UDP DNS (53: open resolver?), NTP (123) and IKE (500: VPN gateway) on the "
         "organisation's own addresses, one ordinary question each (not passive)",
     )
+    p.add_argument(
+        "--scripts",
+        action="store_true",
+        help="with --fingerprint: also fetch up to 5 of each web service's own scripts, for the in-scope hostnames and "
+        "API paths they name (not passive)",
+    )
     p.add_argument("--no-legacy-tls", action="store_true", help="skip --fingerprint's TLS 1.0/1.1 handshakes")
     p.add_argument("--no-axfr", action="store_true", help="skip --fingerprint's zone-transfer requests")
     p.add_argument("--no-archive", action="store_true", help="don't look up archived copies (Wayback Machine) of web services a bot defence hid from --fingerprint")
@@ -323,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
             legacy_tls=not args.no_legacy_tls,
             axfr=not args.no_axfr,
             udp=UDP_PORTS if args.udp else (),
+            scripts=args.scripts,
         )
     except ValueError as exc:
         parser.error(f"--ports/--paths: {exc}")
@@ -349,8 +356,9 @@ def main(argv: list[str] | None = None) -> int:
         code = next(s for s in all_sources if s.name == "github")
         if not code.available():
             parser.error("--code needs GITHUB_TOKEN (a GitHub token with no scopes is enough) in the environment or .env")
-    if args.udp and not args.fingerprint:
-        parser.error("--udp is part of --fingerprint; add --fingerprint")
+    for flag in ("udp", "scripts"):
+        if getattr(args, flag) and not args.fingerprint:
+            parser.error(f"--{flag} is part of --fingerprint; add --fingerprint")
     if args.engagement is not None:
         if not args.fingerprint:
             parser.error("--engagement only labels --fingerprint's requests; add --fingerprint")

@@ -136,6 +136,8 @@ class ServiceRecord:
     signals: list[str] = field(default_factory=list)  # e.g. "directory-listing", "basic-auth", "git-exposed"
     archived: dict | None = None  # when a bot defence hid it: an archived copy's technologies (see fingerprint.from_capture)
     transport: str = "tcp"  # or "udp" (--udp)
+    api_paths: list[str] = field(default_factory=list)  # --scripts: API paths the service's own scripts call
+    links: list[str] = field(default_factory=list)  # --scripts: hostnames its page and scripts name (not saved: they join the inventory)
 
     @property
     def key(self) -> str:

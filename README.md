@@ -101,6 +101,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `--ports LIST` | Ports `--fingerprint` checks. `22,443,8000-8010` replaces the defaults, `+8081` adds to them, `none` checks only 80 and 443. |
 | `--paths LIST` | Paths `--fingerprint` requests on each web service, or `none` (default `/robots.txt,/.well-known/security.txt`). |
 | `--probe-rate N` | Start at most N `--fingerprint` port checks and service checks a second across the scan (default 20). A service check makes several connections. |
+| `--scripts` | With `--fingerprint`, also fetch up to 5 of each web service's own scripts for the in-scope hostnames and API paths they name. **Not passive.** |
 | `--udp` | With `--fingerprint`, also ask UDP DNS (53), NTP (123) and IKE (500) on the organisation's own addresses. See [UDP](#udp---udp). **Not passive.** |
 | `--no-legacy-tls` | Skip `--fingerprint`'s TLS 1.0 and 1.1 handshakes. |
 | `--no-axfr` | Skip `--fingerprint`'s zone-transfer (`AXFR`) requests. |
@@ -381,6 +382,17 @@ the user agent `farpoint/0.1 (host fingerprinting)`, or `farpoint/0.1 (host fing
 be logged as reconnaissance. `--ports none` reduces the sweep to ports 80 and 443, and `--no-axfr`
 drops the zone-transfer requests.
 
+### Scripts (`--scripts`)
+
+A site's JavaScript names the APIs and hosts it talks to, many of which no dataset has seen. With
+`--scripts`, each web service's homepage scripts are fetched, up to 5 and only from the same scheme,
+host and port (never a third party's script, nor another of the host's ports). In-scope hostnames
+the page or its scripts name join the inventory as source `javascript` and are resolved; they are
+fingerprinted on the next scan. API paths the scripts call (`/api/...`, `/v2/...`, `/graphql` and the
+like) are recorded in `fingerprints.csv`'s `api_paths`.
+
+**Not passive:** each web service sees up to 5 more ordinary GETs.
+
 ### UDP (`--udp`)
 
 TCP connects can't see UDP services, and an IPsec VPN gateway (IKE on UDP 500) answers only there.
@@ -575,7 +587,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants` or `--buckets`: tenant, vendor, domain, tie, verified, public (buckets), hosts pointing at it, evidence, ips, cnames |
-| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, transport (`tcp`, or `udp` with `--udp`), service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed |
+| `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, transport (`tcp`, or `udp` with `--udp`), service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed; with `--scripts`, api_paths |
 | `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, MX, SPF (record, `all`, lookups, missing includes), DMARC (record, policy, subdomain policy, pct), DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registrar, created, expires, transfer lock |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
