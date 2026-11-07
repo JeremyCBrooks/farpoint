@@ -469,6 +469,7 @@ def _cert_summary(der: bytes, host: str, now: datetime | None) -> dict:
     names = sans or ([cn.lower()] if cn else [])
     return {
         "subject": cn or cert.subject.rfc4514_string(),
+        **({"organization": org} if (org := name_attr(cert.subject, NameOID.ORGANIZATION_NAME)) else {}),
         "issuer": name_attr(cert.issuer, NameOID.ORGANIZATION_NAME) or name_attr(cert.issuer, NameOID.COMMON_NAME) or cert.issuer.rfc4514_string(),
         "sans": sans[:50],
         "not_before": cert.not_valid_before_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),

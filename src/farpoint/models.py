@@ -10,6 +10,7 @@ from farpoint.names import in_scope, normalize_hostname, normalize_ip
 
 
 KNOWN = ""  # Observation.source for a host the inventory already holds, looked at again: no new witness
+RANGE = "range"  # IpRecord.sources for an address in --ranges
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,7 @@ class Inventory:
         self.dangling: dict[str, dict] = {}  # hostname -> {"reason", "claimable"}: a CNAME into nothing
         self.dangling_checked: set[str] = set()  # hostnames checked for that this run
         self.excluded: set[str] = set()  # live hosts --fingerprint left alone: --out-of-scope by name or address
+        self.ranges: list = []  # --ranges: the organisation's own address ranges (ipaddress networks)
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial
@@ -206,6 +208,16 @@ class Inventory:
             ip_rec = self.ips.setdefault(ip, IpRecord(ip))
             ip_rec.hostnames.add(hostname)
             ip_rec.sources.add(obs.source)
+
+    def add_address(self, ip: str, source: str) -> None:
+        """An address known to be the organisation's without a name (--ranges): only addresses enter here."""
+        if (addr := normalize_ip(ip)) is not None:
+            self.ips.setdefault(addr, IpRecord(addr)).sources.add(source)
+
+    def range_only(self, ip: str) -> bool:
+        """An address only --ranges knows of: no name points at it."""
+        rec = self.ips.get(ip)
+        return rec is not None and rec.sources == {RANGE} and not rec.hostnames
 
     def enrich(self, ip: str, details: IpDetails) -> None:
         rec = self.ips[ip]

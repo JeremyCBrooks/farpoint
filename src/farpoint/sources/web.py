@@ -26,6 +26,13 @@ class CrtSh(HttpSource):
         names = {n for row in rows for n in row.get("name_value", "").splitlines()}
         return (self.observe(n) for n in names)
 
+    def organisation_names(self, org: str) -> list[str]:
+        """The common names of current certificates whose subject organisation is `org` (crt.sh's O= search,
+        where name_value holds the organisation matched)."""
+        rows = self.get("https://crt.sh/", params={"O": org, "output": "json", "exclude": "expired"}).json()
+        wanted = org.casefold()
+        return sorted({row["common_name"] for row in rows if (row.get("name_value") or "").casefold() == wanted and row.get("common_name")})
+
 
 class CertSpotter(HttpSource):
     """Certificate transparency via SSLMate CertSpotter (key optional, raises rate limit)."""

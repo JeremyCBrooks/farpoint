@@ -11,6 +11,7 @@ import csv
 import ipaddress
 import json
 import os
+import re
 import secrets
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -71,6 +72,7 @@ def _ip_rows(inv: Inventory) -> list[dict]:
             **({"open_ports": sorted(r.open_ports)} if r.probed_ports else {}),  # only once swept: else keep the last sweep's
         }
         for r in (inv.ips[ip] for ip in _ips(inv.ips))
+        if not (inv.range_only(r.ip) and not (r.ports or r.open_ports or r.vulns or r.tags))  # an address in --ranges where nothing was found
     ]
 
 
@@ -320,6 +322,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "tenants": sorted(tenants, key=lambda r: r["tenant"]),
         "related": sorted(related_rows, key=lambda r: (-_RELATED_TIERS.index(r["tie"]) if r.get("tie") in _RELATED_TIERS else 1, r["domain"])),
         "guessed": dict(sorted(guessed.items())),
+        **({"ranges": ranges} if (ranges := list(dict.fromkeys([*prior.get("ranges", []), *current.get("ranges", [])]))) else {}),
         **({"fingerprints": sorted(fingerprints, key=lambda r: (r["hostname"], r.get("port", 0)))} if fingerprints else {}),
         **({"posture": sorted(posture, key=lambda r: r["domain"])} if posture else {}),
         **({"dangling": sorted(dangling, key=lambda r: r["hostname"])} if dangling else {}),
@@ -359,6 +362,7 @@ def run_report(inv: Inventory) -> dict:
         "related_checked": sorted(inv.related_checked),
         **({"tenants_rejected": sorted(inv.tenants_rejected)} if inv.tenants_rejected else {}),
         "guessed": sorted(inv.guessed),
+        **({"ranges": [str(n) for n in inv.ranges]} if inv.ranges else {}),
         **({"fingerprints": _fingerprint_rows(inv)} if inv.services else {}),
         **({"closed": sorted(inv.closed)} if inv.closed else {}),
         **({"posture": [inv.posture[d] for d in sorted(inv.posture)]} if inv.posture else {}),
@@ -394,6 +398,59 @@ def _fingerprint_csv_rows(report: dict) -> list[dict]:
             "paths": [f"{p} {v['status']}" + (f" ({v['note']})" if v.get("note") else "") for p, v in (r.get("paths") or {}).items()],
         })
     return rows
+
+
+HOSTING = re.compile(
+    r"amazon|aws|microsoft|azure|google|oracle|digitalocean|linode|akamai|ovh|hetzner|scaleway|vultr|ibm|alibaba|tencent|"
+    r"rackspace|leaseweb|contabo|hostinger|godaddy|ionos|1&1|cloudflare|fastly|incapsula|imperva|cdn|hosting",
+    re.I,
+)
+
+
+def netblock_rows(report: dict) -> list[dict]:
+    """The networks (as RDAP registers them) the inventory's addresses sit in, the organisation's own first:
+    candidates to confirm and pass to --ranges. `hosting` marks a cloud, CDN or hosting provider's network,
+    whose other addresses are other customers'. `in_ranges` says whether --ranges already covers it."""
+    from farpoint.fingerprint import SHARED_NETWORKS
+
+    ranges = []
+    for r in report.get("ranges", []):
+        try:
+            ranges.append(ipaddress.ip_network(r))
+        except ValueError:
+            continue
+    hosts = {h["hostname"]: h for h in report.get("hosts", [])}
+    groups: dict[str, dict] = {}
+    for ip in report.get("ips", []):
+        if not ip.get("network"):
+            continue
+        g = groups.setdefault(ip["network"], {"network": ip["network"], "org": ip.get("org"), "ips": [], "hosts": set()})
+        g["ips"].append(ip["ip"])
+        g["hosts"].update(ip.get("hostnames", []))
+    rows = []
+    for g in groups.values():
+        hosting = bool(HOSTING.search(g["org"] or "") or SHARED_NETWORKS.search(g["org"] or ""))
+        rows.append({
+            "network": g["network"], "org": g["org"], "hosting": "yes" if hosting else "no", "in_ranges": _coverage(g["network"], ranges),
+            "addresses": len(g["ips"]), "hosts": len(g["hosts"]), "live_hosts": sum(1 for h in g["hosts"] if (hosts.get(h) or {}).get("resolves")),
+            "ips": sorted(g["ips"], key=_ip_key)[:50],
+        })
+    return sorted(rows, key=lambda r: (r["hosting"] == "yes", -r["live_hosts"], -r["addresses"], r["network"]))
+
+
+def _coverage(network: str, ranges: list) -> str:
+    """yes, partly or no: how much of an RDAP network (a CIDR, or start-end) --ranges covers."""
+    try:
+        if "-" in network:
+            start, end = (ipaddress.ip_address(p.strip()) for p in network.split("-", 1))
+            blocks = list(ipaddress.summarize_address_range(start, end))
+        else:
+            blocks = [ipaddress.ip_network(network, strict=False)]
+    except (ValueError, TypeError):
+        return "no"
+    if all(any(b.version == r.version and b.subnet_of(r) for r in ranges) for b in blocks):
+        return "yes"
+    return "partly" if any(b.version == r.version and b.overlaps(r) for b in blocks for r in ranges) else "no"
 
 
 def _posture_csv_rows(report: dict) -> list[dict]:
@@ -444,6 +501,8 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
         write("technologies.csv", files.csv_text(technologies(report), ["category", "technology", "version", "seen", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
     if report.get("identity"):  # only once --tenants has run
         write("identity.csv", files.csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
+    if netblocks := netblock_rows(report):
+        write("netblocks.csv", files.csv_text(netblocks, ["network", "org", "hosting", "in_ranges", "addresses", "hosts", "live_hosts", "ips"]))
     if report.get("posture"):
         write("posture.csv", files.csv_text(_posture_csv_rows(report), [*POSTURE_FIELDS, *seen]))
     if "findings" in report:  # only once --assess has run

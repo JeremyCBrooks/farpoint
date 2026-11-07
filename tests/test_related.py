@@ -91,6 +91,9 @@ class FakeNet:
     def network_owner(self, ip):
         return None
 
+    def certificate_names(self, org):
+        return []
+
 
 def run(net, tmp_path=None):
     src = StaticSource("crtsh", [Observation("crtsh", "www.example.com")])

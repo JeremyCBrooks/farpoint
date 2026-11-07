@@ -3,6 +3,7 @@ tenants and guessing -> IP enrichment -> (opt-in) fingerprinting."""
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import secrets
 import threading
@@ -24,11 +25,11 @@ from farpoint.probe import Prober, ScopedProber
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
 from farpoint.identity import SignIn, classify, m365_tenant_name, tenant_id
 from farpoint.lookalikes import RECENT_DAYS, LookalikeConfig
-from farpoint.models import KNOWN, Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
+from farpoint.models import KNOWN, RANGE, Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
 from farpoint.related import TIERS as RELATED_TIERS
 from farpoint.related import Probes, Profile, bundled_suffixes, random_under, split, tie, variants
 from farpoint.suffixes import registered as registered_domain
-from farpoint.names import Exclusions, is_public_ip, normalize_ip
+from farpoint.names import Exclusions, is_public_ip, normalize_hostname, normalize_ip
 from farpoint.progress import NullReporter, ProgressReporter
 from farpoint.resolve import Resolution
 from farpoint.sources.base import Source
@@ -68,6 +69,8 @@ class Pipeline:
     lookalikes: LookalikeConfig | None = None  # registration and certificate lookups for lookalikes that can mail or serve
     exclusions: Exclusions = field(default_factory=Exclusions)  # --out-of-scope: recorded, never contacted
     known: Sequence[str] = ()  # the inventory's earlier hosts: resolved again (and fingerprinted while live) though no source reported them
+    ranges: Sequence = ()  # --ranges: the organisation's own address ranges (PTR, passive lookups, and probing by address)
+    certificate_orgs: Sequence[str] = ()  # with `related`: organisations earlier scans found on the organisation's certificates
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -75,6 +78,7 @@ class Pipeline:
 
         Cancellation is process-wide (see farpoint.runtime): call runtime.reset() before re-running."""
         inv = Inventory(domains)
+        inv.ranges = list(self.ranges)
         if self.exclusions and self.prober and not isinstance(self.prober, ScopedProber):
             self.prober = ScopedProber(self.prober, self.exclusions)  # whatever a stage plans, nothing reaches an excluded host
         for domain in inv.domains:
@@ -87,6 +91,8 @@ class Pipeline:
                 self._related(inv)
             if self.lookup:
                 self._resolve(inv)
+                if self.ranges and self.dns:
+                    self._ranges(inv)
                 if self.tenants and self.txt:
                     self._tenants(inv)
                 if self.guess:
@@ -97,6 +103,8 @@ class Pipeline:
                 self._lookalikes(inv)
             if self.fingerprint and self.prober and self.dns and self.lookup:
                 self._fingerprint(inv)
+            if self.related:
+                self._certificate_related(inv)
         except KeyboardInterrupt:
             pass
         if runtime.cancelled():  # also catches a deferred Ctrl-C whose only remaining jobs just got cancelled
@@ -274,6 +282,66 @@ class Pipeline:
                 for ip in sorted(profile.a) or [None]:
                     inv.add(Observation("tld-swap", variant, ip, lookalike=True, mx=tuple(profile.mx), ns=tuple(profile.ns)))
         log.info("related: %d domains", len(inv.related))
+
+    def _ranges(self, inv: Inventory) -> None:
+        """--ranges: every address in the organisation's ranges is recorded (and later looked up passively),
+        and its PTR name asked. A name under the scan domains joins the inventory; another domain whose name
+        carries the organisation's is a weak related domain; anything else (an ISP's generic name) is dropped."""
+        import dns.reversename
+
+        addresses = [str(ip) for ip in _range_addresses(self.ranges)]
+        for ip in addresses:
+            inv.add_address(ip, RANGE)
+        done, failed = [0], [0]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("ptr", done[0], len(addresses), failed[0])
+
+        def ptr(ip: str) -> list[str]:
+            return self.dns.records(dns.reversename.from_address(ip).to_text(omit_final_dot=True), "PTR") or []
+
+        tokens, known = org_tokens(inv.domains), set(inv.hosts)
+        self.reporter.phase("ptr", 0, len(addresses))
+        for (_, ip), names in self._fan_out(inv, {("ptr", ip): (lambda ip=ip: ptr(ip)) for ip in addresses}, on_done=tick):
+            network = next(str(n) for n in self.ranges if ipaddress.ip_address(ip) in n)
+            for raw in names:
+                name = normalize_hostname(raw)
+                if name is None:
+                    continue
+                if inv.scope_of(name):
+                    inv.add(Observation("ptr", name, ip))
+                elif (reg := registered_domain(name)) and reg not in inv.domains and (scan := named_after(reg, tokens)):
+                    _record_related(inv, reg, scan, "weak", f"PTR of {ip} in the organisation's range {network}: {name}")
+        self._resolve(inv, skip=known)
+
+    def _certificate_related(self, inv: Inventory) -> None:
+        """Other domains on certificates issued to the organisation: a CA validated the organisation named
+        in the subject of a certificate for the scan domains' own names, so other names on certificates
+        issued to it are likely its own too (medium: another organisation can carry the same name). Names
+        under the scan domains join the inventory."""
+        orgs: dict[str, str] = {org: inv.domains[0] for org in self.certificate_orgs if inv.domains}
+        for service in inv.services.values():
+            tls = service.tls or {}
+            if not (org := tls.get("organization")):
+                continue
+            names = [n.removeprefix("*.") for n in [*tls.get("sans", []), (tls.get("subject") or "").lower()]]
+            if scan := next((d for n in names if (d := inv.scope_of(n))), None):
+                orgs.setdefault(org, scan)
+        if not orgs:
+            return
+        jobs = {("crtsh-organization", org): (lambda org=org: self.related.certificate_names(org)) for org in sorted(orgs)}
+        own = set(inv.domains)
+        for (_, org), names in self._fan_out(inv, jobs):
+            for raw in names:
+                name = normalize_hostname(raw)
+                if name is None:
+                    continue
+                if inv.scope_of(name):
+                    inv.add(Observation("crtsh-organization", name))
+                elif (reg := registered_domain(name)) and reg not in own:
+                    _record_related(inv, reg, orgs[org], "medium", f"on certificates issued to {org} (organisation-validated), as are the scan domains'")
 
     def _tenants(self, inv: Inventory) -> None:
         """Tenant patterns from the domains' own TXT/SPF records, their CNAMEs and the bundled table,
@@ -537,7 +605,8 @@ class Pipeline:
             if not public:
                 break
             enriched.update(public)
-            jobs = {(e.name, ip): (lambda e=e, ip=ip: e.enrich(ip)) for e in self.enrichers for ip in public}
+            # An address only --ranges knows of goes only to enrichers cheap enough to ask about a whole range (`bulk`).
+            jobs = {(e.name, ip): (lambda e=e, ip=ip: e.enrich(ip)) for e in self.enrichers for ip in public if getattr(e, "bulk", False) or not inv.range_only(ip)}
             total[0] += len(jobs)
             self.reporter.phase("enriching", done[0], total[0], failed[0])
             known = set(inv.hosts)
@@ -637,6 +706,10 @@ class Pipeline:
         hosts_at: dict[str, list[str]] = {}
         for host, ip in targets.items():
             hosts_at.setdefault(ip, []).append(host)
+        for addr in _range_addresses(self.ranges):  # the organisation's own addresses with no name probed there: asked by address
+            ip = str(addr)
+            if ip not in hosts_at and ip in inv.ips and is_public_ip(ip) and not self.exclusions.ip(ip):
+                hosts_at[ip] = [ip]
         shared = {ip for ip, hosts in hosts_at.items() if _shared_address(inv, ip, hosts)}
 
         def ports_for(ip: str) -> list[int]:
@@ -675,7 +748,7 @@ class Pipeline:
 
         def identify_service(host: str, ip: str, port: int):
             pace()
-            return fingerprint_service(prober, host, ip, port, inv.hosts[host].cnames, config)
+            return fingerprint_service(prober, host, ip, port, inv.hosts[host].cnames if host in inv.hosts else (), config)
 
         # Web (and unknown) ports are asked per host, since each virtual host can serve something
         # different; other services are the address's, asked once and recorded for each host there.
@@ -794,6 +867,12 @@ class Pipeline:
             row["mx_health"] = [health[m] for m in row.get("mx", []) if m in health]
 
 
+def _range_addresses(ranges: Iterable) -> Iterable:
+    """Every usable address in the ranges: not a block's network or broadcast address."""
+    for net in ranges:
+        yield from (net.hosts() if net.num_addresses > 2 else net)
+
+
 def _ip_key(ip: str) -> tuple[int, int]:
     import ipaddress
 
@@ -805,7 +884,7 @@ def _shared_address(inv: Inventory, ip: str, hosts: Sequence[str]) -> bool:
     """A CDN's or SaaS front end's address: the organisation's names answer there, but the machine (and
     every other port on it) is the provider's, so only its web ports are asked. Addresses behind a
     CNAME to a cloud VM or load balancer (cloudapp.azure.com, elb.amazonaws.com) are the organisation's."""
-    return shared_address(inv.ips[ip].org, [inv.hosts[h].cnames for h in hosts], inv.ips[ip].tags)
+    return shared_address(inv.ips[ip].org, [inv.hosts[h].cnames for h in hosts if h in inv.hosts], inv.ips[ip].tags)
 
 
 def _dangling(dns: Dns, inv: Inventory, host: str) -> dict | None:

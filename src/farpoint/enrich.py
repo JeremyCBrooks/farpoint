@@ -23,6 +23,7 @@ class InternetDb(HttpSource):
 
     name = "shodan-internetdb"
     max_concurrency = 8
+    bulk = True  # free and keyless: asked about every address in --ranges too, not only named ones
 
     def enrich(self, ip: str) -> IpDetails:
         try:

@@ -41,6 +41,7 @@ from farpoint.tenants import TenantConfig
 from farpoint.udp import UDP_PORTS
 
 USER_AGENT = "farpoint/0.1 (passive OSINT discovery)"
+RANGE_LIMIT = 4096  # --ranges addresses in all: a /20, about 3 hours of --fingerprint at the default rate
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -55,6 +56,15 @@ def _parser() -> argparse.ArgumentParser:
         metavar="ENTRIES",
         help="names (and everything under them) and addresses or ranges the authorisation carves out, comma-separated, "
         "or @FILE with one per line; repeatable. They are still recorded from public data, never contacted",
+    )
+    p.add_argument(
+        "--ranges",
+        action="append",
+        default=[],
+        metavar="ENTRIES",
+        help=f"public address ranges the organisation owns and you may scan, comma-separated or @FILE; repeatable (at most "
+        f"{RANGE_LIMIT} addresses in all). Their PTR names are looked up and every address goes to InternetDB; with "
+        "--fingerprint every address is probed, named or not",
     )
     p.add_argument("--only", default="", help="comma-separated sources to run (see --list-sources)")
     p.add_argument("--exclude", default="", help="comma-separated sources to skip")
@@ -147,9 +157,8 @@ def _csv(value: str) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
-def parse_exclusions(values: list[str]) -> Exclusions:
-    """--out-of-scope values: comma-separated entries, or @FILE with one per line (# comments allowed).
-    Raises ValueError naming a bad entry, OSError for an unreadable file."""
+def _entries(values: list[str]) -> list[str]:
+    """Comma-separated entries, or @FILE with one per line (# comments allowed). OSError for an unreadable file."""
     entries: list[str] = []
     for value in values:
         if value.startswith("@"):
@@ -157,7 +166,31 @@ def parse_exclusions(values: list[str]) -> Exclusions:
             entries += [line.split("#", 1)[0].strip() for line in lines]
         else:
             entries += _csv(value)
-    return Exclusions.parse(e for e in entries if e)
+    return [e for e in entries if e]
+
+
+def parse_exclusions(values: list[str]) -> Exclusions:
+    """--out-of-scope values. Raises ValueError naming a bad entry, OSError for an unreadable file."""
+    return Exclusions.parse(_entries(values))
+
+
+def parse_ranges(values: list[str]) -> list:
+    """--ranges values as networks: public ones only, at most RANGE_LIMIT addresses in all. ValueError says what's wrong."""
+    import ipaddress
+
+    nets = []
+    for entry in _entries(values):
+        try:
+            net = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            raise ValueError(f"{entry!r} is not an address range") from None
+        if not net.is_global:
+            raise ValueError(f"{entry} is not a public range")
+        nets.append(net)
+    nets = list(ipaddress.collapse_addresses([n for n in nets if n.version == 4])) + list(ipaddress.collapse_addresses([n for n in nets if n.version == 6]))
+    if (total := sum(n.num_addresses for n in nets)) > RANGE_LIMIT:
+        raise ValueError(f"{total} addresses in all; at most {RANGE_LIMIT} (a /20)")
+    return nets
 
 
 def load_dotenv(path: Path) -> None:
@@ -189,6 +222,21 @@ def _guess_config(budget: int, report: dict | None, rate: float | None = None) -
         tried=frozenset(guessed),  # the merge already dropped ones old enough to try again
         rate=rate,
     )
+
+
+def _certificate_orgs(report: dict | None) -> list[str]:
+    """Organisations named in the subject of certificates earlier scans found on the organisation's own
+    names, for --related to look up (this scan's --fingerprint adds what it finds)."""
+    from farpoint.names import in_scope
+
+    domains = (report or {}).get("domains", [])
+    orgs = set()
+    for r in (report or {}).get("fingerprints", []):
+        tls = r.get("tls") or {}
+        names = [n.removeprefix("*.") for n in [*tls.get("sans", []), (tls.get("subject") or "").lower()]]
+        if tls.get("organization") and any(in_scope(n, d) for n in names for d in domains):
+            orgs.add(tls["organization"])
+    return sorted(orgs)
 
 
 def _tenant_config(budget: int, report: dict | None) -> TenantConfig:
@@ -285,6 +333,12 @@ def main(argv: list[str] | None = None) -> int:
         exclusions = parse_exclusions(args.out_of_scope)
     except (ValueError, OSError) as exc:
         parser.error(f"--out-of-scope: {exc}")
+    try:
+        ranges = parse_ranges(args.ranges)
+    except (ValueError, OSError) as exc:
+        parser.error(f"--ranges: {exc}")
+    if ranges and args.no_resolve:
+        parser.error("--ranges needs DNS for its PTR lookups; drop --no-resolve")
 
     stamp = now_stamp()
     try:
@@ -319,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
         sign_in=MicrosoftSignIn(http, retries=2) if args.tenants else None,
-        related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org) if args.related else None,
+        related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org, CrtSh(http, retries=2).organisation_names) if args.related else None,
         related_rate=args.related_rate,
         fingerprint=fingerprint if args.fingerprint else None,
         prober=NetworkProber(engagement=args.engagement, exclusions=exclusions) if args.fingerprint else None,
@@ -329,6 +383,8 @@ def main(argv: list[str] | None = None) -> int:
         lookalikes=None if args.no_enrich else LookalikeConfig(NetworkLookalikeLookups(rdap, CrtSh(http, retries=2)), fresh_registrations(prior_report, now_stamp())),
         exclusions=exclusions,
         known=[] if args.no_resolve else [h["hostname"] for h in (prior_report or {}).get("hosts", [])],
+        ranges=ranges,
+        certificate_orgs=_certificate_orgs(prior_report),
     )
     runtime.reset()
     for sig in (signal.SIGINT, signal.SIGTERM):

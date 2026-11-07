@@ -81,6 +81,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `-f, --file FILE` | Read domains from a file, one per line. Lines starting with `#` are ignored. |
 | `-o, --out DIR` | Output folder and inventory (default `./out`). |
 | `--out-of-scope ENTRIES` | Names and addresses your authorisation carves out, comma-separated, or `@FILE` with one per line (`#` comments allowed). Repeatable. A name covers itself and every name under it (`shop.example.com` covers `eu.shop.example.com`); an address or range (`198.51.100.0/24`) covers every name that resolves into it. See [Scope and limits](#scope-and-limits). |
+| `--ranges ENTRIES` | Public address ranges the organisation owns and you are authorised to scan, comma-separated or `@FILE`, repeatable; at most 4,096 addresses in all. See [Address ranges](#address-ranges---ranges). |
 | `--only LIST` | Run only these discovery sources, comma-separated, by the names in the [Discovery](#discovery) table. |
 | `--exclude LIST` | Skip these discovery sources. `dnstwist` is the slowest (several minutes). |
 | `--list-sources` | Show every source and whether it is usable here (key or binary present). |
@@ -149,15 +150,40 @@ under other suffixes (`example.de`, `example.com.au`). Each is given a `tie` of 
 or `weak` by the evidence linking it to the organisation. Registered variants with no tie are reported
 as lookalikes.
 
+With `--related`, organisations named in the subject of the scan domains' own certificates (an
+organisation-validated certificate names the company a CA checked) are looked up in crt.sh, and other
+registered domains on current certificates issued to them are recorded with tie `medium`. The
+organisation names come from this scan's `--fingerprint` and from earlier scans in `--out`.
+
 Results go to `related.csv`. The summary counts each tie and names the first few strong and medium
 domains. **Related domains are never scanned**: owning a domain doesn't mean you're authorised to scan
 it, so add the ones you are to your domain list yourself.
 
-**Not passive:** about 1,800 lookups per scan domain go to the registries, 8 at a time (fewer with
+**Not passive:** crt.sh sees one query per certificate organisation. About 1,800 lookups per scan domain go to the registries, 8 at a time (fewer with
 `--workers`). Each registered variant gets a few DNS lookups and an HTTP request (HTTPS, then plain
 HTTP if that fails) to see where it redirects, and Microsoft gets one request per scan domain.
 `--related-rate` spreads all of these out: at 10 a second, one domain takes about 3 minutes. Unpaced,
 a burst of this size can overwhelm a small NAT or home router.
+
+## Address ranges (`--ranges`)
+
+Names are only half of an attack surface: an appliance on the organisation's own network may have no
+name in any dataset. Give the ranges it owns (see `netblocks.csv` for candidates) and farpoint:
+
+- looks up every address's PTR name. A name under the scan domains joins the inventory (source `ptr`);
+  another domain whose name carries the organisation's (`vpn.example-group.com`) goes to `related.csv`
+  with tie `weak`; anything else, such as an ISP's generic name, is dropped;
+- asks Shodan InternetDB about every address (passive), but RDAP only about addresses with a name, so a
+  range doesn't cost thousands of registry lookups;
+- with `--fingerprint`, probes every address, named or not. A service with no name is recorded under
+  its address (`93.184.216.36:3389`), and its certificate isn't judged against the address.
+
+Addresses where nothing was found aren't listed in `ips.csv`. `--out-of-scope` applies inside ranges
+too. Private and other non-public ranges are refused.
+
+**Not passive:** PTR lookups go to whoever runs the reverse zone (often the organisation or its ISP).
+With `--fingerprint`, a /24 is about 11,000 connections, roughly 10 minutes at the default
+`--probe-rate`.
 
 ## Resolution
 
@@ -501,6 +527,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `hosts.txt`, `ips.txt` | Sorted plain lists, for piping into other tools |
 | `hosts.csv` | hostname, resolves, ips, cnames, sources |
 | `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), tags, vulns, hostnames, sources |
+| `netblocks.csv` | The networks (as RDAP registers them) the inventory's addresses sit in, the organisation's own first: network, org, `hosting` (a cloud, CDN or hosting provider's network, whose other addresses are other customers'), `in_ranges` (yes, partly or no: how much `--ranges` covers), addresses, hosts, live_hosts, ips. Candidates to confirm with the organisation and pass to `--ranges` |
 | `lookalikes.csv` | Registered lookalike domains: domain, addresses, mail servers, registration date, newest certificate, `capable` (mail, web: what it can do now), `flagged` (ready, parked), sources |
 | `phishing-block.txt` | With `--assess`: the flagged lookalikes, one per line, ready ones first, for the mail gateway |
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |

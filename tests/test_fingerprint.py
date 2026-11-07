@@ -19,14 +19,14 @@ from farpoint.fingerprint import (
 from farpoint.probe import HttpResult, SmtpResult, TlsResult, UdpResult, UnsupportedHere, cert_summary
 
 
-def make_cert(cn="www.example.com", sans=("www.example.com",), days=90, self_signed=False, key_size=2048):
+def make_cert(cn="www.example.com", sans=("www.example.com",), days=90, self_signed=False, key_size=2048, org=None):
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
     from cryptography.x509.oid import NameOID
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=key_size)
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+    subject = x509.Name(([x509.NameAttribute(NameOID.ORGANIZATION_NAME, org)] if org else []) + [x509.NameAttribute(NameOID.COMMON_NAME, cn)])
     issuer = subject if self_signed else x509.Name([x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Let's Encrypt"), x509.NameAttribute(NameOID.COMMON_NAME, "R3")])
     now = datetime.now(timezone.utc)
     builder = (

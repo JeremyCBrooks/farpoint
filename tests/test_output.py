@@ -142,7 +142,7 @@ def test_output_files_respect_the_umask(tmp_path):
 
     assert output._FILE_MODE == 0o666 & ~umask != 0o600  # the process umask, not mkstemp's 0600
     assert {p.name: p.stat().st_mode & 0o777 for p in tmp_path.iterdir() if not p.name.startswith(".")} == {
-        name: output._FILE_MODE for name in ("assets.json", "hosts.txt", "ips.txt", "hosts.csv", "ips.csv", "lookalikes.csv")
+        name: output._FILE_MODE for name in ("assets.json", "hosts.txt", "ips.txt", "hosts.csv", "ips.csv", "lookalikes.csv", "netblocks.csv")
     }
 
 

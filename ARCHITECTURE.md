@@ -285,6 +285,14 @@ scanned.
    Variants with no tie go to lookalikes. A variant looked at again and no longer tied leaves the list.
    The run summary counts each tie and names at most 8 strong or medium domains.
 
+5. **Certificate organisations** (`Pipeline._certificate_related`, at the end of the run). The
+   subject organisation (`O=`, kept by `probe.cert_summary` as `organization`) of every certificate a
+   service presented for the scan domains' own names, plus those earlier scans found
+   (`Pipeline.certificate_orgs`), is looked up through `Probes.certificate_names` (crt.sh's `O=` search
+   over current certificates; `sources.web.CrtSh.organisation_names`). Other registered domains on them
+   are `medium`: a CA validated that organisation, but another can carry the same name. In-scope names
+   join the inventory as source `crtsh-organization`.
+
 ### 3. Resolution
 
 **Goal:** what each name points at now.
@@ -301,6 +309,18 @@ the previous `True` or `False` when this run's answer is `None`, and re-normalis
 which clears block pages earlier runs recorded. In-scope CNAME targets are added to the inventory and resolved in the
 next pass; the loop runs until no unresolved hosts remain. CNAME targets outside scope are recorded on
 the host, never followed.
+
+**Address ranges** (`Pipeline._ranges`, with `--ranges`, right after resolution). Every usable address
+in the ranges enters through `Inventory.add_address` with source `range` (`models.RANGE`; only
+addresses go in this way, never names), and gets a PTR lookup through `Dns.records`. A PTR name in scope
+enters through `Inventory.add` as source `ptr` and is resolved; a registered domain outside scope that
+carries an organisation token (`tenants.named_after`) is recorded as a `weak` related domain; the rest
+is dropped. Enrichment asks only enrichers marked `bulk` (InternetDB) about addresses only `--ranges`
+knows of (`Inventory.range_only`), so RDAP isn't asked thousands of times. Fingerprinting adds every
+public, non-excluded range address that no name targets as its own target, with the address as the
+service's hostname. `output._ip_rows` leaves out range addresses where nothing was found, and
+`assess` never judges a certificate against an address. The ranges are stored in `assets.json`
+(`ranges`, unioned across runs) so `netblocks.csv` can say what they cover.
 
 ### 4. Tenants (`--tenants`)
 
@@ -636,7 +656,9 @@ under a directory lock:
 
 2. runs the assessment's derivation on the merged report, if requested. If it raises, the scan is saved
    unjudged with the error recorded.
-3. writes every file atomically (temp file and rename). `assets.json` is the source of truth for the
+3. writes every file atomically (temp file and rename). `netblocks.csv` (`output.netblock_rows`)
+   groups the addresses by their RDAP network, marks hosting providers' networks (`output.HOSTING` and
+   `fingerprint.SHARED_NETWORKS`) and how much of each `ranges` covers. `assets.json` is the source of truth for the
    infrastructure and `credentials.json` for credential evidence; the CSVs and text lists are views of them.
    A stage's CSV is only written once that stage has produced rows (`related.csv`, `tenants.csv`,
    `fingerprints.csv` and so on). Infrastructure files take the process umask; credential files and

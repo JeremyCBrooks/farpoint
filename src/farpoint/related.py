@@ -63,12 +63,15 @@ class Probes(Protocol):
 
     def network_owner(self, ip: str) -> str | None: ...  # who the address's network is registered to
 
+    def certificate_names(self, org: str) -> list[str]: ...  # names on current certificates whose subject names this organisation
+
 
 class NetworkProbes:
-    def __init__(self, http: httpx.Client, records, network_owner) -> None:
+    def __init__(self, http: httpx.Client, records, network_owner, certificates=None) -> None:
         self.http = http
         self.records = records
         self._owner = network_owner
+        self._certificates = certificates  # (org) -> names: farpoint.sources.web.CrtSh.organisation_names
 
     def tenant_domains(self, domain: str) -> list[str]:
         body = _FEDERATION.format(url=AUTODISCOVER, domain=domain)
@@ -89,6 +92,9 @@ class NetworkProbes:
     def network_owner(self, ip: str) -> str | None:
         owner = self._owner(ip)
         return owner.strip().lower() if owner else None
+
+    def certificate_names(self, org: str) -> list[str]:
+        return self._certificates(org) if self._certificates else []
 
 
 @cache
