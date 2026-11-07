@@ -132,7 +132,8 @@ Everything a discovery source or stage learns enters as an `Observation`: *sourc
 optionally pointing at IP I*. Sources do nothing else. `Inventory.add` is the single choke point that:
 
 - normalises the hostname and IP (`names.normalize_hostname`, `normalize_ip`), dropping garbage
-- routes lookalikes to their own table
+- routes lookalikes to their own table, normalising their MX and NS values too (null MX and dnstwist's
+  `!ServFail` markers are dropped)
 - drops anything out of scope
 - unions the source into `HostRecord.sources` and links the host and the IP both ways
 
@@ -173,7 +174,9 @@ All network access sits behind small protocols, so the stage logic is tested off
 | `identity.SignIn` | `identity.MicrosoftSignIn` | tenants (sign-in) |
 | `credential_sources.base.CredentialProvider` | `credential_sources.hudsonrock.HudsonRockOsint`, `credential_sources.hibp.HibpPublic` | `--credentials` (before the scan) |
 
-`cli.py` is the only place these are wired together.
+`cli.py` is the only place these are wired together. It builds the discovery sources and credential
+providers through their packages' factories (`sources.build_sources`,
+`credential_sources.build_credential_providers`), so no stage constructs a network class itself.
 
 ### Code layout
 
@@ -196,6 +199,8 @@ All in `src/farpoint/`:
 | `visibility.py` | How much of a scan's web bot defences hid, by vendor (also `python -m farpoint.visibility`) |
 | `assess.py` | Findings; NVD and CISA lookups |
 | `output.py` | Merging, checkpoints, and writing the output files |
+| `files.py` | The directory lock, atomic writes with file modes, formula-safe CSV, timestamps |
+| `__main__.py` | `python -m farpoint`, the same as the `farpoint` command |
 | `credentials.py` | Credential evidence rows: validation, normalisation, secret and URL stripping, `CredentialBatch` |
 | `credential_batch.py` | `build_batch`: providers' validated rows into one scoped, stamped batch |
 | `credential_sources/` | Live credential providers (`--credentials`): the protocol, error categories, Hudson Rock and HIBP adapters |
@@ -214,14 +219,16 @@ A source is a class with `available()` (key or binary present) and `collect(doma
 observations. Unavailable sources are listed as skipped, not as failures.
 
 - `HttpSource` (`sources/base.py`) provides throttling to the service's published rate (VirusTotal 4 a
-  minute, Shodan 1 a second), retries with exponential backoff on transport errors, 5xx and 429, and
-  honours `Retry-After` up to a cap.
+  minute, Shodan and Hudson Rock 1 a second), retries with exponential backoff on transport errors, 5xx
+  and 429 (Hudson Rock gets one retry), and honours `Retry-After` up to a cap (60 seconds).
 - `CommandSource` wraps external tools (subfinder, bbot, dnstwist), runs them as tracked subprocesses so
-  an interrupt kills them, and parses their output. A tool is available only if it is on PATH and the
-  program that starts it exists: an ELF binary's dynamic loader, or a script's `#!` interpreter. A
-  musl build on a glibc system would otherwise look installed and fail at exec. A tool that still
-  can't start is a `SourceFailure`. bbot exits 0 when it can't set up its modules, so a bbot run that
-  prints no JSON events is a failure too.
+  an interrupt kills them, and parses their output. subfinder and bbot are available only if they are
+  on PATH and the program that starts them exists: an ELF binary's dynamic loader, or a script's `#!`
+  interpreter. A musl build on a glibc system would otherwise look installed and fail at exec.
+  dnstwist is a Python dependency, available when its module imports, and runs as
+  `python -m dnstwist`. A tool that still can't start is a `SourceFailure`, as is a run killed after
+  30 minutes. A non-zero exit fails only if the tool printed nothing. bbot exits 0 when it can't set up
+  its modules, so a bbot run that prints no JSON events is a failure too.
 - dnstwist's results are marked `lookalike=True`: registered typosquats belong to anyone, so they are
   recorded but never treated as the organisation's. `--registered` counts a failed query (`!ServFail`)
   as an answer, so an overloaded resolver makes non-existent permutations look registered. A
@@ -246,12 +253,18 @@ scanned.
 1. **Microsoft 365 federation.** One Exchange autodiscover `GetFederationInformation` request per scan
    domain returns the domains verified in its tenant. Only an owner can verify a domain, so these are
    recorded `strong`. Subdomains of scan domains in the list join the inventory as source `m365`.
+   `*.onmicrosoft.com` names are left out. The tenant's domains count as the organisation's own when
+   tying variants below (its nameservers, mail hosts and redirect targets).
 2. **Suffix swap.** Each scan domain's name under every suffix in `data/suffixes.txt` (all IANA TLDs
-   and common second levels). An NS lookup decides whether each variant is registered. Suffixes where a
-   random name also has NS records are wildcard registries and are dropped.
+   and common second levels; 1,801 entries). A suffix is skipped where the name wouldn't be a registered
+   domain under the public suffix list (`co.de`, or a wildcard-only suffix such as `*.za`), as is a
+   variant that is already a scan domain, a tenant domain or in scope. An NS lookup decides whether each
+   variant is registered. Suffixes where a random name also has NS records are wildcard registries and
+   are dropped.
 3. **Profiling.** Each registered variant, and each scan domain, gets a `Profile`: nameservers, MX and
-   A records. Each variant also gets one HTTP request to follow its redirects, and addresses it shares
-   with the scan domain get an RDAP owner lookup.
+   A records. Each variant also gets one HTTP request to follow its redirects (HTTPS, then plain HTTP,
+   with a fixed 15-second timeout), and addresses it shares with the scan domain get an RDAP owner
+   lookup. A variant whose profile lookup fails is neither related nor a lookalike this run.
 4. **Tying by evidence** (`related.tie`). Any one signal can be shared or faked (a DNS host's
    nameservers, a parking address, an affiliate redirect), so one signal alone is at most `medium`:
 
@@ -262,17 +275,22 @@ scanned.
    | `weak` | the same nameservers at an outside provider, a shared address or generic mail host, or a redirect home through someone else's host |
 
    Variants with no tie go to lookalikes. A variant looked at again and no longer tied leaves the list.
+   The run summary counts each tie and names at most 8 strong or medium domains.
 
 ### 3. Resolution
 
 **Goal:** what each name points at now.
 
 **Method** (`resolve.DnsResolver`, `Pipeline._resolve`). Every host gets A and AAAA lookups
-through the recursive resolver, with one retry; CNAMEs are read from the answers' alias chain. The result is three-state: `resolves` is `True`,
-`False`, or `None` on timeout. A filtering resolver's block page (Cisco Umbrella's, in `names.BLOCK_PAGES`)
-is not an address: `normalize_ip` drops it, so a name answered only with one is `None` too, and a
-lookalike keeps no address from it. Merging re-normalises stored addresses, which clears block pages
-earlier runs recorded. In-scope CNAME targets are added to the inventory and resolved in the
+through the recursive resolver, with one retry; CNAMEs are read from the answers' alias chain. The
+result is three-state: `resolves` is `True`, `False`, or `None` when there was no answer either way: a
+timeout, or a server failure (SERVFAIL, `NoNameservers`), with no NXDOMAIN or address from the other
+record type. Such a `Resolution` has `timed_out` set, so wildcard probes and tenant and guess lookups
+that only got server failures count as unanswered too. A filtering resolver's
+block page (Cisco Umbrella's, in `names.BLOCK_PAGES`) is not an address: `normalize_ip` drops it, so
+a name answered only with one is `None` too, and a lookalike keeps no address from it. Merging keeps
+the previous `True` or `False` when this run's answer is `None`, and re-normalises stored addresses,
+which clears block pages earlier runs recorded. In-scope CNAME targets are added to the inventory and resolved in the
 next pass; the loop runs until no unresolved hosts remain. CNAME targets outside scope are recorded on
 the host, never followed.
 
@@ -292,9 +310,12 @@ the host, never followed.
 3. **Budget.** Patterns are taken in order until `--tenant-budget` lookups are spent, three random-name
    probes per pattern included.
 4. **Wildcard control.** Each pattern is first tried with three random names. If they resolve, the
-   platform answers anything, and a candidate counts as `verified` only if it answers differently (its
-   own address or alias). If the platform can't be told apart, a candidate is kept as unverified only
-   when the organisation's own records name that platform. If the probes time out, the pattern is
+   platform answers anything, and a candidate counts as `verified` only if its answer isn't the
+   wildcard's (`pipeline._wildcard_answer`): it must share no alias with the wildcard and have an
+   address the wildcard doesn't give. A candidate the wildcard can't be told from is kept, unverified,
+   only when it is the bare organisation name and the organisation's own records name that platform;
+   modifier variants (`example-dev`) are dropped. Likewise, only bare-name candidates on a platform the
+   records name get tie `records`; modifier variants get `name`. If the probes get no answer, the pattern is
    skipped and an error recorded.
 5. **CNAME tenants.** Any out-of-scope CNAME target carrying the organisation's name
    (`example-files.vault.io`) is recorded as a tenant with tie `cname`.
@@ -341,19 +362,29 @@ inventories.
 **Search** (`Pipeline._guess`). The per-domain budget is split over three rounds plus a small follow-up
 round. Each round takes the best untried candidates within its share, tests them, and if anything
 resolved, rebuilds the model so the next round tries the new names' variants. New names' in-scope CNAME
-targets are resolved between rounds. Every tested name is stored in `assets.json`; later scans into
-the same folder skip it for 90 days, so repeated scans go further down the ranking.
+targets are resolved between rounds. A guess counts only when it resolves to an address; an alias
+alone isn't enough. Every tested name is stored in `assets.json`; later scans into the same folder
+skip it, so repeated scans go further down the ranking. Entries older than 90 days are pruned when the
+results are written, so after a long gap between scans a name can stay skipped a little longer.
 
 **Wildcard control.** Before guessing under a parent name, three random names there are looked up:
 
-- they resolve: a guess counts only if it has an address or alias the wildcard doesn't give
-- they time out: nothing is guessed there (the budget is returned)
+- they resolve: a guess counts only if its answer isn't the wildcard's (the same
+  `_wildcard_answer` test as tenants: no shared alias, and an address the wildcard doesn't give)
+- they get no answer: nothing is guessed there (the guesses' lookups are returned to the budget; the three
+  probes stay spent)
 - most guesses under one parent resolve anyway (at least 10, over half): all are discarded as
   wildcard-like DNS whose addresses rotate past the probes
 
-**Offline evaluation.** `python -m farpoint.guess OUT_DIR` hides each known host in turn and reports how
-often the model ranks it within 100, 500 and 2000 guesses, with no DNS traffic. `farpoint.corpus` builds
-and cross-validates the optional corpus from organisation-validated certificates in CT logs.
+**Offline evaluation.** `python -m farpoint.guess OUT_DIR` (`guess.leave_one_out`) hides known hosts one
+at a time and reports how often the model, rebuilt from the rest, ranks each within 100, 500 and 2000
+guesses, with no DNS traffic. It hides at most `--sample` (300) hosts, drawn with a fixed seed, and
+skips the scan domains and `_`-prefixed names. A hidden host is also removed as a CNAME target.
+
+`farpoint.corpus` builds and cross-validates the optional corpus from organisation-validated
+certificates in CT logs. Organisations with fewer than 5 names (`MIN_NAMES`) are left out, and so are
+features seen at fewer than 3 organisations (`MIN_ORGS`). `orgs` appends to `orgs.tsv` and `fetch`
+resumes where it stopped.
 
 ### 6. Enrichment
 
@@ -367,16 +398,24 @@ runs after guessing so guessed hosts' addresses are covered.
 **Lookalike triage** (`lookalikes.py`, `Pipeline._lookalikes`). A lookalike's MX and nameservers come
 from dnstwist's output and, for TLD swaps, from `--related`'s own lookups; null MX (`MX 0 .`) and
 failed answers don't count. Each lookalike this scan saw with MX or an address gets an RDAP lookup at
-its registry (`rdap-domain`), for its registered domain (`ex.ample.com` is `ample.com`'s). Such a split
-name is first checked for a wildcard under its parent (`Pipeline._under_a_wildcard`, the same random-name
-probe as `--guess`): if the parent answers any name as it answers this one, or gives no answer, the name
-is left undated. A TLD with no
-RDAP service in IANA's bootstrap, or one rdap.org itself answers 404 for, raises `enrich.NoRdapService`:
-the date stays unknown (asked again next scan, without a request while the bootstrap lacks the TLD),
-and the run records one `rdap-domain` error naming those TLDs; one registered within `RECENT_DAYS` (365) also gets its newest
-certificate from crt.sh (`crtsh-certificate`). The scan domains' own NS and MX are looked up too
-(`scan-dns`), so assessment can tell the organisation's own lookalikes without `--fingerprint`. A registration date found within `RECHECK_DAYS` (30)
-isn't asked again (`fresh_registrations` reads them from `--out`); an unknown one is asked every scan.
+its registry (`rdap-domain`), for its registered domain (`ex.ample.com`, dnstwist's dot insertion, is
+`ample.com`'s). Such a split name is first checked for a wildcard under its immediate parent
+(`Pipeline._under_a_wildcard`, the same random-name probe as `--guess`). If the probes get no answer, or the
+name's addresses are the wildcard's answer, its parent's date says nothing about the organisation and
+the name is left undated. The check asks for addresses only, so a split name with MX and no address is
+still dated. With `--no-resolve` the check can't run, and every split name is left undated with an
+error each.
+
+A TLD with no RDAP service in IANA's bootstrap, or one rdap.org itself answers 404 for, raises
+`enrich.NoRdapService`: the date stays unknown (asked again next scan, without a request while the
+bootstrap lacks the TLD), and the run records one `rdap-domain` error naming those TLDs. A 404 from a
+registry that does run RDAP means there is no record: the lookalike is marked checked, with no date. One
+registered within `RECENT_DAYS` (365) also gets its newest certificate from crt.sh
+(`crtsh-certificate`). When any lookalike still needs dating, the scan domains' own NS and MX are looked
+up too (`scan-dns`), so assessment can tell the organisation's own lookalikes without `--fingerprint`;
+otherwise the previous answers in `assets.json` are kept. A registration date found within
+`RECHECK_DAYS` (30) isn't asked again (`fresh_registrations` reads them from `--out`); an unknown one is
+asked every scan.
 Merging: addresses accumulate in `ips`, but `current_ips`, `mx` and `ns` are the latest scan that saw
 the lookalike; a failed lookup keeps the last registration answer. `--no-enrich` skips it.
 
@@ -395,7 +434,8 @@ address.
 **The steps:**
 
 1. **Port sweep.** One TCP connect per port: the 43 defaults (or `--ports`) plus ports InternetDB saw
-   open. Each port is `open`, `closed` (refused) or `filtered` (timed out). Only a refusal removes an
+   open. With `--ports none`, and on shared front ends, only 80 and 443 are tried, without InternetDB's
+   ports. BGP (179) isn't a default port. Each port is `open`, `closed` (refused) or `filtered` (timed out). Only a refusal removes an
    old fingerprint row; a timeout might be one dropped packet.
 2. **Service identification** (`fingerprint_service`). Each open port is asked by port class:
 
@@ -416,7 +456,8 @@ address.
    `Evidence` (headers, cookies, title, body, redirect, banner, CNAMEs, generator, certificate) and
    matched against the rules in `data/fingerprints.json`. A rule's first capture group is its version,
    which fills the rule's CPE template. WordPress plugins and themes are read from asset URLs. Signals
-   such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too,
+   such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too
+   (`login-form` is recorded but makes no finding),
    and `bot-challenge:<vendor>` or `bot-block:<vendor>` when a bot defence answered in place of the
    site (`fingerprint.turned_away`, rules in `data/bot_defences.json`; only its headers and cookies are
    matched, no favicon or path is asked for, and the service is judged as nothing, counted per
@@ -426,7 +467,8 @@ address.
    default handshake on that extension alone.
 
    For each host whose web services were turned away, `Pipeline._archived` asks the `Archive` (the
-   Wayback Machine) for the newest copy of its homepage from the last year, once per host, and
+   Wayback Machine) for the newest copy of its homepage from the last year, once per host (a CDX query,
+   then the capture itself), and
    `fingerprint.from_capture` matches the same rules against it. The result goes in the service's
    `archived` field, never in `tech`, so it feeds no CVE lookup or finding: `assess.technologies` lists
    it with `seen` `archive`, without end-of-life or CVE counts. A copy that is itself a bot defence's
@@ -438,8 +480,11 @@ address.
      (`fingerprint.turned_away`), HTTP 429 or 5xx leaves it `unknown` with an error, since those answer
      about the asker or the moment, not the policy; a plain 401 or 403 refuses sending servers too), TLS-RPT, BIMI
    - DNS: nameservers, one `AXFR` request to each nameserver (third-party services such as
-     Cloudflare included), except managed services that can't allow one, listed in
-     `data/dns_providers.json`, and none with `--no-axfr`; DNSSEC, CAA, wildcard
+     Cloudflare included, since some let customers allow transfers to whole address ranges), except
+     managed services whose customers can't open one to the internet (Route 53, Azure DNS, Google Cloud
+     DNS and others in `data/dns_providers.json`), and none with `--no-axfr`. A scan that gets no
+     answer keeps the last `axfr` result while the nameservers stay the same. DNSSEC (a DS query; some
+     resolvers can't answer one, which leaves it unknown), CAA, wildcard
    - registration: registrar, dates and transfer lock from RDAP; a failed lookup is recorded as an error
 
    Each part fails independently. A failed check is recorded as an error and its value left unknown.
@@ -447,7 +492,8 @@ address.
    connection for banner, STARTTLS and certificate. Hosted providers' (Microsoft 365, Google, mail
    gateways) are left alone.
 6. **Dangling DNS** (`pipeline._dangling`). For each name that doesn't resolve, its CNAME target is
-   checked. A target under an unregistered domain, or a nonexistent name on a platform where names can
+   checked, unless the target is itself in scope (the organisation's own names are resolved, not
+   claimed). A target under an unregistered domain, or a nonexistent name on a platform where names can
    be claimed (`data/takeover.json`), is a takeover risk. So is a live host serving a platform's
    "nothing configured here" page. A target that simply doesn't exist is a broken record.
 
@@ -467,7 +513,8 @@ Assessment has two halves, deliberately separated:
 
 **a. Lookups** (`assess.lookup_vulns`), done before saving against a *preview* of the merged inventory
 (`output.preview`), so that previously fingerprinted hosts are covered too. For each CPE with a version,
-NVD is asked which CVEs affect it (cached in `assets.json` for 7 days). CISA's Known Exploited
+NVD is asked which CVEs affect it (cached in `assets.json` for 7 days; one request every 6.5 seconds
+without `NVD_API_KEY`, 0.7 with one). CISA's Known Exploited
 Vulnerabilities catalogue is fetched once. These are the only network calls, and none goes to the
 organisation. If interrupted, the scan is saved without a new assessment.
 
@@ -476,8 +523,8 @@ the save. It walks:
 
 - each address's exposed management and data ports, one finding per address and port whatever names
   point at it
-- each fingerprinted endpoint: edge appliances, file transfer platforms and admin panels by technology
-  category, end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals
+- each fingerprinted endpoint: edge appliances and file transfer platforms by technology category,
+  admin panels by product name (`HIGH_PANELS`, `MEDIUM_PANELS`), end-of-life versions (`data/eol.json`), CVEs, certificate and TLS problems, web signals
   (`version-disclosure` not on a shared front end whose own `Server` header is the only one; an
   origin's `X-Powered-By` or `X-AspNet-Version` passes through and still counts),
   dev/test hosts, parked scan domains (high when the domain is still in the Microsoft 365 tenant)
@@ -492,9 +539,15 @@ the save. It walks:
 
 | Level | Meaning | Examples |
 |---|---|---|
-| high | tried first | RDP/SMB/databases/container APIs open; VPN appliances; file transfer platforms; Jenkins, GitLab, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git`; takeovers; spoofable mail; zone transfers |
-| medium | useful weakness | self-signed or mismatched certificates; TLS 1.0/1.1; HTTP only; directory listings; login prompts; dev/staging hosts; weak DKIM; BGP open; parked domains |
-| low | hygiene | missing HSTS; no DNSSEC or CAA; version-revealing headers; broken CNAMEs; SPF at the 10-lookup limit; a provider's certificate on a name pointed at it |
+| high | tried first | RDP/SMB/Telnet/VNC/WinRM/databases/container APIs open; VPN appliances; file transfer platforms; Jenkins, GitLab, vCenter, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git` or bucket listings; takeovers; spoofable mail (no SPF, `+all`, no enforced DMARC without SPF `-all`); zone transfers |
+| medium | useful weakness | Jira, Confluence, Swagger, webmail; FTP and LDAP open; self-signed, mismatched or weak certificates; TLS 1.0/1.1; HTTP only; directory listings; login prompts; CORS with credentials; dev/staging hosts; non-rejecting or broken SPF; broken MTA-STS; weak DKIM; BGP open; parked domains; CVSS 7–8.9 CVEs |
+| low | hygiene | missing HSTS or HTTPS redirect; no DNSSEC, CAA, MTA-STS or DKIM found; one nameserver; version-revealing headers and plugin versions; broken CNAMEs; SPF at the 10-lookup limit; a provider's certificate on a name pointed at it; POP3, IMAP, SSH; CVEs below CVSS 7 |
+
+Some kinds take their level from the evidence: `exposed-service` from the port (`assess.EXPOSED`),
+`admin-interface` from the product, `known-vulnerable-version` from CVSS and CISA KEV, `shodan-cves`
+(high with a known-exploited CVE, otherwise medium, low on shared or no-longer-live addresses),
+`dmarc-missing` and `dmarc-not-enforced` (medium instead of high when SPF ends in `-all`), and
+`parked-domain` (high when the domain is still in the Microsoft 365 tenant). README.md lists every kind.
 
 **Discounts**, to avoid confident false positives:
 
@@ -504,7 +557,8 @@ the save. It walks:
 - Shodan CVEs on an address only passive DNS reported, or that live DNS stopped returning before the
   latest scan, are low: the address may belong to someone else by now
 - a provider's own certificate on a name that CNAMEs into that provider (Intune, App Proxy, a hosted
-  file transfer service) is a low mismatch and never "expiring": the provider renews it
+  file transfer service) is a low mismatch and never "expiring": the provider renews it. Once it has
+  actually expired it is still `certificate-expired` (high)
 - a certificate that lives 100 days or less is renewed by machine weeks ahead, so it is only
   "expiring" with 7 days left, when renewal has evidently failed
 - a check that failed produces no finding
@@ -526,7 +580,9 @@ the save. It walks:
 - federation to self-hosted ADFS is one medium `self-hosted-federation` finding per sign-in host;
   managed, `none`, known providers and `other` produce nothing
 
-Each finding has a stable `id`. Because findings are re-derived from scratch each time, a fixed issue
+Each finding has a stable `id`, `kind|target` plus the product or domain it is about where one target
+can carry several (stored in `assets.json`; `findings.csv` leaves it out). Because findings are
+re-derived from scratch each time, a fixed issue
 disappears; `merge_findings` only carries over `first_seen`. Each finding's `last_seen` is the
 `last_seen` of the rows it was judged from (fingerprints, posture, addresses, dangling records), so
 re-assessing old evidence doesn't make it look freshly observed; evidence with no date takes the
@@ -552,12 +608,21 @@ under a directory lock:
    unjudged with the error recorded.
 3. writes every file atomically (temp file and rename). `assets.json` is the source of truth for the
    infrastructure and `credentials.json` for credential evidence; the CSVs and text lists are views of them.
+   A stage's CSV is only written once that stage has produced rows (`related.csv`, `tenants.csv`,
+   `fingerprints.csv` and so on). Infrastructure files take the process umask; credential files and
+   their checkpoints are 0600.
+
+The directory lock is `.lock` in the output folder (`files.py`), held while a run merges and writes, so
+two scans into one folder serialise their saves instead of losing each other's results.
 
 With credentials, step 0 comes first: the batch is merged into and saved to `credentials.json`
 (owner-only) *before* the inventory is read, so an inventory that can't be merged never costs the
 evidence. A save that fails leaves the old sidecar intact and keeps the new evidence in
-`credentials.unmerged-<time>.json`; the run's entry in `runs` records `credentials.error` (value-free)
-and `credentials.fallback` (the file name), and the CLI warns on stderr and exits 1. The assessment receives the sidecar's state, and `findings.csv` is
+`credentials.unmerged-<time>.json` (`<time>` is the UTC stamp without colons; a second fallback in the
+same second gets a `-<n>` suffix). The run's entry in `runs` records `credentials.error` (value-free)
+and `credentials.fallback` (the file name), its `errors` gain a `credentials` / `credentials.json`
+entry, and the CLI warns on stderr and exits 1. If the fallback can't be written either, the warning
+has no `; kept in <file>` part and the reason adds `can't write the fallback (<exception name>)`. The assessment receives the sidecar's state, and `findings.csv` is
 written from `current_findings` (below).
 
 Every row carries `first_seen` and `last_seen`. Each run is recorded with its domains, counts of new
@@ -575,17 +640,31 @@ evidence files. A paid provider is added as another `CredentialProvider`, with i
 (kind, operation) checks it covers, and turns a root domain into normalised `exposures` and
 `summaries`. `collect_credentials` validates them against `credentials.PROVIDER_SPECS` (a row that fails
 makes the provider's check `failed` with `schema`, and keeps nothing) and adds one check per
-operation: `complete`, or `failed` with a value-free category (`error_category`: an `UnexpectedResponse`
-such as an HTML challenge page is `schema`, a 429 past retries `quota`, other HTTP errors `server`,
-network errors `transport`, 401/403 `denied`). The CLI collects before the scan, after recovery and the
-inventory check, and hands the rows to `build_batch`, which scopes, relates and identifies them; the batch
-then goes through the checkpoint, sidecar and fallback. Collection makes one small request per provider and
-domain, so there is no pagination. Ctrl-C during it returns 130 with nothing written.
+operation: `complete`, or `failed` with a value-free category (`credential_sources.base.error_category`):
+
+| Category | Cause |
+|---|---|
+| `denied` | HTTP 401 or 403 |
+| `quota` | HTTP 429 after retries |
+| `server` | HTTP 5xx after retries |
+| `transport` | network errors |
+| `schema` | anything else: an `UnexpectedResponse` such as an HTML challenge page, a 4xx that isn't retried (400, 404), or an unexpected exception |
+
+`no-key` is reserved in `credentials.ERROR_CATEGORIES` for keyed providers; neither free provider
+produces it. The CLI collects before the scan, after checkpoint recovery and the inventory check, and
+hands the rows to `build_batch`, which scopes, relates and identifies them; the batch then goes through
+the checkpoint, sidecar and fallback. Collection makes one small request per provider and domain, so
+there is no pagination. Ctrl-C during it returns 130 without saving the new evidence (checkpoints
+recovered just before are already saved). The SIGTERM handler is only installed after collection, so
+SIGTERM during collection ends the process without a message.
 
 `hudsonrock-osint` reads the `hudsonrock` hostname source's per-run memo (`HudsonRock.report`: one
 request per domain, failures remembered, never written), so the source and the provider share one
-request. Its employee URLs become identity-less `email` exposures, one per in-scope host and explicit
-port, with `occurrences` summed; `normalise_exposure` accepts an identity-less `email` row when its host is
+request. Hudson Rock's URLs are unmasked and can hold password-reset tokens, so only the host and an
+explicit port are kept. Its employee URLs become identity-less `email` exposures, and its user
+(customer) URLs `website` ones, one per in-scope host and explicit port, with `occurrences` summed. Its
+counts are summaries: infected employees, third parties, URLs held and stealer families are `email`;
+infected users are `website`; `normalise_exposure` accepts an identity-less `email` row when its host is
 in scope and its provider label is a workforce label (`WORKFORCE_LABELS`). Zero counts write no rows, so
 a domain Hudson Rock doesn't know produces only complete checks (`no data`). `hibp-public` is `website`
 only: breaches of the site itself, dataset-level, fabricated and spam lists skipped.
@@ -602,7 +681,9 @@ keeps only a secret *type*, and strips paths, queries and user information from 
 (0600) on POSIX. A missing sidecar is "no evidence", not zero exposure; an unreadable one is an error that
 is never merged into or overwritten (new evidence goes to an owner-only fallback).
 
-**Merge.** Exposures union by stable ID: re-fetching updates `last_seen` but not event dates. Summaries
+**Merge.** Exposures union by stable ID, which leaves out event dates. When an exposure is fetched
+again, its mutable fields (event date and basis included) come from the later retrieval, and
+`first_seen` / `last_seen` span both (`credential_store._newer_wins`). Summaries
 replace the previous value for their metric. Checks are latest-wins snapshots by observation time,
 except that `last_complete_at` carries forward. `build_batch` and the sidecar use the same `merge_check`
 helper, so checks follow the same rules whatever order they arrive in. Absence from a later check is
@@ -612,7 +693,7 @@ not remediation.
 inventory's) and of a query kind that `--credential-queries` has enabled; the rest are dropped and counted.
 
 **Revision and staleness.** After assessment `assets.json` stores `credential_assessment`
-(`status`, `revision`). `credential_status(report, state)` is `current` only when the stored revision is
+(`status`, `revision`, `assessed_at`). `credential_status(report, state)` is `current` only when the stored revision is
 the sidecar's now; otherwise `stale` (new evidence, or the sidecar went away), `unavailable` (the sidecar
 can't be read) or `none`. `current_findings` drops credential findings unless `current`, which is what
 `findings.csv` and the terminal totals use; the snapshot stays in `assets.json`. `--assess` re-derives
@@ -630,13 +711,16 @@ them. `assess.derive` stays pure: it is handed the state and never produces a fi
 | A name-only tenant | Tentative lead; no severity change |
 | Host in DNS only | `dns-only`: medium at most; `--fingerprint` could confirm |
 | Host not in the inventory | Lead |
-| A shared login domain (`login.microsoftonline.com`, `accounts.google.com`), even when it is the federated sign-in host | Provider context only |
+| A shared login domain, even when it is the federated sign-in host: any host under the registered domains listed in `data/identity_providers.json` (`microsoftonline.com`, `microsoft.com`, `live.com`, `google.com`, `okta.com`, `onelogin.com`, `auth0.com`, `pingone.com`) | Provider context only. A tenant on one of them (`example.okta.com`) can still match as a tenant |
 
 **Levels.** Theft evidence (infostealer, phishing) is high only with a theft or capture date within
 `RECENT_DAYS` (90) *and* a strong association (endpoint, host, sign-in, tenant) whose supporting
 observation is itself within 90 days; otherwise medium. Account-specific password or hash records are
 medium; email-only or dataset-level exposure is low; summaries are low and never confirm accounts.
-Breach dates cannot be theft dates. Findings are grouped by scope domain, kind, relationship and
+Breach dates cannot be theft dates, and the theft-date clauses ("theft date unknown", "older than 90
+days") appear only on `credential-theft` findings. Exposures make `credential-theft` (infostealer,
+phishing) or `credential-breach` findings; summaries make low `credential-summary` findings with ID
+`credential-summary|<scope>|<provider>/<kind>/<operation>/<metric>`. Findings are grouped by scope domain, kind, relationship and
 asset, and their ID is `kind|target|scope_domain|relationship`, so each scope domain keeps its own
 finding on a shared asset; the detail names the scope domain. They carry counts but no identities or
 values derived from them: identities are counted once per (local part, normalised domain), and
@@ -661,8 +745,8 @@ printed whenever a sidecar exists, rows were dropped or `assets.json` stores a `
 `runtime` holds per-process state: which job each worker thread is on, and a cancellation event.
 Sources call `runtime.status()`, `count_request()` and `sleep()` without knowing who is listening; the
 pipeline binds each worker to its job key and the reporter. `progress.LiveReporter` draws a line per
-source and domain plus counters for each later phase; `NullReporter` is used with `-v` or when output
-isn't a terminal.
+source and domain plus counters for each later phase; `NullReporter` is used with `-v`, with
+`--no-progress`, or when output isn't a terminal.
 
 Ctrl-C and SIGTERM are only delivered to the main thread while it waits for the next result
 (`runtime.interruptible`); arriving at any other time they are deferred to the next wait. Cancelling
@@ -685,7 +769,10 @@ an invalid member in place with a value-free warning. Replaying a member is idem
 revision doesn't change.
 
 If the final sidecar save and credential fallback both fail, the CLI keeps the credential checkpoint
-and releases its liveness lock, so a later run can recover it. An infrastructure merge error also keeps
+and releases its liveness lock, so a later run can recover it. Its `.checkpoint-<token>.lock` stays as
+long as the credential member does. The scan writes the credential member with its first checkpoint;
+the credentials-only path (`_credentials_only`), which has no pipeline to call the checkpointer, writes
+it with `Checkpointer.save_credentials` just before saving. Both release it through `cli._release`. An infrastructure merge error also keeps
 any credential checkpoint conservatively; replay remains idempotent. Infrastructure checkpoints whose
 results reached the inventory or its fallback can still be cleared.
 
@@ -694,6 +781,7 @@ results reached the inventory or its fallback can still be cleared.
 | Where | Control |
 |---|---|
 | Discovery and enrichment APIs | per-service throttle and pool size; backoff with `Retry-After` |
+| Credential providers | one request per provider and root domain per run; Hudson Rock's shared with its hostname source |
 | Related domains | 8 concurrent lookups (capped by `--workers`); `--related-rate` lookups started per second, all kinds sharing one pace |
 | Tenants | `--tenant-budget` total lookups |
 | Guessing | `--guess-budget` per domain, `--guess-rate` per second |
