@@ -231,7 +231,7 @@ with the tenant ID and region. That's two requests per domain to `login.microsof
 made-up username, never a real one. A Microsoft 365 tenant found by its name alone
 (`example.onmicrosoft.com`) is checked against the scan domains' tenant ID: someone else's is dropped,
 from earlier runs' inventory too, and the organisation's own gets tie `records`. Federation to a
-Self-hosted ADFS server is a finding, and a sign-in host under the scan domains joins the inventory.
+self-hosted ADFS server is a finding, and a sign-in host under the scan domains joins the inventory.
 
 It also asks Google where each scan domain's Workspace users sign in (one request per domain to
 `accounts.google.com/samlredirect`). A domain whose Google sign-in is federated gets `google_sso` (the
