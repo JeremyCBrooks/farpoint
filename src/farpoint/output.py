@@ -54,7 +54,11 @@ def _host_rows(inv: Inventory) -> list[dict]:
             "sources": sorted(h.sources),
         }
         for h in sorted(inv.hosts.values(), key=lambda h: h.hostname)
-        if h.sources  # an earlier host looked at again that nothing vouched for (it didn't resolve): its row stays as it was
+        if h.sources
+    ] + [  # an earlier host looked at again that no longer exists: merge_reports marks its row, and nothing else
+        {"hostname": h.hostname, "resolves": False, "ips": [], "cnames": [], "sources": [], "rechecked": True}
+        for h in sorted(inv.hosts.values(), key=lambda h: h.hostname)
+        if not h.sources and h.resolves is False
     ]
 
 
@@ -270,7 +274,10 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
             "ips": _ips(set(old.get("ips", [])) | set(new["ips"])),
         }
 
-    hosts, new_hosts = _merge_rows(prior.get("hosts", []), current["hosts"], "hostname", host, stamp, prior_stamp)
+    gone = {h["hostname"] for h in current["hosts"] if h.get("rechecked")}  # no longer exist: no new sighting, so last_seen stays
+    prior_hosts = [{**h, "resolves": False} if h["hostname"] in gone else h for h in prior.get("hosts", [])]
+    current_hosts = [h for h in current["hosts"] if not h.get("rechecked")]
+    hosts, new_hosts = _merge_rows(prior_hosts, current_hosts, "hostname", host, stamp, prior_stamp)
     ips, new_ips = _merge_rows(prior.get("ips", []), current["ips"], "ip", ip, stamp, prior_stamp)
     looked_up = [{**r, "registration_checked": stamp if r.get("registration_checked") is True else None} for r in current["lookalikes"]]
     lookalikes, new_lookalikes = _merge_rows(prior.get("lookalikes", []), looked_up, "domain", lookalike, stamp, prior_stamp)
@@ -411,19 +418,13 @@ def _fingerprint_csv_rows(report: dict) -> list[dict]:
     return rows
 
 
-HOSTING = re.compile(
-    r"amazon|aws|microsoft|azure|google|oracle|digitalocean|linode|akamai|ovh|hetzner|scaleway|vultr|ibm|alibaba|tencent|"
-    r"rackspace|leaseweb|contabo|hostinger|godaddy|ionos|1&1|cloudflare|fastly|incapsula|imperva|cdn|hosting",
-    re.I,
-)
+from farpoint.fingerprint import HOSTING  # noqa: E402 - beside the other provider patterns
 
 
 def netblock_rows(report: dict) -> list[dict]:
     """The networks (as RDAP registers them) the inventory's addresses sit in, the organisation's own first:
     candidates to confirm and pass to --ranges. `hosting` marks a cloud, CDN or hosting provider's network,
     whose other addresses are other customers'. `in_ranges` says whether --ranges already covers it."""
-    from farpoint.fingerprint import SHARED_NETWORKS
-
     ranges = []
     for r in report.get("ranges", []):
         try:
@@ -440,7 +441,7 @@ def netblock_rows(report: dict) -> list[dict]:
         g["hosts"].update(ip.get("hostnames", []))
     rows = []
     for g in groups.values():
-        hosting = bool(HOSTING.search(g["org"] or "") or SHARED_NETWORKS.search(g["org"] or ""))
+        hosting = bool(HOSTING.search(g["org"] or ""))
         rows.append({
             "network": g["network"], "org": g["org"], "hosting": "yes" if hosting else "no", "in_ranges": _coverage(g["network"], ranges),
             "addresses": len(g["ips"]), "hosts": len(g["hosts"]), "live_hosts": sum(1 for h in g["hosts"] if (hosts.get(h) or {}).get("resolves")),

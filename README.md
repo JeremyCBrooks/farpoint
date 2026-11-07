@@ -21,7 +21,8 @@ uv run farpoint example.com                 # passive scan; results in ./out/
 Open `out/hosts.csv` for the hostnames found and `out/ips.csv` for their addresses. Running again
 into the same folder adds to the inventory instead of replacing it, and looks again at the hosts
 earlier scans found under this scan's domains: they are resolved again and, with `--fingerprint`,
-probed while they are live.
+probed while they are live. One that no longer exists is marked `resolves=no`, keeping the date it was
+last seen.
 
 Common next steps:
 
@@ -158,7 +159,9 @@ as lookalikes.
 
 With `--related`, organisations named in the subject of the scan domains' own certificates (an
 organisation-validated certificate names the company a CA checked) are looked up in crt.sh, and other
-registered domains on current certificates issued to them are recorded with tie `medium`. The
+registered domains on current certificates issued to them are recorded with tie `medium`. A
+certificate on a CDN's or SaaS front end's address, or one naming a cloud, CDN or hosting provider, is
+left out: those are shared with unrelated customers. The
 organisation names come from this scan's `--fingerprint` and from earlier scans in `--out`.
 
 Results go to `related.csv`. The summary counts each tie and names the first few strong and medium
@@ -254,7 +257,8 @@ Storage buckets often hold backups, exports and logs, and their names are guessa
 and Google Cloud Storage about buckets the organisation's CNAMEs point at (`assets.example.com` →
 `example-assets.s3.amazonaws.com`, tie `cname`) and about its name with common modifiers
 (`example-backup`, `example-assets` and the organisation's own modifiers, tie `name`), at most 200
-requests. Each gets one unauthenticated GET to the provider, whose answer says whether the bucket
+requests. Website buckets named after a host (`assets.example.com`) are asked path-style, in the
+region their CNAME names; one that exists in another region is recorded with `public` blank. Each gets one unauthenticated GET to the provider, whose answer says whether the bucket
 doesn't exist (404 NoSuchBucket), exists but isn't public (403), or lists its contents to anyone (200).
 Nothing is downloaded past that first answer.
 

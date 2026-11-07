@@ -83,7 +83,7 @@ class Prober(Protocol):
 
     def smtp(self, host: str, ip: str, port: int = 25) -> SmtpResult: ...
 
-    def axfr(self, nameserver_ip: str, domain: str) -> int | None: ...  # records transferred (0: refused, None: no answer)
+    def axfr(self, nameserver_ip: str, domain: str, nameserver: str | None = None) -> int | None: ...  # records transferred (0: refused, None: no answer)
 
     def fetch(self, url: str) -> HttpResult | None: ...  # a plain HTTPS GET with certificate checks (MTA-STS policy)
 
@@ -300,7 +300,7 @@ class NetworkProber:
 
         return self._guard(ip, go)
 
-    def axfr(self, nameserver_ip: str, domain: str) -> int | None:
+    def axfr(self, nameserver_ip: str, domain: str, nameserver: str | None = None) -> int | None:
         def go() -> int | None:
             try:
                 zone = dns.zone.from_xfr(dns.query.xfr(nameserver_ip, domain, timeout=self.timeout, lifetime=self.timeout * 2))
@@ -340,9 +340,11 @@ class NetworkProber:
             finally:
                 conn.close()
 
-        for ip in ips:
-            if not ipaddress.ip_address(ip).is_global:  # never follow the organisation's DNS into a private network
-                continue
+        public = [ip for ip in ips if ipaddress.ip_address(ip).is_global]  # never follow the organisation's DNS into a private network
+        allowed = [ip for ip in public if not (self.exclusions and self.exclusions.ip(ip))]
+        if public and not allowed:
+            raise OutOfScope(host)
+        for ip in allowed:
             try:
                 return self._guard(ip, lambda: go(ip))
             except _Unreachable:
@@ -385,9 +387,9 @@ class ScopedProber:
         self._check(host, ip)
         return self._prober.smtp(host, ip, port)
 
-    def axfr(self, nameserver_ip: str, domain: str) -> int | None:
-        self._check(ip=nameserver_ip)
-        return self._prober.axfr(nameserver_ip, domain)
+    def axfr(self, nameserver_ip: str, domain: str, nameserver: str | None = None) -> int | None:
+        self._check(nameserver, nameserver_ip)
+        return self._prober.axfr(nameserver_ip, domain, nameserver)
 
     def fetch(self, url: str) -> HttpResult | None:
         self._check(host=urlsplit(url).hostname or "")

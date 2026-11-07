@@ -258,19 +258,25 @@ def _platform_get(http: httpx.Client):
     return get
 
 
-def _certificate_orgs(report: dict | None) -> list[str]:
+def _certificate_orgs(report: dict | None) -> dict[str, str]:
     """Organisations named in the subject of certificates earlier scans found on the organisation's own
-    names, for --related to look up (this scan's --fingerprint adds what it finds)."""
+    names, each with its scan domain, for --related to look up (this scan's --fingerprint adds what it finds).
+    Certificates on a CDN's or SaaS front end's address are the provider's, and are left out."""
+    from farpoint.fingerprint import own_certificate_org, shared_address
     from farpoint.names import in_scope
 
     domains = (report or {}).get("domains", [])
-    orgs = set()
+    scope_of = lambda name: max((d for d in domains if in_scope(name, d)), key=len, default=None)
+    ips = {r["ip"]: r for r in (report or {}).get("ips", [])}
+    cnames = {h["hostname"]: h.get("cnames", []) for h in (report or {}).get("hosts", [])}
+    orgs: dict[str, str] = {}
     for r in (report or {}).get("fingerprints", []):
-        tls = r.get("tls") or {}
-        names = [n.removeprefix("*.") for n in [*tls.get("sans", []), (tls.get("subject") or "").lower()]]
-        if tls.get("organization") and any(in_scope(n, d) for n in names for d in domains):
-            orgs.add(tls["organization"])
-    return sorted(orgs)
+        ip = ips.get(r.get("ip"), {})
+        if shared_address(ip.get("org"), [cnames.get(r["hostname"], [])], ip.get("tags", [])):
+            continue
+        if found := own_certificate_org(r.get("tls") or {}, scope_of):
+            orgs.setdefault(*found)
+    return dict(sorted(orgs.items()))
 
 
 def _tenant_config(budget: int, report: dict | None) -> TenantConfig:

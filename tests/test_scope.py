@@ -107,3 +107,37 @@ def test_cli_rejects_a_bad_exclusion_and_reads_them_from_a_file(tmp_path, capsys
     listed.write_text("# agreed with the client\nshop.example.com\n198.51.100.0/24\n", encoding="utf-8")
     assert cli.parse_exclusions([f"@{listed}", "partner.example.com"]).host("partner.example.com")
     assert cli.parse_exclusions([f"@{listed}"]).ip("198.51.100.9")
+
+
+def test_a_nameserver_excluded_by_name_is_never_asked_for_a_zone_transfer():
+    pipeline, prober = scenario(["ns1.example.com"])
+
+    posture = pipeline.run([D]).posture[D]
+
+    assert not [c for c in prober.calls if c[0] == "axfr"] and posture["axfr"] is None  # not asked: unknown
+
+
+def test_a_host_excluded_by_name_is_not_probed_by_address_through_its_range():
+    import ipaddress
+
+    pipeline, prober = scenario(["shop.example.com", "pay.shop.example.com", "www.example.com"])  # every name at OURS
+    pipeline.ranges = (ipaddress.ip_network(f"{OURS}/32"),)
+
+    pipeline.run([D])
+
+    assert not [c for c in prober.calls if c[0] == "connect" and c[1] == OURS]
+
+
+def test_fetch_tries_a_hosts_other_addresses_when_one_is_excluded(monkeypatch):
+    import socket
+
+    from farpoint import probe
+    from farpoint.probe import NetworkProber, OutOfScope
+
+    tried = []
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kw: [(None, None, None, "", (ip, port)) for ip in (THEIRS, OURS)])
+    monkeypatch.setattr(NetworkProber, "_guard", lambda self, ip, fn: tried.append(ip) or None)
+    assert NetworkProber(exclusions=Exclusions.parse([THEIRS])).fetch("https://mta-sts.example.com/x") is None
+    assert tried == [OURS]
+    with pytest.raises(OutOfScope):
+        NetworkProber(exclusions=Exclusions.parse([THEIRS, OURS])).fetch("https://mta-sts.example.com/x")

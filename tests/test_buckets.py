@@ -92,3 +92,24 @@ def test_without_the_platforms_answer_a_wildcard_platforms_name_match_is_not_kep
     inv = Pipeline(sources=[], lookup=lookup, txt=lambda d: [], tenants=TenantConfig(vendors=(OKTA,)), web=web).run([D])
 
     assert inv.tenants == {}
+
+
+def test_a_website_bucket_named_after_its_host_is_asked_path_style_in_its_region():
+    web = FakeWeb({"https://s3.eu-west-1.amazonaws.com/assets.example.com/": (200, LISTING)})
+    lookup = dns_table({"assets.example.com": Resolution(ips=("52.218.1.1",), cnames=("assets.example.com.s3-website-eu-west-1.amazonaws.com",)),
+                        "files.example.com": Resolution(ips=("34.1.1.1",), cnames=("c.storage.googleapis.com",))})
+    pipeline = Pipeline(sources=[StaticSource("crtsh", [Observation("crtsh", h) for h in ("assets.example.com", "files.example.com")])],
+                        lookup=lookup, web=web, buckets=True)
+
+    inv = pipeline.run([D])
+
+    record = inv.tenants["assets.example.com.s3.amazonaws.com"]
+    assert (record.tie, record.public) == ("cname", True)
+    assert "https://storage.googleapis.com/files.example.com/" in web.asked  # GCS's own-domain CNAME names the bucket after the host
+    assert not [u for u in web.asked if "//c.storage" in u or "/c/" in u]
+
+
+def test_a_bucket_in_another_region_exists_though_its_listing_is_unknown():
+    from farpoint.buckets import judge
+
+    assert judge(301, "<Error><Code>PermanentRedirect</Code></Error>") == "exists"

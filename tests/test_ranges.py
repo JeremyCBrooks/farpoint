@@ -146,3 +146,43 @@ def test_cli_checks_ranges(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cli.main(["example.com", "--ranges", "93.184.216.0/24", "--no-resolve", "-o", str(tmp_path)])
     assert "--ranges needs DNS" in capsys.readouterr().err
+
+
+def test_a_shared_cdn_certificate_names_the_cdn_not_the_organisation():
+    net = CertNet({"Incapsula Inc": ["shop.othercustomer.com"]})
+    shared = make_cert(cn="incapsula.com", sans=("incapsula.com", "www.example.com", "shop.othercustomer.com"), org="Incapsula Inc")
+    prober = FakeProber(ports={("45.60.1.1", 443): "open"}, tls={("www.example.com", 443): TlsResult("TLSv1.3", cert=shared)})
+    pipeline = Pipeline(
+        sources=[StaticSource("crtsh", [Observation("crtsh", "www.example.com")])],
+        lookup=dns_table({"www.example.com": Resolution(ips=("45.60.1.1",))}),
+        enrichers=[TableEnricher({"45.60.1.1": IpDetails(org="Incapsula Inc")})],
+        related=net, dns=FakeDns({}), prober=prober, fingerprint=FingerprintConfig(ports=(443,), paths=(), rate=None, legacy_tls=False),
+    )
+
+    inv = pipeline.run([D])
+
+    assert net.orgs_asked == [] and "othercustomer.com" not in inv.related
+
+
+def test_certificate_pivot_hosts_are_resolved_and_earlier_organisations_keep_their_domain():
+    net = CertNet({"B Corp": ["login.b.com", "other-b.net"]})
+    inv = Pipeline(sources=[], lookup=dns_table({"login.b.com": Resolution(ips=("93.184.216.40",))}), related=net,
+                   certificate_orgs={"B Corp": "b.com"}).run(["a.com", "b.com"])
+
+    assert inv.hosts["login.b.com"].resolves is True
+    assert inv.related["other-b.net"].related_to == "b.com"
+
+
+def test_a_range_address_named_during_enrichment_is_then_sent_to_rdap():
+    rdap = TableEnricher({MAIL: IpDetails(org="Example Corp", network="93.184.216.0/24")})
+    Pipeline(sources=[], lookup=dns_table({"vpn.example.com": Resolution(ips=(MAIL,))}), dns=FakeDns({}),
+             enrichers=[BulkEnricher({MAIL: IpDetails(hostnames={"vpn.example.com"})}), rdap], ranges=(RANGE,)).run([D])
+
+    assert MAIL in rdap.seen and rdap.seen.count(MAIL) == 1
+
+
+def test_hosting_providers_are_named_by_whole_words():
+    from farpoint.output import HOSTING
+
+    assert all(HOSTING.search(o) for o in ("Amazon.com, Inc.", "Microsoft Corporation", "Google LLC", "OVH SAS", "Hetzner Online GmbH", "DigitalOcean, LLC"))
+    assert not any(HOSTING.search(o) for o in ("Shaws Holdings Ltd", "Gibmore Group", "Novacdnx Ltd", "Googleplex Dental"))

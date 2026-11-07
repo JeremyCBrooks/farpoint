@@ -61,3 +61,8 @@ def test_a_failed_google_lookup_is_unknown_and_keeps_nothing():
                    sign_in=FakeSignIn({}), google=gs).run(["plain.com"])
 
     assert inv.google_identity == {} and any(e.source == "google-sso" for e in inv.errors)
+
+
+def test_a_permanent_redirect_names_the_provider_too():
+    gs = GoogleSignIn(fake_http({"accounts.google.com/samlredirect": httpx.Response(308, headers={"Location": "https://acme.okta.com/sso"})}), retries=0)
+    assert gs.saml("okta-org.com") == "https://acme.okta.com/sso"

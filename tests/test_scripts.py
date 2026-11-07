@@ -57,3 +57,10 @@ def test_hostnames_scripts_name_join_the_inventory_resolved_and_api_paths_are_sa
     report = write_outputs(inv, tmp_path, "2026-11-01T00:00:00Z")
     assert next(r for r in report["fingerprints"] if r["endpoint"] == f"{H}:443")["api_paths"] == ["/api/v2/users", "/graphql"]
     assert "api_paths" in (tmp_path / "fingerprints.csv").read_text().splitlines()[0]
+
+
+def test_api_paths_are_whole_path_segments():
+    from farpoint.fingerprint import _API_PATH
+
+    found = _API_PATH.findall("'/apiary.js' '/authors/list' '/administrator' '/api' '/v2/x' \"/graphql?q=1\"")
+    assert sorted(found) == ["/api", "/graphql", "/v2/x"]

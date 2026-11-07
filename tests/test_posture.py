@@ -122,7 +122,7 @@ def test_a_whole_domain():
     })
 
     class Prober(FakeProber):
-        def axfr(self, ip, domain):
+        def axfr(self, ip, domain, nameserver=None):
             assert ip == "93.184.216.53"
             return 12
 
@@ -235,7 +235,7 @@ def test_a_nameserver_that_never_answers_leaves_the_zone_transfer_unknown():
     })
 
     class Prober(FakeProber):
-        def axfr(self, ip, domain):
+        def axfr(self, ip, domain, nameserver=None):
             return 0 if ip == "93.184.216.53" else None  # ns2 timed out: it might still hand the zone out
 
     assert assess_domain(dns, Prober(), D, lambda h: h.endswith(D), selectors=[])["axfr"] is None

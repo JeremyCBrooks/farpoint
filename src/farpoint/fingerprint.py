@@ -52,7 +52,8 @@ MAX_SCRIPTS = 5  # same-service scripts fetched per web service with --scripts
 MAX_API_PATHS = 50
 _SCRIPT_SRC = re.compile(rb"<script[^>]+src=[\"']([^\"']+)", re.I)
 _HOSTNAME_IN_TEXT = re.compile(r"(?<![\w.-])((?:[a-z0-9_-]+\.)+[a-z][a-z0-9-]{1,62})(?![\w-])", re.I)
-_API_PATH = re.compile(r"[\"'`](/(?:api|v\d+|graphql|rest|internal|admin|auth|oauth2?|services?)(?:/[^\"'`\s<>?#]*)?)")
+_API_PATH = re.compile(r"[\"'`](/(?:api|v\d+|graphql|rest|internal|admin|auth|oauth2?|services?)(?:/[^\"'`\s<>?#]*)?)(?=[\"'`?#])")
+MAX_LINKS = 500  # hostname-like strings kept per service: only the in-scope ones last past the run
 
 # Headers whose values change on every request, or that carry nothing about the software.
 _DROP_HEADERS = frozenset({
@@ -236,6 +237,27 @@ SHARED_NETWORKS = re.compile(
     r"squarespace|wix\.com|shopify|automattic|github|hubspot|netlify|vercel|wp ?engine|pantheon",
     re.I,
 )
+# Cloud, CDN and hosting providers by name, as whole words: a network or certificate organisation that is theirs.
+HOSTING = re.compile(
+    r"\b(amazon|aws|microsoft|azure|google|oracle|digitalocean|linode|akamai|ovh|hetzner|scaleway|vultr|ibm|alibaba|tencent|"
+    r"rackspace|leaseweb|contabo|hostinger|godaddy|ionos|cloudflare|fastly|incapsula|imperva|sucuri|edgecast|stackpath|cdn77|"
+    r"limelight|zscaler|hosting|cdn)\b",
+    re.I,
+)
+
+
+def own_certificate_org(tls: Mapping, scope_of) -> tuple[str, str] | None:
+    """(organisation, scan domain) when a certificate names a subject organisation and covers one of the scan
+    domains' own names (`scope_of` gives the scan domain of a name, or None), unless that organisation is a
+    cloud, CDN or hosting provider: their shared certificates name them, not their customers."""
+    org = (tls or {}).get("organization")
+    if not org or HOSTING.search(org) or SHARED_NETWORKS.search(org):
+        return None
+    names = [n.removeprefix("*.") for n in [*tls.get("sans", []), (tls.get("subject") or "").lower()]]
+    scan = next((d for n in names if (d := scope_of(n))), None)
+    return (org, scan) if scan else None
+
+
 # CNAME targets on multi-tenant front ends: the address answers for many customers, not just this one.
 SHARED_FRONTENDS = re.compile(
     r"\.(cloudfront\.net|azurefd\.net|azureedge\.net|azurewebsites\.net|azure-api\.net|akamaiedge\.net|edgekey\.net|"
@@ -622,7 +644,7 @@ def _scripts(prober: Prober, rec: ServiceRecord, home: HttpResult, scheme: str, 
         if got is not None and got.status == 200 and got.body:
             texts.append(_text(got.body))
     rec.api_paths = sorted({m for t in texts[1:] for m in _API_PATH.findall(t)})[:MAX_API_PATHS]
-    rec.links = sorted({m.lower() for t in texts for m in _HOSTNAME_IN_TEXT.findall(t)})
+    rec.links = sorted({m.lower() for t in texts for m in _HOSTNAME_IN_TEXT.findall(t)})[:MAX_LINKS]
 
 
 def _path_note(path: str, got: HttpResult, home: HttpResult) -> str | None:

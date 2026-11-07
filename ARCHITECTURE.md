@@ -243,9 +243,10 @@ observations. Unavailable sources are listed as skipped, not as failures.
 (`Pipeline.known`). They enter through `Inventory.add` like everything else, so only those under this
 run's scan domains are kept, with the source `models.KNOWN` (no new witness, so it is never recorded).
 They are resolved and, while live, fingerprinted. A host that resolves gains source `dns` and its row
-is updated; one that doesn't is left out of the run report (`output._host_rows` skips hosts with no
-source), so its row stays as the last scan that saw it recorded it. It is still checked for dangling
-CNAMEs.
+is updated. One that no longer exists (NXDOMAIN, not a timeout) goes into the run report marked
+`rechecked`, and `merge_reports` sets its row's `resolves` to false without touching `last_seen`, since
+nothing saw it this run; a known host the inventory never had is dropped. It is still checked for
+dangling CNAMEs.
 
 **Code leads** (`sources/github.py`, `Pipeline._code`, with `--code`). `GitHubCode` is both a discovery
 source (`github`: in-scope hostnames from code search's text matches) and the `--code` lead finder:
@@ -298,7 +299,11 @@ scanned.
    (`Pipeline.certificate_orgs`), is looked up through `Probes.certificate_names` (crt.sh's `O=` search
    over current certificates; `sources.web.CrtSh.organisation_names`). Other registered domains on them
    are `medium`: a CA validated that organisation, but another can carry the same name. In-scope names
-   join the inventory as source `crtsh-organization`.
+   join the inventory as source `crtsh-organization` and are resolved. `fingerprint.own_certificate_org`
+   decides which certificates count, for this scan and earlier ones alike: never one on a shared front
+   end's address, nor one whose organisation is a cloud, CDN or hosting provider (`fingerprint.HOSTING`,
+   `SHARED_NETWORKS`), since their shared certificates list unrelated customers. Organisations from
+   earlier scans keep the scan domain their certificate covered.
 
 ### 3. Resolution
 
@@ -326,7 +331,8 @@ is dropped. Enrichment asks only enrichers marked `bulk` (InternetDB) about addr
 knows of (`Inventory.range_only`), so RDAP isn't asked thousands of times. Fingerprinting adds every
 public, non-excluded range address that no name targets as its own target, with the address as the
 service's hostname. `output._ip_rows` leaves out range addresses where nothing was found, and
-`assess` never judges a certificate against an address. The ranges are stored in `assets.json`
+`assess` never judges a certificate against an address. A host excluded by name is never probed by
+address through its range either. The ranges are stored in `assets.json`
 (`ranges`, unioned across runs) so `netblocks.csv` can say what they cover.
 
 ### 4. Tenants (`--tenants`)
@@ -381,7 +387,10 @@ latest look (`identity.csv`).
 GCS buckets named in the organisation's CNAME targets (tie `cname`), then each organisation token with
 `buckets.MODIFIERS` and its own modifiers (tie `name`), at most `buckets.LIMIT`. Each is one GET through
 `Pipeline.web`, judged by `buckets.judge` (404 NoSuchBucket absent, 403 private, 200 with a listing
-public). Found buckets are `TenantRecord`s with `public` set; assessment makes `public-bucket` from it.
+public, 301 PermanentRedirect: it exists in another region, listing unknown). A CNAME's bucket may be
+dotted (S3 website buckets are named after the host; a CNAME to `c.storage.googleapis.com` serves the
+GCS bucket named exactly like the host), and dotted names are asked path-style, in the region the
+CNAME names, since they don't match the provider's wildcard certificate. Found buckets are `TenantRecord`s with `public` set; assessment makes `public-bucket` from it.
 
 ### 5. Guessing (`--guess`)
 
@@ -483,7 +492,8 @@ offers a name under an excluded one (`Pipeline._pick`), and self-run mail server
 not checked. As a backstop, `Pipeline.run` wraps the prober in `probe.ScopedProber`, which raises
 `probe.OutOfScope` before any call to an excluded name or address, and `NetworkProber` refuses excluded
 addresses in `_guard`, which every connection passes through (it covers `fetch`, which resolves its own
-names). Posture turns `OutOfScope` into unknown answers: `mta_sts` `unknown`, `axfr` blank.
+names, skips excluded addresses and is out of scope only when all of them are). Posture tells the
+prober which nameserver an `AXFR` address belongs to, so a nameserver excluded by name is refused too. Posture turns `OutOfScope` into unknown answers: `mta_sts` `unknown`, `axfr` blank.
 
 **Shared front ends** (`fingerprint.shared_address`). An address owned by a CDN or SaaS provider
 (from RDAP org, InternetDB tags and the hosts' CNAMEs) is the provider's machine, so only ports 80 and

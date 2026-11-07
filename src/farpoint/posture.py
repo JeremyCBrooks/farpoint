@@ -279,7 +279,7 @@ def check_dns(dns: Dns, prober: Prober, domain: str, axfr: bool = True) -> dict:
             continue
         for ip in address:
             try:
-                records = prober.axfr(ip, domain)
+                records = prober.axfr(ip, domain, n)
             except OutOfScope:  # not asked: whether it would hand the zone out is unknown
                 records = None
             answered |= records is not None

@@ -67,7 +67,7 @@ class GoogleSignIn(HttpSource):
         try:
             self.get(GOOGLE_SAML, params={"domain": domain}, follow_redirects=False)
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (301, 302, 303, 307) and exc.response.headers.get("location"):
+            if exc.response.status_code in (301, 302, 303, 307, 308) and exc.response.headers.get("location"):
                 return exc.response.headers["location"]
             if exc.response.status_code == 400:  # no SAML sign-in for it (or it isn't on Workspace)
                 return None

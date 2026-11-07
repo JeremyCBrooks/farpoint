@@ -24,7 +24,7 @@ from farpoint import runtime
 from farpoint.credential_store import CredentialState
 from farpoint.fingerprint import ORIGIN_VERSION_HEADERS, end_of_life, shared_address, was_turned_away
 from farpoint.lookalikes import RECENT_DAYS, capable, parked_at, shared_nameservers
-from farpoint.names import in_scope
+from farpoint.names import in_scope, normalize_ip
 from farpoint.sources.base import HttpSource
 from farpoint.suffixes import registered
 from farpoint.tenants import named_after, org_tokens
@@ -333,7 +333,7 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
             out.append(_finding("medium", "certificate-self-signed", ep, f"a self-signed certificate ({tls.get('subject')})"))
         elif tls.get("matches") is False and provider:
             out.append(_finding("low", "certificate-mismatch", ep, f"the certificate is {provider}'s ({tls.get('subject')}): {r['hostname']} points at {provider} but isn't set up for HTTPS there"))
-        elif tls.get("matches") is False and not _is_address(r["hostname"]):  # asked by address (--ranges): no name to match
+        elif tls.get("matches") is False and normalize_ip(r["hostname"]) is None:  # asked by address (--ranges): no name to match
             out.append(_finding("medium", "certificate-mismatch", ep, f"the certificate is for {tls.get('subject')}, not {r['hostname']}"))
         if re.match(r"RSA (\d+)", tls.get("key") or "") and int(tls["key"].split()[1]) < 2048:
             out.append(_finding("medium", "weak-certificate-key", ep, f"the certificate key is {tls['key']}"))
@@ -355,16 +355,6 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
     if r.get("service") == "https" and 200 <= status < 300 and "strict-transport-security" not in headers:
         out.append(_finding("low", "no-hsts", ep, "HTTPS without Strict-Transport-Security"))
     return out
-
-
-def _is_address(host: str) -> bool:
-    import ipaddress
-
-    try:
-        ipaddress.ip_address(host)
-        return True
-    except ValueError:
-        return False
 
 
 def _provider_certificate(tls: Mapping, hostname: str, cnames: Sequence[str]) -> str | None:

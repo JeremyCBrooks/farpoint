@@ -358,7 +358,7 @@ def test_a_scan_that_did_not_ask_keeps_the_last_zone_transfer_answer(tmp_path):
     from farpoint.assess import assessed
 
     pipeline, prober = scenario()
-    prober.axfr = lambda ip, domain: 40  # the whole zone
+    prober.axfr = lambda ip, domain, nameserver=None: 40  # the whole zone
     pipeline.dns.zones["ns1.dnshost.net"] = {"A": ["93.184.216.53"]}
     write_outputs(pipeline.run([D]), tmp_path, "2026-10-01T00:00:00Z")
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from farpoint import runtime
 from farpoint.enrich import Enricher, NoRdapService
 from farpoint.fingerprint import (
+    own_certificate_org,
     HTTP_FIRST, SERVICE_NAMES, TLS_FIRST, WEB_ONLY, Archive, FingerprintConfig, fingerprint_service, for_host, from_capture, shared_address,
     takeover_platform, was_turned_away,
 )
@@ -72,7 +73,7 @@ class Pipeline:
     exclusions: Exclusions = field(default_factory=Exclusions)  # --out-of-scope: recorded, never contacted
     known: Sequence[str] = ()  # the inventory's earlier hosts: resolved again (and fingerprinted while live) though no source reported them
     ranges: Sequence = ()  # --ranges: the organisation's own address ranges (PTR, passive lookups, and probing by address)
-    certificate_orgs: Sequence[str] = ()  # with `related`: organisations earlier scans found on the organisation's certificates
+    certificate_orgs: Mapping[str, str] = field(default_factory=dict)  # with `related`: organisation -> scan domain, from earlier scans' certificates
     web: Callable[[str], tuple[int, str] | None] | None = None  # GET a platform's URL (never the organisation's): (status, body)
     buckets: bool = False  # --buckets: storage buckets named after the organisation (needs `web`)
     code: object | None = None  # --code: leads(domain) -> files naming it next to a credential word (sources.github.GitHubCode)
@@ -308,19 +309,13 @@ class Pipeline:
         addresses = [str(ip) for ip in _range_addresses(self.ranges)]
         for ip in addresses:
             inv.add_address(ip, RANGE)
-        done, failed = [0], [0]
-
-        def tick(ok: bool) -> None:
-            done[0] += 1
-            failed[0] += not ok
-            self.reporter.phase("ptr", done[0], len(addresses), failed[0])
+        progress = _Progress(self.reporter, "ptr", len(addresses))
 
         def ptr(ip: str) -> list[str]:
             return self.dns.records(dns.reversename.from_address(ip).to_text(omit_final_dot=True), "PTR") or []
 
         tokens, known = org_tokens(inv.domains), set(inv.hosts)
-        self.reporter.phase("ptr", 0, len(addresses))
-        for (_, ip), names in self._fan_out(inv, {("ptr", ip): (lambda ip=ip: ptr(ip)) for ip in addresses}, on_done=tick):
+        for (_, ip), names in self._fan_out(inv, {("ptr", ip): (lambda ip=ip: ptr(ip)) for ip in addresses}, on_done=progress.tick):
             network = next(str(n) for n in self.ranges if ipaddress.ip_address(ip) in n)
             for raw in names:
                 name = normalize_hostname(raw)
@@ -337,16 +332,15 @@ class Pipeline:
         in the subject of a certificate for the scan domains' own names, so other names on certificates
         issued to it are likely its own too (medium: another organisation can carry the same name). Names
         under the scan domains join the inventory."""
-        orgs: dict[str, str] = {org: inv.domains[0] for org in self.certificate_orgs if inv.domains}
+        orgs: dict[str, str] = {org: d for org, d in self.certificate_orgs.items() if d in inv.domains}
         for service in inv.services.values():
-            tls = service.tls or {}
-            if not (org := tls.get("organization")):
-                continue
-            names = [n.removeprefix("*.") for n in [*tls.get("sans", []), (tls.get("subject") or "").lower()]]
-            if scan := next((d for n in names if (d := inv.scope_of(n))), None):
-                orgs.setdefault(org, scan)
+            if service.ip in inv.ips and _shared_address(inv, service.ip, [service.hostname]):
+                continue  # a CDN's or SaaS front end's certificate: theirs, shared with their other customers
+            if found := own_certificate_org(service.tls or {}, inv.scope_of):
+                orgs.setdefault(*found)
         if not orgs:
             return
+        known = set(inv.hosts)
         jobs = {("crtsh-organization", org): (lambda org=org: self.related.certificate_names(org)) for org in sorted(orgs)}
         own = set(inv.domains)
         for (_, org), names in self._fan_out(inv, jobs):
@@ -358,6 +352,8 @@ class Pipeline:
                     inv.add(Observation("crtsh-organization", name))
                 elif (reg := registered_domain(name)) and reg not in own:
                     _record_related(inv, reg, orgs[org], "medium", f"on certificates issued to {org} (organisation-validated), as are the scan domains'")
+        if self.lookup and set(inv.hosts) - known:
+            self._resolve(inv, skip=known)
 
     def _tenants(self, inv: Inventory) -> None:
         """Tenant patterns from the domains' own TXT/SPF records, their CNAMEs and the bundled table,
@@ -438,24 +434,17 @@ class Pipeline:
         hosts = {h: r.cnames for h, r in inv.hosts.items()}
         modifiers, _ = org_modifiers({h: set(c) for h, c in hosts.items()}, inv.domains)
         wanted = bucket_candidates(org_tokens(inv.domains), modifiers, hosts, inv.scope_of)
-        done, failed = [0], [0]
-
-        def tick(ok: bool) -> None:
-            done[0] += 1
-            failed[0] += not ok
-            self.reporter.phase("buckets", done[0], len(wanted), failed[0])
-
-        self.reporter.phase("buckets", 0, len(wanted))
+        progress = _Progress(self.reporter, "buckets", len(wanted))
         by_key = {f"{c.vendor}|{c.name}": c for c in wanted}
-        for (_, key), answer in self._fan_out(inv, {("buckets", k): (lambda c=c: self.web(c.url)) for k, c in by_key.items()}, on_done=tick):
+        what = {"public": "lists its contents to anyone", "private": "exists, not public", "exists": "exists in another region: whether it lists is unknown"}
+        for (_, key), answer in self._fan_out(inv, {("buckets", k): (lambda c=c: self.web(c.url)) for k, c in by_key.items()}, on_done=progress.tick):
             c = by_key[key]
             verdict = judge_bucket(*answer) if answer else None
-            if verdict in ("public", "private"):
-                what = "lists its contents to anyone" if verdict == "public" else "exists, not public"
+            if verdict in what:
                 _record_tenant(inv, c.hostname, c.vendor, c.domain, c.tie, c.evidence, True, Resolution())
                 record = inv.tenants[c.hostname]
-                record.evidence.add(f"{c.url}: HTTP {answer[0]}, {what}")
-                record.public = verdict == "public"
+                record.evidence.add(f"{c.url}: HTTP {answer[0]}, {what[verdict]}")
+                record.public = {"public": True, "private": False}.get(verdict, record.public)
 
     def _check_m365_names(self, inv: Inventory) -> None:
         """A Microsoft 365 tenant found by its name alone is compared with the tenant the scan domains sign
@@ -652,31 +641,23 @@ class Pipeline:
         """Each public address's owner and history. In-scope names an enricher reports join the inventory
         and are resolved, and the new addresses they resolve to are enriched in turn (a few rounds at most),
         so later stages see them this run."""
-        done, failed, total = [0], [0], [0]
-        enriched: set[str] = set()
-
-        def tick(ok: bool) -> None:
-            done[0] += 1
-            failed[0] += not ok
-            self.reporter.phase("enriching", done[0], total[0], failed[0])
-
+        progress = _Progress(self.reporter, "enriching")
+        asked: set[Key] = set()  # (enricher, address): a range address named since is asked again by the rest
         for _ in range(ENRICH_ROUNDS):
-            public = [ip for ip in inv.ips if is_public_ip(ip) and ip not in enriched]
-            if not public:
-                break
-            enriched.update(public)
             # An address only --ranges knows of goes only to enrichers cheap enough to ask about a whole range (`bulk`).
-            jobs = {(e.name, ip): (lambda e=e, ip=ip: e.enrich(ip)) for e in self.enrichers for ip in public if getattr(e, "bulk", False) or not inv.range_only(ip)}
-            total[0] += len(jobs)
-            self.reporter.phase("enriching", done[0], total[0], failed[0])
+            jobs = {(e.name, ip): (lambda e=e, ip=ip: e.enrich(ip)) for e in self.enrichers for ip in list(inv.ips)
+                    if is_public_ip(ip) and (e.name, ip) not in asked and (getattr(e, "bulk", False) or not inv.range_only(ip))}
+            if not jobs:
+                break
+            asked.update(jobs)
+            progress.grow(len(jobs))
             known = set(inv.hosts)
-            for (name, ip), details in self._fan_out(inv, jobs, _limits(self.enrichers), on_done=tick):
+            for (name, ip), details in self._fan_out(inv, jobs, _limits(self.enrichers), on_done=progress.tick):
                 inv.enrich(ip, details)
                 for hostname in details.hostnames:
                     inv.add(Observation(name, hostname, ip))
-            if not self.lookup or not set(inv.hosts) - known:
-                break
-            self._resolve(inv, skip=known)
+            if self.lookup and set(inv.hosts) - known:
+                self._resolve(inv, skip=known)
 
     def _lookalikes(self, inv: Inventory) -> None:
         """When each lookalike that can handle mail or serve a site was registered, and for recent ones
@@ -753,6 +734,7 @@ class Pipeline:
         config, prober = self.fingerprint, self.prober
         pace = _paced(lambda: None, config.rate)
         targets: dict[str, str] = {}  # host -> the address it is probed at
+        excluded_at: set[str] = set()  # addresses of hosts excluded by name
         for host, record in sorted(inv.hosts.items()):
             # Only what DNS answers now: an address from passive-DNS history may belong to someone else today.
             public = sorted((ip for ip in record.resolved_ips if ip in inv.ips and is_public_ip(ip)), key=_ip_key)
@@ -763,12 +745,13 @@ class Pipeline:
                 targets[host] = allowed[0]
             else:
                 inv.excluded.add(host)
+                excluded_at.update(public)  # never probed by address through --ranges either
         hosts_at: dict[str, list[str]] = {}
         for host, ip in targets.items():
             hosts_at.setdefault(ip, []).append(host)
         for addr in _range_addresses(self.ranges):  # the organisation's own addresses with no name probed there: asked by address
             ip = str(addr)
-            if ip not in hosts_at and ip in inv.ips and is_public_ip(ip) and not self.exclusions.ip(ip):
+            if ip not in hosts_at and ip not in excluded_at and ip in inv.ips and is_public_ip(ip) and not self.exclusions.ip(ip):
                 hosts_at[ip] = [ip]
         shared = {ip for ip, hosts in hosts_at.items() if _shared_address(inv, ip, hosts)}
 
@@ -858,15 +841,8 @@ class Pipeline:
                 found.append((port, *udp_check(self.prober, hosts_at[ip][0], ip, port)))
             return found
 
-        done, failed = [0], [0]
-
-        def tick(ok: bool) -> None:
-            done[0] += 1
-            failed[0] += not ok
-            self.reporter.phase("udp", done[0], len(hosts_at), failed[0])
-
-        self.reporter.phase("udp", 0, len(hosts_at))
-        for (_, ip), answers in self._fan_out(inv, {("udp", ip): (lambda ip=ip: ask(ip)) for ip in hosts_at}, on_done=tick):
+        progress = _Progress(self.reporter, "udp", len(hosts_at))
+        for (_, ip), answers in self._fan_out(inv, {("udp", ip): (lambda ip=ip: ask(ip)) for ip in hosts_at}, on_done=progress.tick):
             for port, state, service in answers:
                 for host in hosts_at[ip]:
                     if state == "closed":  # ICMP port unreachable: its old row goes; a silence keeps it
@@ -932,6 +908,23 @@ class Pipeline:
         health = {m: r for (_, m), r in self._fan_out(inv, mx_jobs, on_done=counter) if r}
         for row in inv.posture.values():
             row["mx_health"] = [health[m] for m in row.get("mx", []) if m in health]
+
+
+class _Progress:
+    """A phase's progress line: done, failed and total jobs, reported as each finishes."""
+
+    def __init__(self, reporter: ProgressReporter, phase: str, total: int = 0) -> None:
+        self.reporter, self.phase, self.done, self.failed, self.total = reporter, phase, 0, 0, total
+        reporter.phase(phase, 0, total)
+
+    def grow(self, n: int) -> None:
+        self.total += n
+        self.reporter.phase(self.phase, self.done, self.total, self.failed)
+
+    def tick(self, ok: bool) -> None:
+        self.done += 1
+        self.failed += not ok
+        self.reporter.phase(self.phase, self.done, self.total, self.failed)
 
 
 def _range_addresses(ranges: Iterable) -> Iterable:

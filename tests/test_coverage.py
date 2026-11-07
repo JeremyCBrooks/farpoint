@@ -52,6 +52,19 @@ def test_the_inventorys_earlier_hosts_are_resolved_again_and_fingerprinted_while
     assert ("connect", LEGACY, 443) in prober.calls
     rows = {h["hostname"]: h for h in report["hosts"]}
     assert rows["legacy.example.com"]["last_seen"] == "2026-11-01T00:00:00Z" and rows["legacy.example.com"]["sources"] == ["dns", "otx"]
-    # nothing vouched for it this run: its row is left as the last scan that saw it recorded it
-    assert (rows["gone.example.com"]["last_seen"], rows["gone.example.com"]["resolves"]) == ("2026-10-01T00:00:00Z", True)
+    # gone now: marked so, but nothing vouched for it this run, so it isn't freshly seen
+    assert (rows["gone.example.com"]["last_seen"], rows["gone.example.com"]["resolves"]) == ("2026-10-01T00:00:00Z", False)
     assert "other.org" not in rows
+
+
+def test_an_earlier_host_that_no_longer_exists_is_marked_so_without_looking_freshly_seen(tmp_path):
+    first, _, _ = pipeline(resolved={"www.example.com": Resolution(ips=(WWW,)), "gone.example.com": Resolution(ips=(LEGACY,))})
+    first.sources = [StaticSource("otx", [Observation("otx", h) for h in ("www.example.com", "gone.example.com")])]
+    write_outputs(first.run([D]), tmp_path, "2026-10-01T00:00:00Z")
+
+    second, _, _ = pipeline(known=["gone.example.com", "never-seen.example.com"], resolved={"www.example.com": Resolution(ips=(WWW,))})
+    report = write_outputs(second.run([D]), tmp_path, "2026-11-01T00:00:00Z")
+
+    rows = {h["hostname"]: h for h in report["hosts"]}
+    assert (rows["gone.example.com"]["resolves"], rows["gone.example.com"]["last_seen"]) == (False, "2026-10-01T00:00:00Z")
+    assert "never-seen.example.com" not in rows  # a known host the inventory never had stays out
