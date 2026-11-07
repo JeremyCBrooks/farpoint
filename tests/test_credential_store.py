@@ -11,14 +11,14 @@ from farpoint.models import Inventory
 from farpoint.output import Checkpointer, ReportError, recover_checkpoints, write_outputs
 
 
-def test_refetching_updates_retrieval_but_not_event_age(tmp_path):
+def test_refetching_updates_retrieval_but_not_event_age():
     first = merge_credentials(None, batch([exposure_row()], "2026-10-01T00:00:00Z"))
     again = merge_credentials(first, batch([exposure_row(event_at="2026-09-15")], "2026-11-01T00:00:00Z"))
     [row] = again["exposures"]
     assert (row["first_seen"], row["last_seen"], row["event_at"]) == ("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z", "2026-09-15")
 
 
-def test_an_older_replay_cannot_regress_newer_evidence_or_checks(tmp_path):
+def test_an_older_replay_cannot_regress_newer_evidence_or_checks():
     new = merge_credentials(None, batch([exposure_row(malware_family="Lumma")], "2026-11-01T00:00:00Z",
                                          checks=[check(status="complete", checked_at="2026-11-01")]))
     old = batch([exposure_row(malware_family="RedLine")], "2026-10-01T00:00:00Z",
@@ -28,7 +28,7 @@ def test_an_older_replay_cannot_regress_newer_evidence_or_checks(tmp_path):
     assert merged["checks"][0]["status"] == "complete"
 
 
-def test_last_complete_survives_a_later_failure(tmp_path):
+def test_last_complete_survives_a_later_failure():
     ok = merge_credentials(None, batch([], "2026-10-01T00:00:00Z", checks=[check(status="complete", checked_at="2026-10-01")]))
     failed = merge_credentials(ok, batch([], "2026-11-01T00:00:00Z", checks=[check(status="failed", error="quota", checked_at="2026-11-01")]))
     assert (failed["checks"][0]["status"], failed["checks"][0]["last_complete_at"]) == ("failed", "2026-10-01")
@@ -39,20 +39,20 @@ def _summary(count):
             "metric": "accounts", "count": count}
 
 
-def test_summaries_replace_rather_than_accumulate(tmp_path):
+def test_summaries_replace_rather_than_accumulate():
     first = merge_credentials(None, batch([], "2026-10-01T00:00:00Z", summaries=[_summary(40)]))
     again = merge_credentials(first, batch([], "2026-11-01T00:00:00Z", summaries=[_summary(42)]))
     [row] = again["summaries"]
     assert row["count"] == 42 and row["first_seen"] == "2026-10-01T00:00:00Z" and row["last_seen"] == "2026-11-01T00:00:00Z"
 
 
-def test_operations_keep_independent_checks(tmp_path):
+def test_operations_keep_independent_checks():
     merged = merge_credentials(None, batch([], checks=[
         check(operation="breaches", status="complete"), check(operation="stealers", status="failed", error="quota")]))
     assert {c["operation"]: c["status"] for c in merged["checks"]} == {"breaches": "complete", "stealers": "failed"}
 
 
-def test_repeating_the_same_merge_keeps_the_revision(tmp_path):
+def test_repeating_the_same_merge_keeps_the_revision():
     b = batch([exposure_row()], "2026-10-01T00:00:00Z")
     once = merge_credentials(None, b)
     assert merge_credentials(once, b)["revision"] == once["revision"]
@@ -80,7 +80,7 @@ def test_equal_content_serialises_identically_whatever_the_row_order(tmp_path):
     assert a["exposures"] == b["exposures"]
 
 
-def test_an_attempt_summary_has_no_identities(tmp_path):
+def test_an_attempt_summary_has_no_identities():
     from farpoint.credential_store import attempt_summary
     b = batch([exposure_row()], checks=[check(status="complete")])
     assert attempt_summary(b) == [{"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email",

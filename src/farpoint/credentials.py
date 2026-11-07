@@ -156,11 +156,19 @@ def exposure_id(row: Mapping) -> str:
     return f"{provider}:v{SCHEMA_VERSION}:{digest}"
 
 
+def row_scope(raw: Mapping, *, domains: Sequence[str], kinds: Collection[str]) -> str | None:
+    """A provider row's normalised scope domain, or None when it is outside `domains` or of a disabled kind."""
+    scope = normalize_hostname(raw["scope_domain"])
+    if raw["query_kind"] not in kinds or scope is None or scope not in domains:
+        return None
+    return scope
+
+
 def normalise_exposure(raw: Mapping, *, domains: Sequence[str], kinds: Collection[str]) -> dict | None:
     """The stored form of a validated provider row, or None when no enabled scope predicate holds."""
     kind = raw["query_kind"]
-    scope = normalize_hostname(raw["scope_domain"])
-    if kind not in kinds or scope is None or scope not in domains:
+    scope = row_scope(raw, domains=domains, kinds=kinds)
+    if scope is None:
         return None
     row = dict.fromkeys(STORED_EXPOSURE_ORDER) | raw  # every model field, in a fixed order; None where the provider gave none
     row["scope_domain"] = scope

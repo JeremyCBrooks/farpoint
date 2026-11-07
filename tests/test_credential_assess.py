@@ -2,7 +2,7 @@ import json
 from datetime import date
 
 import pytest
-from conftest import AT, LATER, batch, credential_sidecar, exposure_row, batch, read_csv, sample_inventory
+from conftest import AT, LATER, batch, credential_sidecar, exposure_row, read_csv, sample_inventory
 
 from farpoint.assess import assessed, derive
 from farpoint.credential_assess import credential_status
@@ -30,7 +30,7 @@ def creds(report_rows):
     return [f for f in report_rows if f["kind"].startswith("credential-")]
 
 
-def level_for(tmp_path, **fields):
+def level_for(**fields):
     found = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar([exposure_row(**fields)])))
     assert len(found) == 1
     return found[0]
@@ -40,28 +40,28 @@ def level_for(tmp_path, **fields):
     ("vpn.example.com", None, "high"), ("example.zendesk.com", None, "medium"), ("dns-only.example.com", None, "medium"),
     ("old.example.com", 443, "medium"), ("login.microsoftonline.com", None, "medium"), ("new.example.com", None, "medium"),
     ("vpn.example.com", 8443, "medium")])
-def test_fresh_theft_is_high_only_with_current_positive_service_evidence(tmp_path, service, port, expected):
-    assert level_for(tmp_path, service_host=service, service_port=port, event_at="2026-10-01")["level"] == expected
+def test_fresh_theft_is_high_only_with_current_positive_service_evidence(service, port, expected):
+    assert level_for(service_host=service, service_port=port, event_at="2026-10-01")["level"] == expected
 
 
-def test_a_dns_only_match_suggests_fingerprinting(tmp_path):
-    assert "--fingerprint could confirm the service" in level_for(tmp_path, service_host="dns-only.example.com")["detail"]
+def test_a_dns_only_match_suggests_fingerprinting():
+    assert "--fingerprint could confirm the service" in level_for(service_host="dns-only.example.com")["detail"]
 
 
-def test_a_missing_port_never_becomes_443(tmp_path):
-    f = level_for(tmp_path, service_host="vpn.example.com")
+def test_a_missing_port_never_becomes_443():
+    f = level_for(service_host="vpn.example.com")
     assert f["target"] == "vpn.example.com"
 
 
-def test_a_reported_port_that_was_not_observed_is_not_the_host(tmp_path):
-    f = level_for(tmp_path, service_host="vpn.example.com", service_port=8443)
+def test_a_reported_port_that_was_not_observed_is_not_the_host():
+    f = level_for(service_host="vpn.example.com", service_port=8443)
     assert f["target"] == "vpn.example.com:8443"
     assert "reported port not observed" in f["detail"]
 
 
 @pytest.mark.parametrize("host", ["sts.example.com", "example.okta.com"])
-def test_host_only_identity_or_tenant_evidence_does_not_confirm_an_explicit_port(tmp_path, host):
-    f = level_for(tmp_path, service_host=host, service_port=8443)
+def test_host_only_identity_or_tenant_evidence_does_not_confirm_an_explicit_port(host):
+    f = level_for(service_host=host, service_port=8443)
     assert f["level"] == "medium"
     assert f["target"] == f"{host}:8443"
     assert "reported port not observed" in f["detail"]
@@ -83,7 +83,7 @@ def test_a_closed_federation_endpoint_is_not_high_after_merge(tmp_path):
     assert finding["level"] == "medium" and finding["target"] == "sts.example.com:8443"
 
 
-def test_a_shared_provider_sign_in_page_is_context_even_when_federated(tmp_path):
+def test_a_shared_provider_sign_in_page_is_context_even_when_federated():
     infra = {**INFRA, "identity": [{"domain": "example.com", "provider": "google", "sign_in_host": "accounts.google.com", "last_seen": SEEN}]}
     rows = [exposure_row(service_host="accounts.google.com")]
     [f] = creds(derive(infra, today=TODAY, credentials=credential_sidecar(rows)))
@@ -92,17 +92,17 @@ def test_a_shared_provider_sign_in_page_is_context_even_when_federated(tmp_path)
 
 @pytest.mark.parametrize("event_at,basis,expected", [("2026-08-03", "compromised", "high"), ("2026-08-02", "compromised", "medium"),
     ("2026-12-01", "compromised", "medium"), (None, None, "medium"), ("2026-10-01", "uploaded", "medium"), ("2026-10-01", "published", "medium")])
-def test_recent_theft_boundaries(tmp_path, event_at, basis, expected):
-    assert level_for(tmp_path, service_host="vpn.example.com", service_port=443, event_at=event_at, event_date_basis=basis)["level"] == expected
+def test_recent_theft_boundaries(event_at, basis, expected):
+    assert level_for(service_host="vpn.example.com", service_port=443, event_at=event_at, event_date_basis=basis)["level"] == expected
 
 
-def test_breach_wide_password_classes_stay_low_and_account_specific_ones_are_medium(tmp_path):
+def test_breach_wide_password_classes_stay_low_and_account_specific_ones_are_medium():
     base = dict(operation="breaches", exposure_type="breach", source_name="ExampleBreach", event_date_basis="breach")
-    assert level_for(tmp_path, secret_evidence="dataset", **base)["level"] == "low"
-    assert level_for(tmp_path, secret_evidence="record", secret_types=["password-hash"], **base)["level"] == "medium"
+    assert level_for(secret_evidence="dataset", **base)["level"] == "low"
+    assert level_for(secret_evidence="record", secret_types=["password-hash"], **base)["level"] == "medium"
 
 
-def test_findings_group_identities_and_never_name_them(tmp_path):
+def test_findings_group_identities_and_never_name_them():
     rows = [exposure_row(service_host="vpn.example.com", service_port=443),
             exposure_row(service_host="vpn.example.com", service_port=443, source_event_id="log-2"),
             exposure_row(identity="bob@example.com", service_host="vpn.example.com", service_port=443),
@@ -115,19 +115,19 @@ def test_findings_group_identities_and_never_name_them(tmp_path):
     assert not any(s in json.dumps(found) for s in ("alice", "bob", "cust@", "gmail"))  # "cust" alone is in "customer-reported"
 
 
-def test_overlapping_providers_do_not_inflate_identity_counts(tmp_path):
+def test_overlapping_providers_do_not_inflate_identity_counts():
     rows = [exposure_row(), exposure_row(provider="other-intel")]
     [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(rows)))
     assert f["detail"].startswith("1 workforce-associated identity (2 records)")
 
 
-def test_an_identity_spelt_with_another_domain_case_is_one_identity(tmp_path):
+def test_an_identity_spelt_with_another_domain_case_is_one_identity():
     rows = [exposure_row(identity="E@Example.com"), exposure_row(provider="other-intel", identity="E@example.com.")]
     [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar(rows)))
     assert f["detail"].startswith("1 workforce-associated identity (2 records)")
 
 
-def test_each_scope_domain_gets_its_own_finding_on_a_shared_asset(tmp_path):
+def test_each_scope_domain_gets_its_own_finding_on_a_shared_asset():
     infra = {**INFRA, "domains": ["example.com", "example.org"]}
     rows = [exposure_row(service_host="vpn.example.com", service_port=443),
             exposure_row(scope_domain="example.org", identity="b@example.org", service_host="vpn.example.com", service_port=443)]
@@ -138,7 +138,7 @@ def test_each_scope_domain_gets_its_own_finding_on_a_shared_asset(tmp_path):
                                                          "1 workforce-associated identity (1 record) for example.org"}
 
 
-def test_a_stealer_log_name_never_reaches_findings_but_a_breach_name_does(tmp_path):
+def test_a_stealer_log_name_never_reaches_findings_but_a_breach_name_does():
     rows = [exposure_row(source_name="VICTIM-LAPTOP-jdoe"),
             exposure_row(identity="b@example.com", operation="breaches", exposure_type="breach", source_name="ExampleBreach",
                          event_date_basis="breach")]
@@ -147,17 +147,17 @@ def test_a_stealer_log_name_never_reaches_findings_but_a_breach_name_does(tmp_pa
     assert any("ExampleBreach" in f["evidence"] for f in found)
 
 
-def test_a_partial_check_is_shown_beside_the_finding(tmp_path):
-    f = level_for(tmp_path, service_host="vpn.example.com", service_port=443)
+def test_a_partial_check_is_shown_beside_the_finding():
+    f = level_for(service_host="vpn.example.com", service_port=443)
     assert "latest acme-intel/email/stealers check: partial" in f["detail"]
 
 
-def test_findings_are_dated_by_credential_retrieval_not_infrastructure(tmp_path):
-    f = level_for(tmp_path, service_host="vpn.example.com", service_port=443)
+def test_findings_are_dated_by_credential_retrieval_not_infrastructure():
+    f = level_for(service_host="vpn.example.com", service_port=443)
     assert f["seen"] == "2026-10-25T00:00:00Z"
 
 
-def test_an_aggregate_is_a_low_summary_finding(tmp_path):
+def test_an_aggregate_is_a_low_summary_finding():
     summary = {"provider": "acme-intel", "scope_domain": "example.com", "query_kind": "email", "operation": "stealers",
                "metric": "accounts", "count": 42}
     [f] = creds(derive(INFRA, today=TODAY, credentials=credential_sidecar([], summaries=[summary])))
@@ -165,7 +165,7 @@ def test_an_aggregate_is_a_low_summary_finding(tmp_path):
     assert f["detail"].startswith("acme-intel reports 42 for accounts") and "not a list of confirmed accounts" in f["detail"]
 
 
-def test_old_theft_stays_old_after_refetch(tmp_path):
+def test_old_theft_stays_old_after_refetch():
     row = exposure_row(service_host="vpn.example.com", service_port=443, event_at="2026-06-01")
     again = merge_credentials(credential_sidecar([row]), batch([row], "2026-10-31T00:00:00Z"))
     [f] = creds(derive(INFRA, today=TODAY, credentials=again))
@@ -227,7 +227,7 @@ def _snapshot_check(at, status="complete", provider="hudsonrock-osint", operatio
     return check_row(provider=provider, operation=operation, status=status, checked_at=at)
 
 
-def _sidecar(tmp_path, *batches):
+def _sidecar(*batches):
     """Merge successive live (at, exposures, checks) batches the way successive runs would."""
     data = None
     for at, exposures, checks in batches:
@@ -238,31 +238,31 @@ def _sidecar(tmp_path, *batches):
 LATEST = "2026-11-03T00:00:00Z"
 
 
-def test_identityless_findings_say_identities_were_not_reported_and_show_occurrences(tmp_path):
-    data = _sidecar(tmp_path, (AT, [_employee("vpn.example.com", 12)], [_snapshot_check(AT)]))
+def test_identityless_findings_say_identities_were_not_reported_and_show_occurrences():
+    data = _sidecar((AT, [_employee("vpn.example.com", 12)], [_snapshot_check(AT)]))
     (f,) = [f for f in creds(derive(INFRA, today=TODAY, credentials=data)) if f["kind"] == "credential-theft"]
     assert "0 " not in f["detail"] and "identities not reported by provider" in f["detail"]
     assert "seen 12 times" in f["detail"] and f["level"] == "medium"  # a fresh fingerprint, but no theft date
 
 
 @pytest.mark.parametrize("later_failure", [False, True])
-def test_only_rows_from_the_latest_complete_snapshot_produce_findings(tmp_path, later_failure):
+def test_only_rows_from_the_latest_complete_snapshot_produce_findings(later_failure):
     runs = [(AT, [_employee("vpn.example.com")], [_snapshot_check(AT)]),
             (LATER, [_employee("sts.example.com")], [_snapshot_check(LATER)])]
     if later_failure:
         runs.append((LATEST, [], [_snapshot_check(LATEST, status="failed")]))
-    found = creds(derive(INFRA, today=TODAY, credentials=_sidecar(tmp_path, *runs)))
+    found = creds(derive(INFRA, today=TODAY, credentials=_sidecar(*runs)))
     assert [f["target"] for f in found] == ["sts.example.com"]
 
 
-def test_a_latest_all_zero_snapshot_retires_older_findings(tmp_path):
-    data = _sidecar(tmp_path, (AT, [_employee("vpn.example.com")], [_snapshot_check(AT)]), (LATER, [], [_snapshot_check(LATER)]))
+def test_a_latest_all_zero_snapshot_retires_older_findings():
+    data = _sidecar((AT, [_employee("vpn.example.com")], [_snapshot_check(AT)]), (LATER, [], [_snapshot_check(LATER)]))
     assert creds(derive(INFRA, today=TODAY, credentials=data)) == []
     assert len(data["exposures"]) == 1  # kept as history
 
 
-def test_the_snapshot_rule_does_not_retire_other_providers_rows(tmp_path):
+def test_the_snapshot_rule_does_not_retire_other_providers_rows():
     accumulating = exposure_row(service_host="vpn.example.com")
-    data = _sidecar(tmp_path, (AT, [accumulating], [_snapshot_check(AT, provider="acme-intel", operation="stealers")]),
+    data = _sidecar((AT, [accumulating], [_snapshot_check(AT, provider="acme-intel", operation="stealers")]),
                     (LATER, [], [_snapshot_check(LATER, provider="acme-intel", operation="stealers")]))
     assert [f["target"] for f in creds(derive(INFRA, today=TODAY, credentials=data))] == ["vpn.example.com"]

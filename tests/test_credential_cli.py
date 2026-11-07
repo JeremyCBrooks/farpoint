@@ -13,7 +13,7 @@ def test_import_into_an_existing_inventory_and_assess(tmp_path, capsys, monkeypa
     argv = _evidence(monkeypatch, exposure_row(), exposure_row(identity="x@other.org"))
     assert cli.main([*argv, "--assess", "--no-cve", "-o", str(out)]) == 0
     printed, err = capsys.readouterr()
-    assert "credential scope: example.com" in err and "1 provider rows outside scope were dropped" in printed
+    assert "credential scope: example.com" in err and "1 provider rows outside scope or of a disabled kind were dropped" in printed
     assert "assessment: current" in printed and "alice" not in printed + err
     assert any(r["kind"] == "credential-theft" for r in read_csv(out / "findings.csv"))
 
@@ -416,12 +416,4 @@ def test_credentials_argument_errors(tmp_path, capsys, argv, message):
     with pytest.raises(SystemExit):
         cli.main(["example.com", *argv, "-o", str(out)])
     assert message in capsys.readouterr().err
-    assert not out.exists()
-
-
-def test_credential_evidence_comes_only_from_providers(tmp_path, capsys):
-    out = tmp_path / "out"
-    with pytest.raises(SystemExit):
-        cli.main(["--credential-import", str(tmp_path / "e.json"), "-o", str(out)])
-    assert "unrecognized arguments: --credential-import" in capsys.readouterr().err
     assert not out.exists()

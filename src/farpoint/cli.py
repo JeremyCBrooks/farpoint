@@ -257,14 +257,13 @@ def main(argv: list[str] | None = None) -> int:
         prior_report = load_report(args.out)  # fail before a long scan, not after it
     except ReportError as exc:
         parser.error(str(exc))
-    if providers:
-        print(f"credential scope: {', '.join(domains)}", file=sys.stderr)
     batch, rejected = None, 0
     if providers:
-        live = _collect_live(providers, domains, kinds, stamp)
-        if live is None:
+        print(f"credential scope: {', '.join(domains)}", file=sys.stderr)
+        collected = _collect_live(providers, domains, kinds, stamp)
+        if collected is None:
             return 130
-        batch, rejected = build_batch(live, domains, kinds, stamp)
+        batch, rejected = build_batch(collected, domains, kinds, stamp)
 
     console = Console(stderr=True)
     live = console.is_terminal and not args.verbose and not args.no_progress
@@ -460,10 +459,10 @@ def _credentials_only(args, http: httpx.Client, kinds: list[str], providers: lis
     except ReportError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    live = _collect_live(providers, report["domains"], kinds, stamp)
-    if live is None:
+    collected = _collect_live(providers, report["domains"], kinds, stamp)
+    if collected is None:
         return 130
-    batch, rejected = build_batch(live, report["domains"], kinds, stamp)
+    batch, rejected = build_batch(collected, report["domains"], kinds, stamp)
     judge = None
     if args.assess:
         runtime.reset()
@@ -496,7 +495,7 @@ def _summarise_credentials(out: Path, report: dict, rejected: int = 0, new: int 
     shown = ", ".join(f"{n} {status}" for status, n in sorted(checks.items())) or "none"
     print(f"credentials: {len(data.get('exposures', []))} exposures ({new} new), {len(data.get('summaries', []))} summaries; checks: {shown}")
     if rejected:
-        print(f"            {rejected} provider rows outside scope were dropped")
+        print(f"            {rejected} provider rows outside scope or of a disabled kind were dropped")
     status = credential_status(report, state)
     note = {"stale": " (run --assess to update)", "unavailable": f": {state.error}"}.get(status, "")
     print(f"            assessment: {status}{note}")

@@ -93,6 +93,14 @@ def test_without_website_a_customer_on_an_in_scope_host_is_never_kept():
     assert built.exposures == () and rejected == 1
 
 
+def test_summaries_and_checks_of_a_disabled_kind_are_dropped_and_counted():
+    from farpoint.credential_batch import build_batch
+
+    rows = {"exposures": [], "summaries": [summary_row(query_kind="website")], "checks": [check_row(query_kind="website")]}
+    built, rejected = build_batch(rows, ["example.com"], {"email"}, AT)
+    assert built.summaries == () and built.checks == () and rejected == 2
+
+
 def test_a_website_row_is_dropped_when_website_is_not_enabled():
     row = exposure_row(query_kind="website", identity="cust@gmail.com", service_host="shop.example.com")
     built, rejected = _rejected(row, kinds=("email",))

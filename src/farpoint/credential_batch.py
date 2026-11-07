@@ -14,18 +14,17 @@ from .credentials import (
     merge_check,
     normalise_exposure,
     normalise_time,
+    row_scope,
 )
 from .names import normalize_hostname
 
 LIVE = "live"  # every check's origin: evidence comes only from live providers
 
 
-def _in_domains(row: dict, domains: Sequence[str]) -> bool:
-    scope = normalize_hostname(row["scope_domain"])
-    if scope not in domains:
-        return False
-    row["scope_domain"] = scope
-    return True
+def _scoped(row: dict, domains: Sequence[str], kinds: Collection[str]) -> dict | None:
+    """The row with its normalised scope domain, or None when it is out of scope or of a disabled kind."""
+    scope = row_scope(row, domains=domains, kinds=kinds)
+    return None if scope is None else {**row, "scope_domain": scope}
 
 
 def _ordered(order: Sequence[str], row: dict, **added) -> dict:
@@ -40,7 +39,8 @@ def _key(row: dict) -> tuple:
 
 def build_batch(rows: Mapping[str, Sequence[dict]], domains: Sequence[str], kinds: Collection[str],
                 retrieved_at: str) -> tuple[CredentialBatch, int]:
-    """One batch from providers' validated rows, and the number of rows rejected as out of scope.
+    """One batch from providers' validated rows, and the number of rows rejected as out of scope or of a
+    disabled kind.
 
     Exposures are scoped, related and identified by `normalise_exposure`. A provider/domain/kind/operation
     with rows but no declared check gets a `partial` one: the rows alone cannot say they covered everything."""
@@ -59,12 +59,12 @@ def build_batch(rows: Mapping[str, Sequence[dict]], domains: Sequence[str], kind
         exposures[row["id"]] = {**row, "first_seen": when, "last_seen": when}
     summaries, declared = [], {}
     for raw in rows["summaries"]:
-        if _in_domains(raw, domains):
-            summaries.append(_ordered(STORED_SUMMARY_ORDER, raw, retrieved_at=when, first_seen=when, last_seen=when))
-        else:
+        if (row := _scoped(raw, domains, kinds)) is None:
             rejected += 1
+            continue
+        summaries.append(_ordered(STORED_SUMMARY_ORDER, row, retrieved_at=when, first_seen=when, last_seen=when))
     for raw in rows["checks"]:
-        if not _in_domains(raw, domains):
+        if (raw := _scoped(raw, domains, kinds)) is None:
             rejected += 1
             continue
         at = normalise_time(raw.get("checked_at")) or when
