@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 import httpx
 
 from farpoint.sources.base import Source
+from farpoint.sources.github import GitHubCode
 from farpoint.sources.hudsonrock import HudsonRock
 from farpoint.sources.tools import Bbot, Dnstwist, Subfinder
 from farpoint.sources.web import CertSpotter, CrtSh, HackerTarget, Otx, RapidDns, Shodan, UrlScan, VirusTotal, Wayback
@@ -24,6 +25,7 @@ def build_sources(http: httpx.Client, env: Mapping[str, str], nameservers: Seque
         HudsonRock(http, retries=1),  # also read before the scan by --credentials: an outage must not stall it
         Shodan(http, env.get("SHODAN_API_KEY")),
         VirusTotal(http, env.get("VIRUSTOTAL_API_KEY")),
+        GitHubCode(http, env.get("GITHUB_TOKEN")),
         Subfinder(),
         Bbot(),
         Dnstwist(nameservers),  # its own process: --nameserver reaches it only by being passed

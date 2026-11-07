@@ -179,6 +179,7 @@ class Inventory:
         self.dangling_checked: set[str] = set()  # hostnames checked for that this run
         self.excluded: set[str] = set()  # live hosts --fingerprint left alone: --out-of-scope by name or address
         self.ranges: list = []  # --ranges: the organisation's own address ranges (ipaddress networks)
+        self.code_leads: dict[str, dict] = {}  # --code: url -> a public file naming a scan domain next to a credential word
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial

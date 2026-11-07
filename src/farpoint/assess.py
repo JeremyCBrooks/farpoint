@@ -83,6 +83,7 @@ SIGNALS = {
 DEV_NAMES = re.compile(r"(^|[.-])(dev|develop|test|testing|tst|stage|staging|stg|uat|qa|preprod|pre-prod|sandbox|demo|old|legacy|backup|bak|temp|tmp|beta)\d*([.-]|$)")
 INTERNAL_NAMES = re.compile(r"\.(local|internal|corp|lan|intranet|localdomain|home\.arpa)$")
 BACKPORTED = re.compile(r"ubuntu|debian|deb\d|el\d|centos|red ?hat|rhel|amzn|suse", re.I)
+CONFIG_FILES = re.compile(r"(^|/)(\.env[^/]*|[^/]*\.(ya?ml|json|ini|cfg|conf|config|properties|toml|xml|tfvars|pem|key)|[^/]*credentials[^/]*|[^/]*settings[^/]*\.py)$", re.I)
 SPF_LOOKUP_LIMIT = 10
 AUTOMATED_CERT_DAYS = 100  # a certificate this short-lived is renewed by machine (ACME) well before it runs out
 AUTOMATED_CERT_WARN_DAYS = 7  # ...so with this little left, renewal has failed
@@ -253,6 +254,11 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     for p in report.get("posture", []):
         out.extend(_seen(_posture_findings(p, today, tenant_names), p))
     out.extend(_lookalike_findings(report, today))
+    for lead in report.get("code", []):
+        config = CONFIG_FILES.search(lead.get("path", ""))
+        detail = f"a public file in {lead.get('repository')} names {lead.get('domain')} next to '{lead.get('keyword')}'" + (
+            ": a configuration file, which often holds the credential itself" if config else ": read it for credentials")
+        out.extend(_seen([_finding("medium" if config else "low", "code-leak-lead", f"{lead.get('repository')}/{lead['path']}", detail, [lead["url"]])], lead))
     for t in report.get("tenants", []):
         if t.get("public"):
             tied = t.get("tie") in ("records", "cname")

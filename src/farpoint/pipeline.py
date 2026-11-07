@@ -74,6 +74,7 @@ class Pipeline:
     certificate_orgs: Sequence[str] = ()  # with `related`: organisations earlier scans found on the organisation's certificates
     web: Callable[[str], tuple[int, str] | None] | None = None  # GET a platform's URL (never the organisation's): (status, body)
     buckets: bool = False  # --buckets: storage buckets named after the organisation (needs `web`)
+    code: object | None = None  # --code: leads(domain) -> files naming it next to a credential word (sources.github.GitHubCode)
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -88,6 +89,8 @@ class Pipeline:
             inv.add(Observation("input", domain))
         try:
             self._collect(inv)
+            if self.code:
+                self._code(inv)
             for host in self.known:
                 inv.add(Observation(KNOWN, host))  # in scope only, like everything else
             if self.related:
@@ -287,6 +290,13 @@ class Pipeline:
                 for ip in sorted(profile.a) or [None]:
                     inv.add(Observation("tld-swap", variant, ip, lookalike=True, mx=tuple(profile.mx), ns=tuple(profile.ns)))
         log.info("related: %d domains", len(inv.related))
+
+    def _code(self, inv: Inventory) -> None:
+        """--code: public files that name a scan domain next to a credential word. Third parties only."""
+        for (_, domain), leads in self._fan_out(inv, {("github-leads", d): (lambda d=d: list(self.code.leads(d))) for d in inv.domains}, rows=True):
+            for lead in leads:
+                inv.code_leads.setdefault(lead["url"], lead)
+            self.reporter.job_finished(("github-leads", domain), len(leads), None)
 
     def _ranges(self, inv: Inventory) -> None:
         """--ranges: every address in the organisation's ranges is recorded (and later looked up passively),

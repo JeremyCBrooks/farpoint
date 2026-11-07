@@ -143,6 +143,7 @@ _ROW_LISTS = {
     "dangling": ("hostname", ()),
     "identity": ("domain", ()),
     "scan_dns": ("domain", ("ns", "mx")),
+    "code": ("url", ()),
     "findings": ("id", ("evidence",)),
     "vulns": ("cpe", ("cves",)),
 }
@@ -324,6 +325,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "tenants": sorted(tenants, key=lambda r: r["tenant"]),
         "related": sorted(related_rows, key=lambda r: (-_RELATED_TIERS.index(r["tie"]) if r.get("tie") in _RELATED_TIERS else 1, r["domain"])),
         "guessed": dict(sorted(guessed.items())),
+        **({"code": sorted(code, key=lambda r: r["url"])} if (code := _merge_rows(prior.get("code", []), current.get("code", []), "url", lambda old, new: {}, stamp, prior_stamp)[0]) else {}),
         **({"ranges": ranges} if (ranges := list(dict.fromkeys([*prior.get("ranges", []), *current.get("ranges", [])]))) else {}),
         **({"fingerprints": sorted(fingerprints, key=lambda r: (r["hostname"], r.get("port", 0)))} if fingerprints else {}),
         **({"posture": sorted(posture, key=lambda r: r["domain"])} if posture else {}),
@@ -365,6 +367,7 @@ def run_report(inv: Inventory) -> dict:
         **({"tenants_rejected": sorted(inv.tenants_rejected)} if inv.tenants_rejected else {}),
         "guessed": sorted(inv.guessed),
         **({"ranges": [str(n) for n in inv.ranges]} if inv.ranges else {}),
+        **({"code": [inv.code_leads[u] for u in sorted(inv.code_leads)]} if inv.code_leads else {}),
         **({"fingerprints": _fingerprint_rows(inv)} if inv.services else {}),
         **({"closed": sorted(inv.closed)} if inv.closed else {}),
         **({"posture": [inv.posture[d] for d in sorted(inv.posture)]} if inv.posture else {}),
@@ -503,6 +506,8 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
         write("technologies.csv", files.csv_text(technologies(report), ["category", "technology", "version", "seen", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
     if report.get("identity"):  # only once --tenants has run
         write("identity.csv", files.csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
+    if report.get("code"):  # only once --code has found some
+        write("code.csv", files.csv_text(report["code"], ["repository", "path", "keyword", "domain", "url", *seen]))
     if netblocks := netblock_rows(report):
         write("netblocks.csv", files.csv_text(netblocks, ["network", "org", "hosting", "in_ranges", "addresses", "hosts", "live_hosts", "ips"]))
     if report.get("posture"):

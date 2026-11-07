@@ -104,6 +104,12 @@ def _parser() -> argparse.ArgumentParser:
         help="also look for S3 and Google Cloud Storage buckets the organisation's CNAMEs point at or named after it, "
         "one GET each to the storage provider, and flag public listings (not passive: the providers see the requests)",
     )
+    p.add_argument(
+        "--code",
+        action="store_true",
+        help="also list public GitHub files that name a scan domain next to a credential word (password, secret, api_key, "
+        "token), by repository and path only: never their text (needs GITHUB_TOKEN; GitHub only sees the queries)",
+    )
     p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
     p.add_argument(
         "--fingerprint",
@@ -338,6 +344,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tenant-budget must be at least 1")
     if args.workers < 1:
         parser.error("--workers must be at least 1")
+    code = None
+    if args.code:
+        code = next(s for s in all_sources if s.name == "github")
+        if not code.available():
+            parser.error("--code needs GITHUB_TOKEN (a GitHub token with no scopes is enough) in the environment or .env")
     if args.udp and not args.fingerprint:
         parser.error("--udp is part of --fingerprint; add --fingerprint")
     if args.engagement is not None:
@@ -406,6 +417,7 @@ def main(argv: list[str] | None = None) -> int:
         exclusions=exclusions,
         web=_platform_get(http) if args.tenants or args.buckets else None,
         buckets=args.buckets,
+        code=code,
         known=[] if args.no_resolve else [h["hostname"] for h in (prior_report or {}).get("hosts", [])],
         ranges=ranges,
         certificate_orgs=_certificate_orgs(prior_report),

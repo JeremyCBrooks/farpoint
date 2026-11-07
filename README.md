@@ -92,6 +92,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `--related-rate N` | Start at most N `--related` lookups a second (default: no limit). Needs `--related`. |
 | `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms, and ask Microsoft how each domain signs in. **Not passive.** |
 | `--buckets` | Look for S3 and Google Cloud Storage buckets the organisation's CNAMEs point at, or named after it, and flag public listings. See [Buckets](#buckets---buckets). **Not passive.** |
+| `--code` | List public GitHub files that name a scan domain next to a credential word. Needs `GITHUB_TOKEN`. See [Code leads](#code-leads---code). |
 | `--tenant-budget N` | DNS lookups `--tenants` may make in total (default 800). |
 | `--guess` | Predict unseen hostnames and test them in DNS. **Not passive.** |
 | `--guess-budget N` | DNS lookups `--guess` may make per domain (default 2000). |
@@ -128,6 +129,7 @@ are then merged into the inventory in the output folder, and every output file i
 | Hudson Rock | `hudsonrock` | Hosts of login URLs seen in infostealer logs | none |
 | Shodan | `shodan` | Subdomains and records | required `SHODAN_API_KEY` |
 | VirusTotal | `virustotal` | Subdomain relations | required `VIRUSTOTAL_API_KEY` (free tier works) |
+| GitHub | `github` | Hostnames in public code that mentions the domain | required `GITHUB_TOKEN` (a token with no scopes is enough) |
 | subfinder | `subfinder` | Passive subdomain tool | `subfinder` on PATH |
 | bbot | `bbot` | Passive subdomain-enum preset | `bbot` on PATH (Linux, macOS, WSL), or the [Docker](#docker) image |
 | dnstwist | `dnstwist` | Registered lookalike domains, DNS only | bundled |
@@ -185,6 +187,22 @@ too. Private and other non-public ranges are refused.
 **Not passive:** PTR lookups go to whoever runs the reverse zone (often the organisation or its ISP).
 With `--fingerprint`, a /24 is about 11,000 connections, roughly 10 minutes at the default
 `--probe-rate`.
+
+## Code leads (`--code`)
+
+Configuration files pushed to public repositories are a common way credentials leak. With `--code`,
+GitHub's code search is asked, per scan domain, for files that name the domain next to `password`,
+`secret`, `api_key` or `token`. Each file is recorded in `code.csv` by repository, path, URL and the word
+it matched. **What the file says is never stored**: it may be the secret itself, so open the URL to read
+it.
+
+With `--assess`, each is a `code-leak-lead`: medium for configuration files (`.env`, YAML, JSON,
+`.properties`, `credentials`, keys and the like), low for anything else, such as documentation. A lead
+is not proof: the file may be an example, someone else's, or long since rotated.
+
+This is passive: only GitHub sees the queries (four per domain, paced to its limit of 10 a minute).
+The `github` discovery source uses the same token to add the in-scope hostnames the matched lines
+mention.
 
 ## Resolution
 
@@ -551,6 +569,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `hosts.csv` | hostname, resolves, ips, cnames, sources |
 | `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), tags, vulns, hostnames, sources |
 | `netblocks.csv` | The networks (as RDAP registers them) the inventory's addresses sit in, the organisation's own first: network, org, `hosting` (a cloud, CDN or hosting provider's network, whose other addresses are other customers'), `in_ranges` (yes, partly or no: how much `--ranges` covers), addresses, hosts, live_hosts, ips. Candidates to confirm with the organisation and pass to `--ranges` |
+| `code.csv` | With `--code`: repository, path, keyword, domain, url. Never the file's text |
 | `lookalikes.csv` | Registered lookalike domains: domain, addresses, mail servers, registration date, newest certificate, `capable` (mail, web: what it can do now), `flagged` (ready, parked), sources |
 | `phishing-block.txt` | With `--assess`: the flagged lookalikes, one per line, ready ones first, for the mail gateway |
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
@@ -661,7 +680,7 @@ The `kind` column of `findings.csv`, by area. Where a kind can take more than on
 | Mail | `spf-missing`, `spf-allows-all`, `spf-neutral`, `spf-multiple-records`, `spf-too-many-lookups`, `spf-at-lookup-limit`, `spf-include-unregistered`, `spf-include-missing`, `dmarc-missing`, `dmarc-not-enforced`, `dmarc-partial`, `dmarc-subdomains-open`, `dkim-not-found`, `dkim-weak-key`, `mta-sts-missing`, `mta-sts-broken`, `mx-no-starttls`, `no-starttls` (an SMTP port the scan probed), `mx-certificate-invalid` |
 | DNS and domains | `subdomain-takeover`, `dangling-cname`, `zone-transfer`, `no-dnssec`, `no-caa`, `single-nameserver`, `domain-unregistered`, `domain-expiring`, `no-transfer-lock`, `parked-domain` |
 | Phishing and identity | `lookalike-ready`, `lookalike-parked`, `self-hosted-federation` |
-| Credentials | `credential-theft`, `credential-breach`, `credential-summary` |
+| Credentials | `credential-theft`, `credential-breach`, `credential-summary`, `code-leak-lead` (`--code`) |
 
 ## Development
 

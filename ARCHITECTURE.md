@@ -247,6 +247,13 @@ is updated; one that doesn't is left out of the run report (`output._host_rows` 
 source), so its row stays as the last scan that saw it recorded it. It is still checked for dangling
 CNAMEs.
 
+**Code leads** (`sources/github.py`, `Pipeline._code`, with `--code`). `GitHubCode` is both a discovery
+source (`github`: in-scope hostnames from code search's text matches) and the `--code` lead finder:
+one search per `SECRET_WORDS` entry per domain, kept as `{url, repository, path, keyword, domain}`
+in `Inventory.code_leads`. The text matches are read for hostnames and dropped: no fragment is ever
+stored. Leads accumulate across runs by URL (`code` in `assets.json`) and make `code-leak-lead`
+findings, medium for configuration files (`assess.CONFIG_FILES`).
+
 **Partial results.** Each job collects into a list the pipeline can read mid-run (`_drain`). A source
 that fails on page 3 keeps pages 1 and 2. On Ctrl-C, pages already fetched by sources still running are
 added before saving.
