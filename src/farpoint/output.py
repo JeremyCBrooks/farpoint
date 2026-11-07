@@ -144,6 +144,7 @@ _ROW_LISTS = {
     "posture": ("domain", ("mx", "ns")),
     "dangling": ("hostname", ()),
     "identity": ("domain", ()),
+    "google_identity": ("domain", ()),
     "scan_dns": ("domain", ("ns", "mx")),
     "code": ("url", ()),
     "findings": ("id", ("evidence",)),
@@ -298,6 +299,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
     before = {r["domain"]: r for r in prior.get("posture", [])}
     posture, _ = _snapshot_rows(prior.get("posture", []), [_keep_axfr(r, before.get(r["domain"])) for r in current.get("posture", [])], "domain", stamp, prior_stamp)
     identity, _ = _snapshot_rows(prior.get("identity", []), current.get("identity", []), "domain", stamp, prior_stamp)
+    google_identity, _ = _snapshot_rows(prior.get("google_identity", []), current.get("google_identity", []), "domain", stamp, prior_stamp)
     scan_dns, _ = _snapshot_rows(prior.get("scan_dns", []), current.get("scan_dns", []), "domain", stamp, prior_stamp)
     dangling_now = {r["hostname"] for r in current.get("dangling", [])}
     dangling, _ = _snapshot_rows(
@@ -333,6 +335,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         **({"posture": sorted(posture, key=lambda r: r["domain"])} if posture else {}),
         **({"dangling": sorted(dangling, key=lambda r: r["hostname"])} if dangling else {}),
         **({"identity": sorted(identity, key=lambda r: r["domain"])} if identity else {}),
+        **({"google_identity": sorted(google_identity, key=lambda r: r["domain"])} if google_identity else {}),
         **({"scan_dns": sorted(scan_dns, key=lambda r: r["domain"])} if scan_dns else {}),
         **({"findings": prior["findings"]} if prior.get("findings") else {}),  # re-derived by --assess, kept until then
         **({"vulns": prior["vulns"]} if prior.get("vulns") else {}),
@@ -376,6 +379,7 @@ def run_report(inv: Inventory) -> dict:
         **({"dangling": [{"hostname": h, **d} for h, d in sorted(inv.dangling.items())]} if inv.dangling else {}),
         **({"dangling_checked": sorted(inv.dangling_checked)} if inv.dangling_checked else {}),
         **({"identity": [inv.identity[d] for d in sorted(inv.identity)]} if inv.identity else {}),
+        **({"google_identity": [inv.google_identity[d] for d in sorted(inv.google_identity)]} if inv.google_identity else {}),
         **({"scan_dns": [inv.scan_dns[d] for d in sorted(inv.scan_dns)]} if inv.scan_dns else {}),
         "errors": [{"source": e.source, "target": e.target, "message": e.message} for e in inv.errors],
         "skipped_sources": inv.skipped,
@@ -460,6 +464,18 @@ def _coverage(network: str, ranges: list) -> str:
     return "partly" if any(b.version == r.version and b.overlaps(r) for b in blocks for r in ranges) else "no"
 
 
+def _identity_rows(report: dict) -> list[dict]:
+    """One row per scan domain: how it signs in to Microsoft and to Google, seen dates spanning both looks."""
+    rows: dict[str, dict] = {}
+    for r in [*report.get("identity", []), *report.get("google_identity", [])]:
+        row = rows.setdefault(r["domain"], {})
+        first, last = row.get("first_seen"), row.get("last_seen")
+        row.update(r)
+        if first:
+            row["first_seen"], row["last_seen"] = min(first, r.get("first_seen", first)), max(last, r.get("last_seen", last))
+    return [rows[d] for d in sorted(rows)]
+
+
 def _posture_csv_rows(report: dict) -> list[dict]:
     from farpoint.assess import transfer_locked
 
@@ -507,8 +523,9 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
 
         write("fingerprints.csv", files.csv_text(_fingerprint_csv_rows(report), [*FINGERPRINT_FIELDS, *seen]))
         write("technologies.csv", files.csv_text(technologies(report), ["category", "technology", "version", "seen", "count", "eol", "cves", "kev", "cpe", "hosts", "endpoints"]))
-    if report.get("identity"):  # only once --tenants has run
-        write("identity.csv", files.csv_text(report["identity"], ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", *seen]))
+    if report.get("identity") or report.get("google_identity"):  # only once --tenants has run
+        write("identity.csv", files.csv_text(_identity_rows(report), ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region",
+                                                                     "google_sso", "google_sign_in_host", *seen]))
     if report.get("code"):  # only once --code has found some
         write("code.csv", files.csv_text(report["code"], ["repository", "path", "keyword", "domain", "url", *seen]))
     if netblocks := netblock_rows(report):

@@ -268,6 +268,9 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     for row in report.get("identity", []):
         if row.get("provider") == "adfs" and row.get("sign_in_host"):
             adfs.setdefault(row["sign_in_host"], []).append(row)
+    for row in report.get("google_identity", []):  # Google Workspace federated to it: the same exposure
+        if row.get("google_sso") == "adfs" and row.get("google_sign_in_host"):
+            adfs.setdefault(row["google_sign_in_host"], []).append(row)
     for host, rows in sorted(adfs.items()):
         detail = "sign-in is federated to a self-hosted ADFS server: a password-spray target outside Entra's lockout protection, and a Golden SAML target if its signing key is stolen"
         out.extend(_seen([_finding("medium", "self-hosted-federation", host, detail, sorted(r["domain"] for r in rows))], *rows))

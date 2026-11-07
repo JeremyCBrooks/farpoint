@@ -60,10 +60,12 @@ A scan runs these phases in order. Each phase works on what the earlier ones fou
 
 | Phase | What it does | Who sees traffic | Enabled by |
 |---|---|---|---|
-| Discovery | Collects hostnames from certificate logs, passive DNS, archives and other datasets | The data sources | always |
+| Discovery | Collects hostnames from certificate logs, passive DNS, archives, public code and other datasets | The data sources | always |
+| Code leads | Lists public GitHub files that name a scan domain next to a credential word | GitHub | `--code` |
 | Related domains | Finds other registered domains the organisation owns | Registries, the domains found, Microsoft | `--related` |
-| Resolution | Looks up every name's addresses and CNAMEs | Your DNS resolver | always (`--no-resolve` skips) |
-| Tenants | Finds the organisation's accounts on SaaS and cloud platforms, and how each domain signs in to Microsoft | The platforms' nameservers, Microsoft | `--tenants` |
+| Resolution | Looks up every name's addresses and CNAMEs, including earlier scans' hosts; with `--ranges`, the PTR names of the organisation's own addresses | Your DNS resolver | always (`--no-resolve` skips) |
+| Tenants | Finds the organisation's accounts on SaaS and cloud platforms, and how each domain signs in to Microsoft and Google | The platforms' nameservers, Okta and Auth0, Microsoft, Google | `--tenants` |
+| Buckets | Finds S3 and Google Cloud Storage buckets the organisation's CNAMEs point at or named after it | AWS, Google | `--buckets` |
 | Guessing | Predicts unseen names from the naming patterns found and tests them in DNS | The domain's nameservers | `--guess` |
 | Enrichment | Adds each address's owner, network, and Shodan's port and CVE history; dates the lookalikes that could be used for phishing | RDAP registries, Shodan, crt.sh | always (`--no-enrich` skips) |
 | Fingerprinting | Identifies what each live host runs, and each domain's mail and DNS posture | **The organisation's hosts** | `--fingerprint` |
@@ -229,7 +231,13 @@ with the tenant ID and region. That's two requests per domain to `login.microsof
 made-up username, never a real one. A Microsoft 365 tenant found by its name alone
 (`example.onmicrosoft.com`) is checked against the scan domains' tenant ID: someone else's is dropped,
 from earlier runs' inventory too, and the organisation's own gets tie `records`. Federation to a
-self-hosted ADFS server is a finding, and a sign-in host under the scan domains joins the inventory.
+Self-hosted ADFS server is a finding, and a sign-in host under the scan domains joins the inventory.
+
+It also asks Google where each scan domain's Workspace users sign in (one request per domain to
+`accounts.google.com/samlredirect`). A domain whose Google sign-in is federated gets `google_sso` (the
+provider, or `adfs`) and `google_sign_in_host` in `identity.csv`; one with no SAML sign-in at Google
+(or not on Workspace) leaves them blank. Federation to self-hosted ADFS is the same finding as for
+Microsoft.
 
 On platforms whose DNS answers any name (Okta, Auth0), DNS can't say whether a tenant exists, so
 the platform is asked: one GET of the tenant's OpenID configuration, which only a real tenant serves
@@ -238,7 +246,7 @@ doesn't exist is dropped. Add a `verify` entry to a vendor in `src/farpoint/data
 confirm another platform this way.
 
 **Not passive:** the platforms' nameservers and Microsoft's sign-in service see the lookups, Okta and
-Auth0 see one request per candidate, and the organisation's nameservers see one TXT query per domain.
+Auth0 see one request per candidate, Google one per scan domain, and the organisation's nameservers see one TXT query per domain.
 
 ## Buckets (`--buckets`)
 
@@ -584,7 +592,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `code.csv` | With `--code`: repository, path, keyword, domain, url. Never the file's text |
 | `lookalikes.csv` | Registered lookalike domains: domain, addresses, mail servers, registration date, newest certificate, `capable` (mail, web: what it can do now), `flagged` (ready, parked), sources |
 | `phishing-block.txt` | With `--assess`: the flagged lookalikes, one per line, ready ones first, for the mail gateway |
-| `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
+| `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region (Microsoft), google_sso, google_sign_in_host (Google Workspace) |
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants` or `--buckets`: tenant, vendor, domain, tie, verified, public (buckets), hosts pointing at it, evidence, ips, cnames |
 | `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, transport (`tcp`, or `udp` with `--udp`), service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed; with `--scripts`, api_paths |

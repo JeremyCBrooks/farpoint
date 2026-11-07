@@ -367,7 +367,9 @@ OpenID configuration, giving the tenant ID and region. After the tenant search,
 `Pipeline._check_m365_names` asks for the tenant ID of each Microsoft 365 tenant found by name alone
 (`identity.m365_tenant_name` maps SharePoint and OneDrive names to it): one that differs from every
 scan domain's tenant is dropped, a match gets tie `records`; with no scan domain on Microsoft 365, or
-no answer, it stays as it was. A federated sign-in URL with an `/adfs/` path
+no answer, it stays as it was. `identity.GoogleSignIn` asks Google's SAML redirect for each scan domain too (`identity.google_identity`
+rows, `google_sso` and `google_sign_in_host`; a 400 means no SAML sign-in at Google, a failure records no
+row). Both are named by `identity.federation`: a federated sign-in URL with an `/adfs/` path
 is self-hosted ADFS; otherwise the provider is named from `data/identity_providers.json` by the URL's
 registered domain, or `other`. A sign-in host under the scan domains joins the inventory and is
 resolved. If the sign-in lookup fails, the scan records no row for the domain (unknown, never `none`)

@@ -113,7 +113,7 @@ def test_identity_csv_is_written(tmp_path):
     write_outputs(scan(sign_in, ["example.com"]), tmp_path, "2026-10-31T00:00:00Z")
 
     rows = read_csv(tmp_path / "identity.csv")
-    assert list(rows[0]) == ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", "first_seen", "last_seen"]
+    assert list(rows[0]) == ["domain", "sign_in", "provider", "sign_in_host", "brand", "tenant_id", "region", "google_sso", "google_sign_in_host", "first_seen", "last_seen"]
     assert (rows[0]["domain"], rows[0]["provider"], rows[0]["sign_in_host"]) == ("example.com", "adfs", "sts.example.com")
 
 

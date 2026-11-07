@@ -24,7 +24,7 @@ from farpoint.credentials import QUERY_KINDS
 from farpoint.enrich import InternetDb, Rdap
 from farpoint.fingerprint import DEFAULT_PATHS, FingerprintConfig, parse_paths, parse_ports
 from farpoint.guess import GuessConfig
-from farpoint.identity import MicrosoftSignIn
+from farpoint.identity import GoogleSignIn, MicrosoftSignIn
 from farpoint.lookalikes import LookalikeConfig, NetworkLookalikeLookups, fresh_registrations
 from farpoint.models import Inventory
 from farpoint.names import Exclusions, parse_domains
@@ -414,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         tenants=_tenant_config(args.tenant_budget, prior_report) if args.tenants else None,
         txt=resolver.txt,
         sign_in=MicrosoftSignIn(http, retries=2) if args.tenants else None,
+        google=GoogleSignIn(http, retries=2) if args.tenants else None,
         related=NetworkProbes(http, resolver.records, lambda ip: rdap.enrich(ip).org, CrtSh(http, retries=2).organisation_names) if args.related else None,
         related_rate=args.related_rate,
         fingerprint=fingerprint if args.fingerprint else None,

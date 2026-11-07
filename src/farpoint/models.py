@@ -177,6 +177,7 @@ class Inventory:
         self.posture: dict[str, dict] = {}  # scan domain -> mail/DNS/registration facts (farpoint.posture)
         self.scan_dns: dict[str, dict] = {}  # scan domain -> its own NS and MX, to tell its lookalikes from others'
         self.identity: dict[str, dict] = {}  # scan domain -> how it signs in to Microsoft (farpoint.identity)
+        self.google_identity: dict[str, dict] = {}  # scan domain -> where Google Workspace sends it to sign in
         self.dangling: dict[str, dict] = {}  # hostname -> {"reason", "claimable"}: a CNAME into nothing
         self.dangling_checked: set[str] = set()  # hostnames checked for that this run
         self.excluded: set[str] = set()  # live hosts --fingerprint left alone: --out-of-scope by name or address

@@ -51,6 +51,46 @@ class MicrosoftSignIn(HttpSource):
             raise
 
 
+GOOGLE_SAML = "https://accounts.google.com/samlredirect"
+
+
+class GoogleSignIn(HttpSource):
+    """Google Workspace's SAML sign-in: for a domain that federates sign-in, Google redirects to its
+    identity provider. One request per domain to Google; no username is sent."""
+
+    name = "google-sso"
+    max_concurrency = 2
+    min_interval = 0.5
+
+    def saml(self, domain: str) -> str | None:
+        """Where Google sends the domain's users to sign in; None when it has no SAML sign-in at Google."""
+        try:
+            self.get(GOOGLE_SAML, params={"domain": domain}, follow_redirects=False)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (301, 302, 303, 307) and exc.response.headers.get("location"):
+                return exc.response.headers["location"]
+            if exc.response.status_code == 400:  # no SAML sign-in for it (or it isn't on Workspace)
+                return None
+            raise
+        return None
+
+
+def classify_google(domain: str, location: str | None) -> dict:
+    """One Google sign-in row for a scan domain from where Google redirects it."""
+    provider, host = federation(location) if location else (None, None)
+    return {"domain": domain, "google_sso": provider, "google_sign_in_host": host}
+
+
+def federation(url: str) -> tuple[str, str | None]:
+    """(provider, sign-in host) of a federated sign-in URL: adfs for a self-hosted ADFS path, else the provider
+    named by the host's registered domain (data/identity_providers.json), else other."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower() or None
+    if "/adfs/" in parts.path.lower():
+        return "adfs", host
+    return _providers().get(registered(host or "") or host or "", "other"), host
+
+
 @cache
 def _providers() -> dict[str, str]:
     data = json.loads(resources.files("farpoint.data").joinpath("identity_providers.json").read_text(encoding="utf-8"))
@@ -77,12 +117,7 @@ def classify(domain: str, realm: Mapping, openid: Mapping | None) -> dict:
     sign_in = _SIGN_IN.get(str(realm.get("NameSpaceType", "")).lower())
     provider = host = None
     if sign_in == "federated" and realm.get("AuthURL"):
-        url = urlsplit(realm["AuthURL"])
-        host = (url.hostname or "").lower() or None
-        if "/adfs/" in url.path.lower():
-            provider = "adfs"
-        else:
-            provider = _providers().get(registered(host or "") or host or "", "other")
+        provider, host = federation(realm["AuthURL"])
     return {
         "domain": domain,
         "sign_in": sign_in,

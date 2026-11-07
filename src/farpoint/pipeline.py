@@ -23,7 +23,7 @@ from farpoint.fingerprint import (
 from farpoint.posture import Dns, assess_domain, check_mx, hosted
 from farpoint.probe import Prober, ScopedProber
 from farpoint.guess import GuessConfig, Taxonomy, parent_of
-from farpoint.identity import SignIn, classify, m365_tenant_name, tenant_id
+from farpoint.identity import SignIn, classify, classify_google, m365_tenant_name, tenant_id
 from farpoint.lookalikes import RECENT_DAYS, LookalikeConfig
 from farpoint.models import KNOWN, RANGE, Inventory, Observation, RelatedRecord, SourceError, TenantRecord, describe
 from farpoint.related import TIERS as RELATED_TIERS
@@ -67,6 +67,7 @@ class Pipeline:
     dns: Dns | None = None  # records()/txt() for posture and dangling-CNAME checks
     rdap_domain: Callable[[str], Mapping] | None = None  # a registered domain's RDAP record
     sign_in: SignIn | None = None  # how each scan domain signs in to Microsoft (with `tenants`)
+    google: object | None = None  # identity.GoogleSignIn: where Google Workspace sends each scan domain to sign in (with `tenants`)
     lookalikes: LookalikeConfig | None = None  # registration and certificate lookups for lookalikes that can mail or serve
     exclusions: Exclusions = field(default_factory=Exclusions)  # --out-of-scope: recorded, never contacted
     known: Sequence[str] = ()  # the inventory's earlier hosts: resolved again (and fingerprinted while live) though no source reported them
@@ -362,7 +363,7 @@ class Pipeline:
         """Tenant patterns from the domains' own TXT/SPF records, their CNAMEs and the bundled table,
         strongest tie first, each checked with random names and then tried, within the budget."""
         config = self.tenants
-        if self.sign_in:
+        if self.sign_in or self.google:
             self._sign_in(inv)
         txt: dict[str, list[str]] = {}
         for (_, domain), strings in self._fan_out(inv, {("tenants-txt", d): (lambda d=d: self.txt(d)) for d in inv.domains}):
@@ -492,14 +493,21 @@ class Pipeline:
             except Exception as exc:  # the tenant ID is extra: losing it must not lose the sign-in answer
                 return classify(domain, realm, None), exc
 
-        jobs = {("entra", d): (lambda d=d: look(d)) for d in inv.domains}
+        jobs = {("entra", d): (lambda d=d: look(d)) for d in inv.domains} if sign_in else {}
+        if self.google:
+            jobs.update({("google-sso", d): (lambda d=d: (classify_google(d, self.google.saml(d)), None)) for d in inv.domains})
         known = set(inv.hosts)
-        for (_, domain), (row, exc) in self._fan_out(inv, jobs):
-            inv.identity[domain] = row
+        for (kind, domain), (row, exc) in self._fan_out(inv, jobs):
+            if kind == "google-sso":
+                inv.google_identity[domain] = row
+                host = row["google_sign_in_host"]
+            else:
+                inv.identity[domain] = row
+                host = row["sign_in_host"]
             if exc is not None:
                 _record_failure(inv, "entra-tenant", domain, exc)
-            if (host := row["sign_in_host"]) and inv.scope_of(host):
-                inv.add(Observation("entra", host))
+            if host and inv.scope_of(host):
+                inv.add(Observation(kind, host))
         self._resolve(inv, skip=known)
 
     def _guess(self, inv: Inventory) -> None:
