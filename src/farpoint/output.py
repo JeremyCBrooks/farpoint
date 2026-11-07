@@ -115,6 +115,7 @@ def _tenant_rows(inv: Inventory) -> list[dict]:
             "evidence": sorted(t.evidence),
             "ips": _ips(t.ips),
             "cnames": sorted(t.cnames),
+            **({"public": t.public} if t.public is not None else {}),
         }
         for t in sorted(inv.tenants.values(), key=lambda t: t.hostname)
     ]
@@ -260,6 +261,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
             "vendor": stronger.get("vendor"),
             "tie": stronger.get("tie"),
             "verified": bool(old.get("verified") or new["verified"]),
+            **({"public": new["public"]} if "public" in new else {"public": old["public"]} if "public" in old else {}),  # the latest look
             **{f: _union(old.get(f, []), new[f]) for f in ("evidence", "cnames")},
             "ips": _ips(set(old.get("ips", [])) | set(new["ips"])),
         }
@@ -493,7 +495,7 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
     if report.get("related"):  # only once --related has found some
         write("related.csv", files.csv_text(report["related"], ["domain", "related_to", "tie", "evidence", *seen]))
     if report.get("tenants"):  # only once --tenants has found some
-        write("tenants.csv", files.csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "hosts", "evidence", "ips", "cnames", *seen]))
+        write("tenants.csv", files.csv_text(report["tenants"], ["tenant", "vendor", "domain", "tie", "verified", "public", "hosts", "evidence", "ips", "cnames", *seen]))
     if report.get("fingerprints"):  # only once --fingerprint has run
         from farpoint.assess import technologies
 

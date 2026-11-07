@@ -91,6 +91,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `--related` | Look for other domains the organisation owns. **Not passive.** |
 | `--related-rate N` | Start at most N `--related` lookups a second (default: no limit). Needs `--related`. |
 | `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms, and ask Microsoft how each domain signs in. **Not passive.** |
+| `--buckets` | Look for S3 and Google Cloud Storage buckets the organisation's CNAMEs point at, or named after it, and flag public listings. See [Buckets](#buckets---buckets). **Not passive.** |
 | `--tenant-budget N` | DNS lookups `--tenants` may make in total (default 800). |
 | `--guess` | Predict unseen hostnames and test them in DNS. **Not passive.** |
 | `--guess-budget N` | DNS lookups `--guess` may make per domain (default 2000). |
@@ -211,8 +212,30 @@ made-up username, never a real one. A Microsoft 365 tenant found by its name alo
 from earlier runs' inventory too, and the organisation's own gets tie `records`. Federation to a
 self-hosted ADFS server is a finding, and a sign-in host under the scan domains joins the inventory.
 
-**Not passive:** the platforms' nameservers and Microsoft's sign-in service see the lookups, and the
-organisation's nameservers see one TXT query per domain.
+On platforms whose DNS answers any name (Okta, Auth0), DNS can't say whether a tenant exists, so
+the platform is asked: one GET of the tenant's OpenID configuration, which only a real tenant serves
+(its `issuer` must be the tenant itself). A confirmed tenant is `verified=yes`; one the platform says
+doesn't exist is dropped. Add a `verify` entry to a vendor in `src/farpoint/data/tenants.json` to
+confirm another platform this way.
+
+**Not passive:** the platforms' nameservers and Microsoft's sign-in service see the lookups, Okta and
+Auth0 see one request per candidate, and the organisation's nameservers see one TXT query per domain.
+
+## Buckets (`--buckets`)
+
+Storage buckets often hold backups, exports and logs, and their names are guessable. farpoint asks S3
+and Google Cloud Storage about buckets the organisation's CNAMEs point at (`assets.example.com` →
+`example-assets.s3.amazonaws.com`, tie `cname`) and about its name with common modifiers
+(`example-backup`, `example-assets` and the organisation's own modifiers, tie `name`), at most 200
+requests. Each gets one unauthenticated GET to the provider, whose answer says whether the bucket
+doesn't exist (404 NoSuchBucket), exists but isn't public (403), or lists its contents to anyone (200).
+Nothing is downloaded past that first answer.
+
+Found buckets go to `tenants.csv` with `public` `yes` or `no`. With `--assess`, a public one is
+`public-bucket`: high when the organisation's CNAMEs point at it, medium when only its name matches,
+since bucket names are global and anyone may have taken `example-backup` first.
+
+**Not passive:** AWS and Google see the requests. They never go to the organisation.
 
 ## Guessing (`--guess`)
 
@@ -532,7 +555,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `phishing-block.txt` | With `--assess`: the flagged lookalikes, one per line, ready ones first, for the mail gateway |
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region |
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
-| `tenants.csv` | With `--tenants`: tenant, vendor, domain, tie, verified, hosts pointing at it, evidence, ips, cnames |
+| `tenants.csv` | With `--tenants` or `--buckets`: tenant, vendor, domain, tie, verified, public (buckets), hosts pointing at it, evidence, ips, cnames |
 | `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, transport (`tcp`, or `udp` with `--udp`), service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed |
 | `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, MX, SPF (record, `all`, lookups, missing includes), DMARC (record, policy, subdomain policy, pct), DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registrar, created, expires, transfer lock |
@@ -633,7 +656,7 @@ The `kind` column of `findings.csv`, by area. Where a kind can take more than on
 |---|---|
 | Exposed services | `exposed-service` (high, medium or low by port; UDP ones as `ip:port/udp`), `open-resolver`, `edge-device`, `file-transfer`, `admin-interface` (high or medium by product), `non-production-exposed` |
 | Software | `end-of-life`, `known-vulnerable-version` (by CVSS and exploitation), `shodan-cves`, `plugin-version` |
-| Web | `git-exposed`, `bucket-listing`, `directory-listing`, `default-page`, `basic-auth`, `ntlm-auth`, `error-detail`, `cors-any-origin-with-credentials`, `version-disclosure`, `cleartext-http`, `no-https-redirect`, `no-hsts`, `cookie-without-secure`, `login-frameable` |
+| Web | `git-exposed`, `bucket-listing`, `public-bucket` (`--buckets`), `directory-listing`, `default-page`, `basic-auth`, `ntlm-auth`, `error-detail`, `cors-any-origin-with-credentials`, `version-disclosure`, `cleartext-http`, `no-https-redirect`, `no-hsts`, `cookie-without-secure`, `login-frameable` |
 | Certificates and TLS | `certificate-expired`, `certificate-expiring`, `certificate-self-signed`, `certificate-mismatch`, `weak-certificate-key`, `weak-certificate-signature`, `wildcard-certificate`, `internal-names-in-certificate`, `legacy-tls` |
 | Mail | `spf-missing`, `spf-allows-all`, `spf-neutral`, `spf-multiple-records`, `spf-too-many-lookups`, `spf-at-lookup-limit`, `spf-include-unregistered`, `spf-include-missing`, `dmarc-missing`, `dmarc-not-enforced`, `dmarc-partial`, `dmarc-subdomains-open`, `dkim-not-found`, `dkim-weak-key`, `mta-sts-missing`, `mta-sts-broken`, `mx-no-starttls`, `no-starttls` (an SMTP port the scan probed), `mx-certificate-invalid` |
 | DNS and domains | `subdomain-takeover`, `dangling-cname`, `zone-transfer`, `no-dnssec`, `no-caa`, `single-nameserver`, `domain-unregistered`, `domain-expiring`, `no-transfer-lock`, `parked-domain` |

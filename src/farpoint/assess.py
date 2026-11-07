@@ -253,6 +253,11 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     for p in report.get("posture", []):
         out.extend(_seen(_posture_findings(p, today, tenant_names), p))
     out.extend(_lookalike_findings(report, today))
+    for t in report.get("tenants", []):
+        if t.get("public"):
+            tied = t.get("tie") in ("records", "cname")
+            detail = "a storage bucket that lists its contents to anyone" + ("" if tied else "; found by its name alone, so confirm it is the organisation's")
+            out.extend(_seen([_finding("high" if tied else "medium", "public-bucket", t["tenant"], detail, sorted(t.get("evidence", [])))], t))
     adfs: dict[str, list[Mapping]] = {}  # sign-in host -> the scan domains federated to it
     for row in report.get("identity", []):
         if row.get("provider") == "adfs" and row.get("sign_in_host"):

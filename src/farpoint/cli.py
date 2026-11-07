@@ -98,6 +98,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--related-rate", type=float, metavar="N", help="start at most N --related lookups a second, to spread them out (default: no limit)"
     )
+    p.add_argument(
+        "--buckets",
+        action="store_true",
+        help="also look for S3 and Google Cloud Storage buckets the organisation's CNAMEs point at or named after it, "
+        "one GET each to the storage provider, and flag public listings (not passive: the providers see the requests)",
+    )
     p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
     p.add_argument(
         "--fingerprint",
@@ -224,6 +230,22 @@ def _guess_config(budget: int, report: dict | None, rate: float | None = None) -
     )
 
 
+def _platform_get(http: httpx.Client):
+    """GET a platform's URL (a storage provider's, an identity provider's sign-in metadata): (status, body),
+    or None when it couldn't be reached. Redirects aren't followed: the first answer is the platform's."""
+
+    def get(url: str) -> tuple[int, str] | None:
+        runtime.check()
+        runtime.count_request()
+        try:
+            response = http.get(url, follow_redirects=False, timeout=15)
+        except httpx.HTTPError:
+            return None
+        return response.status_code, response.text[:65536]
+
+    return get
+
+
 def _certificate_orgs(report: dict | None) -> list[str]:
     """Organisations named in the subject of certificates earlier scans found on the organisation's own
     names, for --related to look up (this scan's --fingerprint adds what it finds)."""
@@ -300,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--ports/--paths: {exc}")
     if args.probe_rate <= 0:
         parser.error("--probe-rate must be positive")
-    for flag in ("guess", "tenants", "related", "fingerprint"):
+    for flag in ("guess", "tenants", "related", "fingerprint", "buckets"):
         if getattr(args, flag) and args.no_resolve:
             parser.error(f"--{flag} needs DNS resolution; drop --no-resolve")
     if args.guess_budget < 1:
@@ -382,6 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         rdap_domain=rdap.domain if args.fingerprint else None,
         lookalikes=None if args.no_enrich else LookalikeConfig(NetworkLookalikeLookups(rdap, CrtSh(http, retries=2)), fresh_registrations(prior_report, now_stamp())),
         exclusions=exclusions,
+        web=_platform_get(http) if args.tenants or args.buckets else None,
+        buckets=args.buckets,
         known=[] if args.no_resolve else [h["hostname"] for h in (prior_report or {}).get("hosts", [])],
         ranges=ranges,
         certificate_orgs=_certificate_orgs(prior_report),

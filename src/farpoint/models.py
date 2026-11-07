@@ -85,6 +85,7 @@ class TenantRecord:
     evidence: set[str] = field(default_factory=set)
     ips: set[str] = field(default_factory=set)
     cnames: set[str] = field(default_factory=set)
+    public: bool | None = None  # a storage bucket (--buckets): True when it lists its contents to anyone
 
 
 @dataclass

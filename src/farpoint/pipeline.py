@@ -34,7 +34,8 @@ from farpoint.progress import NullReporter, ProgressReporter
 from farpoint.resolve import Resolution
 from farpoint.sources.base import Source
 from farpoint.udp import check as udp_check
-from farpoint.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, named_after, org_modifiers, org_tokens, plan, random_name, registered
+from farpoint.buckets import candidates as bucket_candidates, judge as judge_bucket
+from farpoint.tenants import TIES, TenantConfig, bundled_vendors, candidate_names, confirmed, named_after, org_modifiers, org_tokens, plan, random_name, registered
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +72,8 @@ class Pipeline:
     known: Sequence[str] = ()  # the inventory's earlier hosts: resolved again (and fingerprinted while live) though no source reported them
     ranges: Sequence = ()  # --ranges: the organisation's own address ranges (PTR, passive lookups, and probing by address)
     certificate_orgs: Sequence[str] = ()  # with `related`: organisations earlier scans found on the organisation's certificates
+    web: Callable[[str], tuple[int, str] | None] | None = None  # GET a platform's URL (never the organisation's): (status, body)
+    buckets: bool = False  # --buckets: storage buckets named after the organisation (needs `web`)
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -95,6 +98,8 @@ class Pipeline:
                     self._ranges(inv)
                 if self.tenants and self.txt:
                     self._tenants(inv)
+                if self.buckets and self.web:
+                    self._buckets(inv)
                 if self.guess:
                     self._guess(inv)
             if self.enrichers:
@@ -392,17 +397,54 @@ class Pipeline:
                 wildcards[probe.pattern] = None
         tries = {name: (probe, domain, bare) for probe, names in chosen if probe.pattern in wildcards for name, domain, bare in names}
         jobs = {("tenants", name): (lambda n=name: self.lookup(n)) for name in tries}
+        ask: dict[str, Resolution] = {}  # DNS can't tell them from any name: the platform itself is asked
         for (_, name), res in self._fan_out(inv, jobs, on_done=tick):
             probe, domain, bare = tries[name]
             if res.timed_out or not res.found:
                 continue
             verified = not _wildcard_answer(res, wildcards[probe.pattern])
             tie, evidence = probe.tie_for(domain)
-            if verified or (bare and tie == "records"):
+            if not verified and probe.verify and self.web:
+                ask[name] = res
+            elif verified or (bare and tie == "records"):
                 _record_tenant(inv, name, probe.vendor, domain, tie, evidence, verified, res)
+        urls = {name: tries[name][0].verify[0].replace("{name}", name) for name in ask}
+        for (_, name), answer in self._fan_out(inv, {("tenants-http", n): (lambda u=urls[n]: self.web(u)) for n in sorted(ask)}):
+            probe, domain, bare = tries[name]
+            tie, evidence = probe.tie_for(domain)
+            if confirmed(probe.verify, name, answer):
+                _record_tenant(inv, name, probe.vendor, domain, tie, evidence, True, ask[name])
+                inv.tenants[name].evidence.add(f"{urls[name]} answers for it")
+            elif bare and tie == "records" and (answer is None or answer[0] == 429 or answer[0] >= 500):
+                _record_tenant(inv, name, probe.vendor, domain, tie, evidence, False, ask[name])  # the platform couldn't say: kept unverified, as before
         if self.sign_in:
             self._check_m365_names(inv)
         log.info("tenants: %d found", len(inv.tenants))
+
+    def _buckets(self, inv: Inventory) -> None:
+        """--buckets: S3 and Google Cloud Storage buckets the organisation's CNAMEs point at, or named after it,
+        each asked once at the storage provider (farpoint.buckets). Found ones are recorded as tenants."""
+        hosts = {h: r.cnames for h, r in inv.hosts.items()}
+        modifiers, _ = org_modifiers({h: set(c) for h, c in hosts.items()}, inv.domains)
+        wanted = bucket_candidates(org_tokens(inv.domains), modifiers, hosts, inv.scope_of)
+        done, failed = [0], [0]
+
+        def tick(ok: bool) -> None:
+            done[0] += 1
+            failed[0] += not ok
+            self.reporter.phase("buckets", done[0], len(wanted), failed[0])
+
+        self.reporter.phase("buckets", 0, len(wanted))
+        by_key = {f"{c.vendor}|{c.name}": c for c in wanted}
+        for (_, key), answer in self._fan_out(inv, {("buckets", k): (lambda c=c: self.web(c.url)) for k, c in by_key.items()}, on_done=tick):
+            c = by_key[key]
+            verdict = judge_bucket(*answer) if answer else None
+            if verdict in ("public", "private"):
+                what = "lists its contents to anyone" if verdict == "public" else "exists, not public"
+                _record_tenant(inv, c.hostname, c.vendor, c.domain, c.tie, c.evidence, True, Resolution())
+                record = inv.tenants[c.hostname]
+                record.evidence.add(f"{c.url}: HTTP {answer[0]}, {what}")
+                record.public = verdict == "public"
 
     def _check_m365_names(self, inv: Inventory) -> None:
         """A Microsoft 365 tenant found by its name alone is compared with the tenant the scan domains sign

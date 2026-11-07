@@ -345,7 +345,12 @@ service's hostname. `output._ip_rows` leaves out range addresses where nothing w
    modifier variants (`example-dev`) are dropped. Likewise, only bare-name candidates on a platform the
    records name get tie `records`; modifier variants get `name`. If the probes get no answer, the pattern is
    skipped and an error recorded.
-5. **CNAME tenants.** Any out-of-scope CNAME target carrying the organisation's name
+5. **Asking the platform.** A candidate DNS can't tell from the wildcard, on a vendor with a `verify`
+   entry (URL, regex), is confirmed through `Pipeline.web` (a GET to the platform, never the
+   organisation): `tenants.confirmed` needs HTTP 200 and a body matching the regex with the tenant's
+   name (the OpenID `issuer`). Confirmed: recorded verified. The platform couldn't say (no answer,
+   429, 5xx): a bare name the records tie is kept unverified, as before. Anything else: dropped.
+6. **CNAME tenants.** Any out-of-scope CNAME target carrying the organisation's name
    (`example-files.vault.io`) is recorded as a tenant with tie `cname`.
 
 **Sign-in** (`identity.py`, `Pipeline._sign_in`, first in the stage). Each scan domain gets two
@@ -362,6 +367,12 @@ resolved. If the sign-in lookup fails, the scan records no row for the domain (u
 and the inventory keeps the last one; if only the tenant lookup fails, the sign-in answer is kept
 without tenant ID and region, and the failure is recorded as `entra-tenant`. Rows describe the
 latest look (`identity.csv`).
+
+**Buckets** (`buckets.py`, `Pipeline._buckets`, with `--buckets`, after tenants). Candidates are S3 and
+GCS buckets named in the organisation's CNAME targets (tie `cname`), then each organisation token with
+`buckets.MODIFIERS` and its own modifiers (tie `name`), at most `buckets.LIMIT`. Each is one GET through
+`Pipeline.web`, judged by `buckets.judge` (404 NoSuchBucket absent, 403 private, 200 with a listing
+public). Found buckets are `TenantRecord`s with `public` set; assessment makes `public-bucket` from it.
 
 ### 5. Guessing (`--guess`)
 

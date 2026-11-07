@@ -42,6 +42,9 @@ class Vendor:
     patterns: tuple[str, ...]  # tenant names, {org} for the customer's name
     txt: tuple[str, ...] = ()  # a TXT string starting with one of these says the domain uses it
     spf: tuple[str, ...] = ()  # so does an SPF include ending in one of these
+    # (URL, regex) for a platform whose DNS answers any name: the tenant exists when GET URL answers 200 with a
+    # body matching the regex. {name} in either is the tenant name (escaped in the regex).
+    verify: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,7 @@ class Probe:
     evidence: str
     expand: bool  # also try the organisation's modifiers
     records: tuple[tuple[str, str], ...] = ()  # for a "records" tie: (scan domain, evidence) per domain naming the platform
+    verify: tuple[str, str] | None = None  # the vendor's, see Vendor.verify
 
     def tie_for(self, domain: str) -> tuple[str, str]:
         """(tie, evidence) for a tenant named after `domain`: a domain's records tie only its own tenants."""
@@ -82,8 +86,18 @@ class Probe:
 def bundled_vendors() -> tuple[Vendor, ...]:
     data = json.loads(resources.files("farpoint.data").joinpath("tenants.json").read_text(encoding="utf-8"))
     return tuple(
-        Vendor(v["name"], tuple(v["patterns"]), tuple(v.get("txt", ())), tuple(v.get("spf", ()))) for v in data["vendors"]
+        Vendor(v["name"], tuple(v["patterns"]), tuple(v.get("txt", ())), tuple(v.get("spf", ())),
+               (v["verify"]["url"], v["verify"]["exists"]) if v.get("verify") else None)
+        for v in data["vendors"]
     )
+
+
+def confirmed(verify: tuple[str, str], name: str, answer: tuple[int, str] | None) -> bool:
+    """Whether the platform's own answer to Vendor.verify's URL says tenant `name` exists."""
+    if answer is None:
+        return False
+    status, body = answer
+    return status == 200 and re.search(verify[1].replace("{name}", re.escape(name)), body) is not None
 
 
 def org_tokens(domains: Iterable[str]) -> dict[str, str]:
@@ -139,9 +153,9 @@ def plan(
                     claimed.add(inc)
         for pattern in vendor.patterns:
             if evidence:
-                offer(Probe(pattern, vendor.name, "records", evidence[0][1], True, tuple(evidence)))
+                offer(Probe(pattern, vendor.name, "records", evidence[0][1], True, tuple(evidence), vendor.verify))
             else:
-                offer(Probe(pattern, vendor.name, "name", f"{vendor.name} tenant name pattern", expand=False))
+                offer(Probe(pattern, vendor.name, "name", f"{vendor.name} tenant name pattern", expand=False, verify=vendor.verify))
     senders: dict[str, list[tuple[str, str]]] = {}  # SPF senders no table entry explains: zone -> (domain, include)
     for d, incs in includes.items():
         for inc in incs:
