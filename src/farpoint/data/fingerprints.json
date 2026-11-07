@@ -1,5 +1,5 @@
 {
- "_comment": "Technology rules for farpoint.fingerprint. Each rule matches if any matcher does; a regex's first group, if any, is the version. Matchers: header+regex, cookie (cookie names), title, body, location, banner, cname, generator (<meta name=generator>), cert (certificate subject/issuer). Regexes are case-insensitive.",
+ "_comment": "Technology rules for farpoint.fingerprint. Each rule matches if any matcher does; a regex's first group, if any, is the version. Matchers: header+regex, cookie (cookie names), title, body, location, banner, cname, generator (<meta name=generator>), cert (certificate subject/issuer), favicon (the favicon's Shodan-style mmh3 hash, as text: anchor it, ^81586312$). Regexes are case-insensitive.",
  "rules": [
   {
    "name": "FortiGate SSL-VPN",
@@ -1070,6 +1070,9 @@
    "match": [
     {
      "body": "Whitelabel Error Page"
+    },
+    {
+     "favicon": "^116323821$"
     }
    ]
   },
@@ -1252,6 +1255,9 @@
     },
     {
      "title": "\\[Jenkins\\]$|^Jenkins$"
+    },
+    {
+     "favicon": "^81586312$"
     }
    ]
   },
@@ -1267,6 +1273,9 @@
     },
     {
      "body": "gon\\.gitlab_url"
+    },
+    {
+     "favicon": "^1278323681$"
     }
    ]
   },

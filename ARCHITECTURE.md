@@ -472,10 +472,13 @@ names). Posture turns `OutOfScope` into unknown answers: `mta_sts` `unknown`, `a
    services are asked once per address and copied to each hostname there.
 3. **Technology matching** (`fingerprint.identify`). Everything a service said is collected into
    `Evidence` (headers, cookies, title, body, redirect, banner, CNAMEs, generator, certificate) and
-   matched against the rules in `data/fingerprints.json`. A rule's first capture group is its version,
+   matched against the rules in `data/fingerprints.json` (a `favicon` matcher sees the favicon's hash as
+   text). A rule's first capture group is its version,
    which fills the rule's CPE template. WordPress plugins and themes are read from asset URLs. Signals
    such as `directory-listing`, `basic-auth`, `git-exposed` and `takeover:<platform>` are recorded too
-   (`login-form` is recorded but makes no finding),
+   (`login-form` makes no finding itself; without `X-Frame-Options` or a CSP `frame-ancestors` it also
+   records `login-frameable`, and each cookie an HTTPS service sets without `Secure` records
+   `insecure-cookie:<name>`, which assessment groups into one `cookie-without-secure` per endpoint),
    and `bot-challenge:<vendor>` or `bot-block:<vendor>` when a bot defence answered in place of the
    site (`fingerprint.turned_away`, rules in `data/bot_defences.json`; only its headers and cookies are
    matched, no favicon or path is asked for, and the service is judged as nothing, counted per
@@ -844,7 +847,8 @@ against real DNS, `example.com` and NVD.
 - **A bot defence:** add a rule to `data/bot_defences.json`, with `category` `challenge` or `block`.
   Match only the defence's own page or header, never the script a vendor puts on the sites it protects.
 - **A technology:** add a rule to `data/fingerprints.json`. Put the version in the first capture group
-  and give a CPE template if NVD should be asked about it.
+  and give a CPE template if NVD should be asked about it. A favicon matcher is the hash anchored
+  (`"favicon": "^81586312$"`); take the hash from `fingerprints.csv` or Shodan's `http.favicon.hash`.
 - **A tenant platform:** add a vendor to `data/tenants.json` with its name patterns and any TXT or SPF
   markers that show a domain uses it.
 - **A takeover platform:** add it to `data/takeover.json` with its CNAME pattern and unclaimed-page

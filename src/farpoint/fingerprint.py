@@ -103,7 +103,7 @@ def parse_paths(value: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Matcher:
-    field: str  # header, cookie, title, body, location, banner, cname, generator, cert
+    field: str  # header, cookie, title, body, location, banner, cname, generator, cert, favicon
     regex: re.Pattern
     header: str | None = None
 
@@ -150,6 +150,7 @@ class Evidence:
     cnames: list[str] = field(default_factory=list)
     generator: str = ""
     cert: str = ""
+    favicon: str = ""  # the favicon's Shodan-style hash, as text
 
     def values(self, m: Matcher) -> list[str]:
         if m.field == "header":
@@ -580,6 +581,7 @@ def _web(prober: Prober, rec: ServiceRecord, ev: Evidence, scheme: str, config: 
     got = prober.http(scheme, host, ip, port, icon)
     if got is not None and got.status == 200 and got.body and not got.body.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
         rec.favicon = favicon_hash(got.body)
+        ev.favicon = str(rec.favicon)
 
     for p in config.paths:
         got = prober.http(scheme, host, ip, port, p)
@@ -620,6 +622,11 @@ def _web_signals(rec: ServiceRecord, resp: HttpResult, ev: Evidence) -> list[str
         signals.append("ntlm-auth")
     if re.search(r"<input[^>]+type=[\"']?password", ev.body, re.I):
         signals.append("login-form")
+        csp = (resp.header("content-security-policy") or "").lower()
+        if not resp.header("x-frame-options") and "frame-ancestors" not in csp:
+            signals.append("login-frameable")
+    if rec.service == "https":  # over plain HTTP no cookie is safe, and cleartext-http says so already
+        signals.extend(f"insecure-cookie:{name}" for name in _insecure_cookies(resp))
     if _STACK_TRACE.search(ev.body):
         signals.append("error-detail")
     if re.search(r"\d", resp.header("server") or "") or any(resp.header(h) for h in ORIGIN_VERSION_HEADERS):
@@ -627,6 +634,17 @@ def _web_signals(rec: ServiceRecord, resp: HttpResult, ev: Evidence) -> list[str
     if resp.header("access-control-allow-origin") == "*" and (resp.header("access-control-allow-credentials") or "").lower() == "true":
         signals.append("cors-any-origin-with-credentials")
     return signals
+
+
+def _insecure_cookies(resp: HttpResult) -> list[str]:
+    """Cookies set without the Secure attribute: a browser also sends them over plain HTTP, where anyone on the path reads them."""
+    names = set()
+    for raw in resp.all("set-cookie"):
+        name, sep, rest = raw.partition("=")
+        attributes = {a.strip().split("=", 1)[0].lower() for a in rest.split(";")[1:]}
+        if sep and name.strip() and "secure" not in attributes:
+            names.add(name.strip())
+    return sorted(names)
 
 
 def _wordpress_assets(body: str) -> list[Tech]:

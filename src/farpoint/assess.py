@@ -73,6 +73,7 @@ SIGNALS = {
     "cors-any-origin-with-credentials": ("medium", "CORS allows any origin with credentials"),
     "no-starttls": ("medium", "the mail server does not offer STARTTLS: mail to it travels in cleartext"),
     "version-disclosure": ("low", "response headers disclose software versions"),
+    "login-frameable": ("low", "a login page any site can frame (no X-Frame-Options or CSP frame-ancestors): a clickjacking target"),
 }
 DEV_NAMES = re.compile(r"(^|[.-])(dev|develop|test|testing|tst|stage|staging|stg|uat|qa|preprod|pre-prod|sandbox|demo|old|legacy|backup|bak|temp|tmp|beta)\d*([.-]|$)")
 INTERNAL_NAMES = re.compile(r"\.(local|internal|corp|lan|intranet|localdomain|home\.arpa)$")
@@ -299,6 +300,8 @@ def _endpoint_findings(r: Mapping, vulns: Mapping, kev: Mapping, today: date, ht
         if sig in SIGNALS:
             level, what = SIGNALS[sig]
             out.append(_finding(level, sig, ep, what))
+    if insecure := sorted(s.split(":", 1)[1] for s in r.get("signals", []) if s.startswith("insecure-cookie:")):
+        out.append(_finding("low", "cookie-without-secure", ep, "cookies set over HTTPS without Secure: a browser also sends them over plain HTTP", insecure))
     tls = r.get("tls") or {}
     if tls.get("not_after"):
         days = _days_left(tls, today)

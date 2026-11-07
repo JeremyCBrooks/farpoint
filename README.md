@@ -282,7 +282,8 @@ had in the past. It never logs in, guesses passwords or sends exploits.
   VPN and firewall appliances (FortiGate, GlobalProtect, NetScaler, BIG-IP, Cisco ASA, Ivanti,
   SonicWall, Check Point), remote access gateways, mail (Exchange with its build number), CDNs and
   WAFs, web servers, languages, CMSs (WordPress with plugin and theme versions), admin panels and
-  hosting platforms. Add a rule to that file to recognise more.
+  hosting platforms. Rules can also match the favicon's hash, which names a product whose page says
+  nothing else. Add a rule to that file to recognise more.
 - **Domain posture**, per scan domain: SPF, DMARC, DKIM, MTA-STS, TLS-RPT, BIMI, the STARTTLS of mail
   servers the organisation runs itself, nameservers, zone transfers, DNSSEC, CAA and registration.
   Zone transfers aren't requested from managed DNS services that can't allow one
@@ -345,7 +346,7 @@ is listed in [Finding kinds](#finding-kinds).
 |---|---|
 | high | RDP, SMB, Telnet, VNC, WinRM, databases, Docker or Kubernetes APIs open to the internet; VPN and firewall appliances; managed file transfer (MOVEit, GoAnywhere, Cleo, Axway, Kiteworks); admin panels such as Jenkins, GitLab, Grafana, vCenter and Exchange; end-of-life software (PHP 7, IIS 8.5, Exchange 2016); versions with a CVE CISA lists as exploited, or scoring 9 or more; an exposed `.git` (add `/.git/HEAD` to `--paths` to check); a public bucket listing; expired certificates; subdomain takeovers; no SPF, or SPF `+all`; DMARC missing or `p=none` without SPF `-all`; SPF includes on unregistered domains; zone transfers; a domain expiring within 30 days; a scan domain with no nameservers (it may be free to register); a parked scan domain still listed in the organisation's Microsoft 365 tenant; a recently registered lookalike that can handle mail or serve a site |
 | medium | Jira, Confluence, Swagger UI and webmail open to the internet; FTP and LDAP; self-signed, mismatched, weak-key or SHA-1 certificates; certificates expiring within 30 days (7 for certificates that live 100 days or less, which renew themselves); TLS 1.0/1.1; plain HTTP with no HTTPS; directory listings; default server pages; Basic or NTLM login prompts; stack traces; CORS open to any origin with credentials; dev/test/staging hosts on the internet; SPF that doesn't reject, is duplicated or needs over 10 lookups; DMARC `pct` below 100 or `sp=none`; a broken MTA-STS policy; mail servers without STARTTLS; weak DKIM keys; BGP open to the internet; a parked scan domain; a recently registered lookalike that is only parked; sign-in federated to a self-hosted ADFS server |
-| low | missing HSTS, or HTTP not redirecting to HTTPS; wildcard certificates covering the organisation's names; a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS); SPF at exactly 10 lookups; internal names in certificates; broken CNAMEs; no DNSSEC, CAA, MTA-STS or DKIM found; a single nameserver; no transfer lock; version-revealing headers or plugin versions; POP3, IMAP and SSH open |
+| low | missing HSTS, or HTTP not redirecting to HTTPS; cookies set over HTTPS without `Secure`; a login page any site can frame; wildcard certificates covering the organisation's names; a provider's own certificate on a name pointed at that provider (an Intune or App Proxy name never set up for HTTPS); SPF at exactly 10 lookups; internal names in certificates; broken CNAMEs; no DNSSEC, CAA, MTA-STS or DKIM found; a single nameserver; no transfer lock; version-revealing headers or plugin versions; POP3, IMAP and SSH open |
 
 Each product version fingerprinting identified is checked against NVD for CVEs and against CISA's
 Known Exploited Vulnerabilities catalogue. NVD answers are cached in `assets.json` for a week. Without
@@ -535,7 +536,8 @@ kill the next scan into the same folder merges it automatically.
   looks at it again, so start a new `--out` if an earlier scan reached a host that is now excluded.
 - Technology rules match what services reveal. Products that hide their name or version are missed.
   CVE matches are by version, so treat them as leads to confirm.
-- Favicon hashes are recorded but not matched against known products.
+- Favicon hashes are matched only against the few products whose rules list one (Jenkins, GitLab, the
+  Spring Boot default); add more to `fingerprints.json` with a `favicon` matcher.
 - DKIM is checked under common selectors only, so "not found" can mean "uses another selector".
 - BGP (port 179) isn't in the default ports; it is only checked when Shodan saw it open or you add it
   with `--ports`.
@@ -580,7 +582,7 @@ The `kind` column of `findings.csv`, by area. Where a kind can take more than on
 |---|---|
 | Exposed services | `exposed-service` (high, medium or low by port), `edge-device`, `file-transfer`, `admin-interface` (high or medium by product), `non-production-exposed` |
 | Software | `end-of-life`, `known-vulnerable-version` (by CVSS and exploitation), `shodan-cves`, `plugin-version` |
-| Web | `git-exposed`, `bucket-listing`, `directory-listing`, `default-page`, `basic-auth`, `ntlm-auth`, `error-detail`, `cors-any-origin-with-credentials`, `version-disclosure`, `cleartext-http`, `no-https-redirect`, `no-hsts` |
+| Web | `git-exposed`, `bucket-listing`, `directory-listing`, `default-page`, `basic-auth`, `ntlm-auth`, `error-detail`, `cors-any-origin-with-credentials`, `version-disclosure`, `cleartext-http`, `no-https-redirect`, `no-hsts`, `cookie-without-secure`, `login-frameable` |
 | Certificates and TLS | `certificate-expired`, `certificate-expiring`, `certificate-self-signed`, `certificate-mismatch`, `weak-certificate-key`, `weak-certificate-signature`, `wildcard-certificate`, `internal-names-in-certificate`, `legacy-tls` |
 | Mail | `spf-missing`, `spf-allows-all`, `spf-neutral`, `spf-multiple-records`, `spf-too-many-lookups`, `spf-at-lookup-limit`, `spf-include-unregistered`, `spf-include-missing`, `dmarc-missing`, `dmarc-not-enforced`, `dmarc-partial`, `dmarc-subdomains-open`, `dkim-not-found`, `dkim-weak-key`, `mta-sts-missing`, `mta-sts-broken`, `mx-no-starttls`, `no-starttls` (an SMTP port the scan probed), `mx-certificate-invalid` |
 | DNS and domains | `subdomain-takeover`, `dangling-cname`, `zone-transfer`, `no-dnssec`, `no-caa`, `single-nameserver`, `domain-unregistered`, `domain-expiring`, `no-transfer-lock`, `parked-domain` |
