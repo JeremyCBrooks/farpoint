@@ -212,6 +212,22 @@ def _seen(findings: list[dict], *rows: Mapping) -> list[dict]:
     return findings
 
 
+def _left_dns(report: Mapping) -> set[str]:
+    """Hostnames the latest look found no longer exist: their endpoints can't be probed again, so their
+    rows are as old as the last scan that reached them."""
+    return {h["hostname"] for h in report.get("hosts", []) if h.get("resolves") is False}
+
+
+def _not_seen_since(findings: list[dict]) -> list[dict]:
+    """Findings judged only from endpoints whose name has left DNS: kept as a record of what was
+    exposed, but low and saying so, since the service may be gone (or may still answer on its address)."""
+    for f in findings:
+        when = f" since {f['seen'][:10]}" if f.get("seen") else ""
+        f["level"] = "low"
+        f["detail"] += f"; not seen{when}: the name no longer resolves, so it may have been removed"
+    return findings
+
+
 def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date | None = None,
            credentials: Mapping | None = None, recent_days: int | None = None) -> list[dict]:
     """Every finding the inventory's facts support, most interesting first. `credentials` is the sidecar's
@@ -226,13 +242,20 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
     tenant_names = {h["hostname"] for h in report.get("hosts", []) if "m365" in h.get("sources", [])}
     https_hosts = {r["hostname"] for r in fingerprints if r.get("service") == "https" and (r.get("status") or 0) < 500}
     ip_rows = {ip["ip"]: ip for ip in report.get("ips", [])}
+    left = _left_dns(report)
     for r in fingerprints:
         ip = ip_rows.get(r.get("ip"), {})
         shared = shared_address(ip.get("org"), [cnames.get(r["hostname"], [])], ip.get("tags", []))
-        out.extend(_seen(_endpoint_findings(r, vulns, kev, today, https_hosts, cnames.get(r["hostname"], []), shared), r))
-    out.extend(_wildcard_findings(fingerprints))
-    out.extend(_exposed_findings(fingerprints))
-    out.extend(_host_findings(fingerprints, report.get("domains", []), tenant_names))
+        found = _seen(_endpoint_findings(r, vulns, kev, today, https_hosts, cnames.get(r["hostname"], []), shared), r)
+        out.extend(_not_seen_since(found) if r["hostname"] in left else found)
+
+    def across(rows: Sequence[Mapping]) -> list[dict]:  # findings judged from several endpoints together
+        return [*_wildcard_findings(rows), *_exposed_findings(rows), *_host_findings(rows, report.get("domains", []), tenant_names)]
+
+    current = across([r for r in fingerprints if r["hostname"] not in left])
+    still = {f["id"] for f in current}  # a live name still shows it: the names that left add nothing
+    out.extend(current)
+    out.extend(f for f in _not_seen_since(across([r for r in fingerprints if r["hostname"] in left])) if f["id"] not in still)
     # an address only passive DNS knows, or that live DNS stopped returning, may belong to someone else by now
     live = max((ip["last_seen"] for ip in report.get("ips", []) if "dns" in ip.get("sources", []) and ip.get("last_seen")), default="")
     for ip in report.get("ips", []):
@@ -633,12 +656,15 @@ def assessed(report: dict, vulns: list[dict], kev: Mapping[str, dict], stamp: st
 
 def technologies(report: Mapping, today: date | None = None, kev: Mapping | None = None) -> list[dict]:
     """The inventory by technology: what runs where, grouped by product and version, edge devices first.
-    `seen` is "live" for what the scan saw, or "archive" for what an archived copy showed of a service a
-    bot defence hid: listed, but not judged (no end-of-life or CVE counts), since the copy may be old."""
+    `seen` is "live" for what the scan saw; "stale" for what it saw on a name that has since left DNS;
+    or "archive" for what an archived copy showed of a service a bot defence hid. The last two are
+    listed, but not judged (no end-of-life or CVE counts), since what they describe may be gone."""
     groups: dict[tuple[str, str | None, str], dict] = {}
     vulns = {v["cpe"]: v.get("cves", []) for v in report.get("vulns", [])}
+    left = _left_dns(report)
     for r in report.get("fingerprints", []):
-        seen = [("live", t) for t in r.get("tech", [])] + [("archive", t) for t in (r.get("archived") or {}).get("tech", [])]
+        saw = "stale" if r["hostname"] in left else "live"
+        seen = [(saw, t) for t in r.get("tech", [])] + [("archive", t) for t in (r.get("archived") or {}).get("tech", [])]
         for how, t in seen:
             g = groups.setdefault((t["name"], t.get("version"), how), {
                 "category": t.get("category"), "technology": t["name"], "version": t.get("version"), "seen": how, "cpe": t.get("cpe"),
@@ -661,4 +687,4 @@ def technologies(report: Mapping, today: date | None = None, kev: Mapping | None
             "kev": sorted(c["id"] for c in cves if c.get("kev") or c.get("id") in (kev or {})) or None,
         })
     rank = {c: i for i, c in enumerate(CATEGORY_ORDER)}
-    return sorted(rows, key=lambda r: (r["seen"] != "live", rank.get(r["category"], len(rank)), -r["count"], r["technology"], r["version"] or ""))
+    return sorted(rows, key=lambda r: (("live", "stale", "archive").index(r["seen"]), rank.get(r["category"], len(rank)), -r["count"], r["technology"], r["version"] or ""))

@@ -474,6 +474,12 @@ latest scan didn't see in live DNS. A provider's own certificate on a name that 
 is the provider's to renew, so it is never reported as expiring, though it is reported once it has
 expired.
 
+A finding on a name that has since left DNS is kept, because farpoint can no longer probe that name
+to see whether the service went too. It drops to low and its detail ends "not seen since
+2026-11-06: the name no longer resolves, so it may have been removed". That is not proof of a fix:
+the service may still answer on its address (pass the address with `--ranges` to check). A port that
+another live name still reaches stays a current finding.
+
 `first_seen` records when a finding was first reported, and `last_seen` when the evidence behind it
 was last observed: a finding from fingerprints or posture keeps the date of the last `--fingerprint`
 run, even when a later scan without it re-assesses the inventory. `technologies.csv` lists each product
@@ -601,7 +607,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `related.csv` | With `--related`: domain, the scan domain it relates to, tie, evidence |
 | `tenants.csv` | With `--tenants` or `--buckets`: tenant, vendor, domain, tie, verified, public (buckets), hosts pointing at it, evidence, ips, cnames |
 | `fingerprints.csv` | With `--fingerprint`: one row per open host and port: endpoint, hostname, ip, port, transport (`tcp`, or `udp` with `--udp`), service, technologies, status, title, server, redirect, signals, certificate subject, issuer and expiry, TLS versions, banner, favicon hash, paths, cookies, and for a service a bot defence hid, what an archived copy showed; with `--scripts`, api_paths |
-| `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`) or only an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
+| `technologies.csv` | With `--fingerprint`: each technology's category, name and version, whether the scan saw it (`live`), saw it on a name that has since left DNS (`stale`) or only in an archived copy (`archive`), host count, end-of-life date, CVE count, known-exploited CVEs, CPE, hosts and endpoints |
 | `posture.csv` | With `--fingerprint`: one row per scan domain: mail provider, MX, SPF (record, `all`, lookups, missing includes), DMARC (record, policy, subdomain policy, pct), DKIM, MTA-STS, TLS-RPT, mail server STARTTLS, nameserver providers, DNSSEC, CAA, AXFR, wildcard DNS, registrar, created, expires, transfer lock |
 | `findings.csv` | With `--assess`: level, kind, target, detail, evidence |
 | `credentials.json` | With `--credentials`: the credential evidence (identities included; owner-only). The source of truth for it |

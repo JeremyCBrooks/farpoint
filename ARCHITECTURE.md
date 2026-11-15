@@ -652,6 +652,14 @@ Some kinds take their level from the evidence: `exposed-service` from the port (
 - a certificate that lives 100 days or less is renewed by machine weeks ahead, so it is only
   "expiring" with 7 days left, when renewal has evidently failed
 - a check that failed produces no finding
+- a finding judged only from endpoints whose hostname the latest look found gone from DNS
+  (`resolves` false) is low, with "not seen since <date>: the name no longer resolves" added to its
+  detail. Its fingerprint rows stay in the inventory (only a refused port removes a row) and nothing
+  probes a name that doesn't resolve, so without this the finding would read as current for ever.
+  Findings judged across endpoints (exposed ports, wildcard certificates, dev hosts, parked
+  domains) are derived from the live names first; the names that left add a finding only where no
+  live name shows the same one. `technologies` lists those endpoints' products as `seen` `stale`,
+  without end-of-life or CVE counts
 - a lookalike is `lookalike-ready` (high) when it was registered within 365 days of the assessment and
   has MX or a current address; `lookalike-parked` (medium) when all its nameservers are one service's
   parking nameservers in `data/parking.json`, or all its current addresses are that service's

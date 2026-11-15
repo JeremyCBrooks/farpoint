@@ -539,3 +539,55 @@ def test_a_shared_front_end_disclosing_its_version_is_the_providers_not_the_orga
     assert ("low", "version-disclosure") in kinds(derive(report([]), today=TODAY))  # the organisation's own server
     origin = {"server": "cloudflare", "x-powered-by": "PHP/5.6.40"}  # passed through the CDN from the organisation's origin
     assert ("low", "version-disclosure") in kinds(derive(report([], org="Cloudflare, Inc.", headers=origin), today=TODAY))
+
+
+RDWEB = [{"name": "Microsoft RD Web Access", "category": "remote-access", "evidence": "location: /RDWeb/"}]
+VPN = [{"name": "FortiGate SSL-VPN", "category": "edge"}]
+
+
+def gone_report(*extra):
+    """remote.example.com was fingerprinted, then its name left DNS; vpn.example.com is still there."""
+    earlier, latest = "2026-10-17T00:00:00Z", "2026-10-24T00:00:00Z"
+    return {
+        "hosts": [{"hostname": "remote.example.com", "resolves": False}, {"hostname": "vpn.example.com", "resolves": True}],
+        "fingerprints": [
+            {**endpoint("remote.example.com", 443, tech=RDWEB), "ip": "192.0.2.9", "last_seen": earlier},
+            {**endpoint("remote.example.com", 179, service="tcp"), "ip": "192.0.2.9", "last_seen": earlier},
+            {**endpoint("vpn.example.com", 443, tech=VPN), "last_seen": latest},
+            *extra,
+        ],
+    }
+
+
+def test_findings_on_a_name_that_left_dns_are_kept_as_history_not_as_urgent():
+    found = {f["id"]: f for f in derive(gone_report(), today=TODAY)}
+
+    panel, bgp = found["admin-interface|remote.example.com:443|Microsoft RD Web Access"], found["exposed-service|192.0.2.9:179"]
+    assert (panel["level"], bgp["level"]) == ("low", "low")  # high and medium while the name resolved
+    for f in (panel, bgp):
+        assert "not seen since 2026-10-17" in f["detail"] and "no longer resolves" in f["detail"]
+        assert f["seen"] == "2026-10-17T00:00:00Z"  # still dated by when it was observed
+    assert found["edge-device|vpn.example.com:443|FortiGate SSL-VPN"]["level"] == "high"  # a name still in DNS is judged as before
+    assert "not seen since" not in found["edge-device|vpn.example.com:443|FortiGate SSL-VPN"]["detail"]
+
+
+def test_a_port_another_live_name_still_reaches_stays_a_current_finding():
+    still_there = {**endpoint("vpn.example.com", 179, service="tcp"), "ip": "192.0.2.9", "last_seen": "2026-10-24T00:00:00Z"}
+
+    bgp = [f for f in derive(gone_report(still_there), today=TODAY) if f["kind"] == "exposed-service"]
+
+    assert [(f["level"], f["target"], f["evidence"]) for f in bgp] == [("medium", "192.0.2.9:179", ["vpn.example.com"])]
+    assert "not seen since" not in bgp[0]["detail"] and bgp[0]["seen"] == "2026-10-24T00:00:00Z"
+
+
+def test_technologies_on_a_name_that_left_dns_are_listed_apart_and_not_judged():
+    old_php = [{"name": "PHP", "category": "language", "version": "7.4.3"}]
+    report = gone_report({**endpoint("vpn.example.com", 8443, tech=old_php), "last_seen": "2026-10-24T00:00:00Z"})
+    report["fingerprints"][0]["tech"] = RDWEB + old_php
+
+    listed = {(r["technology"], r["seen"]): r for r in technologies(report, TODAY)}
+
+    assert listed[("Microsoft RD Web Access", "stale")]["hosts"] == ["remote.example.com"]
+    assert ("Microsoft RD Web Access", "live") not in listed
+    assert listed[("PHP", "live")]["hosts"] == ["vpn.example.com"] and listed[("PHP", "live")]["eol"] == "2022-11-28"
+    assert listed[("PHP", "stale")]["hosts"] == ["remote.example.com"] and listed[("PHP", "stale")]["eol"] is None
