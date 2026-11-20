@@ -152,6 +152,7 @@ _ROW_LISTS = {
     "google_identity": ("domain", ()),
     "scan_dns": ("domain", ("ns", "mx")),
     "code": ("url", ()),
+    "ransomware": ("id", ()),
     "findings": ("id", ("evidence",)),
     "vulns": ("cpe", ("cves",)),
 }
@@ -339,6 +340,7 @@ def merge_reports(prior: dict | None, current: dict, stamp: str) -> dict:
         "related": sorted(related_rows, key=lambda r: (-_RELATED_TIERS.index(r["tie"]) if r.get("tie") in _RELATED_TIERS else 1, r["domain"])),
         "guessed": dict(sorted(guessed.items())),
         **({"code": sorted(code, key=lambda r: r["url"])} if (code := _merge_rows(prior.get("code", []), current.get("code", []), "url", lambda old, new: {}, stamp, prior_stamp)[0]) else {}),
+        **({"ransomware": sorted(claims, key=lambda r: (r.get("discovered", ""), r["id"]), reverse=True)} if (claims := _merge_rows(prior.get("ransomware", []), current.get("ransomware", []), "id", lambda old, new: {}, stamp, prior_stamp)[0]) else {}),
         **({"ranges": ranges} if (ranges := list(dict.fromkeys([*prior.get("ranges", []), *current.get("ranges", [])]))) else {}),
         **({"fingerprints": sorted(fingerprints, key=lambda r: (r["hostname"], r.get("port", 0)))} if fingerprints else {}),
         **({"posture": sorted(posture, key=lambda r: r["domain"])} if posture else {}),
@@ -382,6 +384,7 @@ def run_report(inv: Inventory) -> dict:
         "guessed": sorted(inv.guessed),
         **({"ranges": [str(n) for n in inv.ranges]} if inv.ranges else {}),
         **({"code": [inv.code_leads[u] for u in sorted(inv.code_leads)]} if inv.code_leads else {}),
+        **({"ransomware": [inv.ransomware_claims[i] for i in sorted(inv.ransomware_claims)]} if inv.ransomware_claims else {}),
         **({"fingerprints": _fingerprint_rows(inv)} if inv.services else {}),
         **({"closed": sorted(inv.closed)} if inv.closed else {}),
         **({"posture": [inv.posture[d] for d in sorted(inv.posture)]} if inv.posture else {}),
@@ -531,6 +534,9 @@ def _write_all(out_dir: Path, report: dict, mode: int, credentials: CredentialSt
                                                                      "google_sso", "google_sign_in_host", *seen]))
     if report.get("code"):  # only once --code has found some
         write("code.csv", files.csv_text(report["code"], ["repository", "path", "keyword", "domain", "url", *seen]))
+    if report.get("ransomware"):  # only once --ransomware has found some
+        write("ransomware.csv", files.csv_text(report["ransomware"], ["discovered", "attackdate", "group", "victim", "domain", "country", "activity",
+                                                                     "scope_domain", "related_to", "reference", "id", *seen]))
     if netblocks := netblock_rows(report):
         write("netblocks.csv", files.csv_text(netblocks, ["network", "org", "hosting", "in_ranges", "addresses", "hosts", "live_hosts", "ips"]))
     if report.get("posture"):

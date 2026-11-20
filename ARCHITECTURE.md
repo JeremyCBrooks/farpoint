@@ -36,7 +36,8 @@ flowchart TD
     subgraph PIPE["Pipeline.run (pipeline.py)"]
         direction TB
         D["Stage 1: Discovery<br/>sources/"] --> R
-        R["Stage 2: Related domains<br/>related.py"]:::opt --> RES
+        R["Stage 2: Related domains<br/>related.py"]:::opt --> RW
+        RW["Ransomware claims<br/>sources/ransomwarelive.py"]:::opt --> RES
         RES["Stage 3: Resolution<br/>resolve.py"] --> T
         T["Stage 4: Tenants<br/>tenants.py"]:::opt --> G
         G["Stage 5: Guessing<br/>guess.py"]:::opt --> E
@@ -77,6 +78,7 @@ flowchart LR
         S1["Discovery sources<br/>CT logs, passive DNS,<br/>archives, Shodan, VT ..."]
         S2["Enrichment<br/>RDAP, InternetDB,<br/>crt.sh (lookalikes)"]
         S3["Assessment lookups<br/>NVD, CISA"]
+        S9["Ransomware claims<br/>ransomware.live"]
     end
     subgraph P1["DNS: recursive resolver"]
         S4["Resolution"]
@@ -173,6 +175,7 @@ All network access sits behind small protocols, so the stage logic is tested off
 | `fingerprint.Archive` | `archive.WaybackArchive` | fingerprinting (services a bot defence hid) |
 | `lookalikes.LookalikeLookups` | `lookalikes.NetworkLookalikeLookups` (RDAP, crt.sh) | lookalike triage |
 | `identity.SignIn` | `identity.MicrosoftSignIn` | tenants (sign-in) |
+| `claims(domain)` (`Pipeline.ransomware`) | `sources.ransomwarelive.RansomwareLive` | ransomware claims (`--ransomware`) |
 | `credential_sources.base.CredentialProvider` | `credential_sources.hudsonrock.HudsonRockOsint`, `credential_sources.hibp.HibpPublic` | `--credentials` (before the scan) |
 
 `cli.py` is the only place these are wired together. It builds the discovery sources and credential
@@ -256,6 +259,19 @@ one search per `SECRET_WORDS` entry per domain, kept as `{url, repository, path,
 in `Inventory.code_leads`. The text matches are read for hostnames and dropped: no fragment is ever
 stored. Leads accumulate across runs by URL (`code` in `assets.json`) and make `code-leak-lead`
 findings, medium for configuration files (`assess.CONFIG_FILES`).
+
+**Ransomware claims** (`sources/ransomwarelive.py`, `Pipeline._ransomware`, with `--ransomware`). Runs
+after related domains, so it searches the scan domains and every related domain with a `strong` tie,
+one `("ransomware", domain)` job each. `RansomwareLive.claims` uses the free API
+(`/v2/searchvictims/<domain>`, `min_interval` 61 s; its 404 "No victims found" is an empty answer) or,
+with `RANSOMWARE_LIVE_API_KEY`, the PRO API (`/victims/search?q=`, `X-API-KEY`). Both match the
+keyword as a substring of victims' names and websites (the free API searches other text too), so a claim
+is kept only when its website is in scope of the domain searched. Both APIs' records are mapped to one shape and keyed by ransomware.live's
+victim id without base64 padding, so the two merge. The leak-site URL, description and screenshot are
+dropped before anything is buffered. Claims go to `Inventory.ransomware_claims` with `scope_domain` (the
+domain searched) and `related_to` (its scan domain, for a related domain). They accumulate across runs by id
+(`ransomware` in `assets.json`) and make `ransomware-claim` findings (`assess._ransomware_finding`). A
+failed search is a `SourceError`, never "no claims".
 
 **Partial results.** Each job collects into a list the pipeline can read mid-run (`_drain`). A source
 that fails on page 3 keeps pages 1 and 2. On Ctrl-C, pages already fetched by sources still running are
@@ -629,15 +645,17 @@ the save. It walks:
 
 | Level | Meaning | Examples |
 |---|---|---|
-| high | tried first | RDP/SMB/Telnet/VNC/WinRM/databases/container APIs open; VPN appliances; file transfer platforms; Jenkins, GitLab, vCenter, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git` or bucket listings; takeovers; spoofable mail (no SPF, `+all`, no enforced DMARC without SPF `-all`); zone transfers |
+| high | tried first | RDP/SMB/Telnet/VNC/WinRM/databases/container APIs open; VPN appliances; file transfer platforms; Jenkins, GitLab, vCenter, Exchange; known-exploited or CVSS ≥ 9 CVEs; end-of-life software; exposed `.git` or bucket listings; takeovers; spoofable mail (no SPF, `+all`, no enforced DMARC without SPF `-all`); zone transfers; a ransomware leak-site claim from the last year |
 | medium | useful weakness | Jira, Confluence, Swagger, webmail; FTP and LDAP open; self-signed, mismatched or weak certificates; TLS 1.0/1.1; HTTP only; directory listings; login prompts; CORS with credentials; dev/staging hosts; non-rejecting or broken SPF; broken MTA-STS; weak DKIM; BGP open; parked domains; CVSS 7–8.9 CVEs |
 | low | hygiene | missing HSTS or HTTPS redirect; no DNSSEC, CAA, MTA-STS or DKIM found; one nameserver; version-revealing headers and plugin versions; broken CNAMEs; SPF at the 10-lookup limit; a provider's certificate on a name pointed at it; POP3, IMAP, SSH; CVEs below CVSS 7 |
 
 Some kinds take their level from the evidence: `exposed-service` from the port (`assess.EXPOSED`),
 `admin-interface` from the product, `known-vulnerable-version` from CVSS and CISA KEV, `shodan-cves`
 (high with a known-exploited CVE, otherwise medium, low on shared or no-longer-live addresses),
-`dmarc-missing` and `dmarc-not-enforced` (medium instead of high when SPF ends in `-all`), and
-`parked-domain` (high when the domain is still in the Microsoft 365 tenant). README.md lists every kind.
+`dmarc-missing` and `dmarc-not-enforced` (medium instead of high when SPF ends in `-all`),
+`parked-domain` (high when the domain is still in the Microsoft 365 tenant), and `ransomware-claim`
+(high when posted within `RANSOMWARE_RECENT_DAYS`, 365, otherwise medium; one level lower for a related
+domain). README.md lists every kind.
 
 **Discounts**, to avoid confident false positives:
 
@@ -698,7 +716,7 @@ under a directory lock:
 
    | Kind | Rows | Rule |
    |---|---|---|
-   | Accumulating facts | hosts, IPs, lookalikes, tenants | sets unioned; `resolves` and owner take the latest answer; a lookalike's `current_ips`, `mx` and `ns` are the latest scan that saw it, its registration the latest successful lookup |
+   | Accumulating facts | hosts, IPs, lookalikes, tenants, ransomware claims | sets unioned; `resolves` and owner take the latest answer; a lookalike's `current_ips`, `mx` and `ns` are the latest scan that saw it, its registration the latest successful lookup; a ransomware claim seen again takes its latest fields |
    | Latest look | fingerprints, posture, related, identity | replaced when looked at again; a refused port removes its row; a timeout keeps it with its old `last_seen` |
    | Judgments | findings | re-derived by each `--assess`; kept unchanged by a scan without it |
 
@@ -889,6 +907,7 @@ results reached the inventory or its fallback can still be cleared.
 | Guessing | `--guess-budget` per domain, `--guess-rate` per second |
 | Fingerprinting | `--probe-rate` port checks and service checks started per second; 2 connections per address; web-only on shared front ends |
 | NVD | about 1 request every 6 seconds without `NVD_API_KEY`; 7-day cache |
+| ransomware.live | 1 search a minute without `RANSOMWARE_LIVE_API_KEY` (the free API's limit per endpoint); 1 a second with one |
 
 ### Bundled data (`src/farpoint/data/`)
 

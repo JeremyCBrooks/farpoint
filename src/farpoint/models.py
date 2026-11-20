@@ -184,6 +184,7 @@ class Inventory:
         self.excluded: set[str] = set()  # live hosts --fingerprint left alone: --out-of-scope by name or address
         self.ranges: list = []  # --ranges: the organisation's own address ranges (ipaddress networks)
         self.code_leads: dict[str, dict] = {}  # --code: url -> a public file naming a scan domain next to a credential word
+        self.ransomware_claims: dict[str, dict] = {}  # --ransomware: ransomware.live id -> a leak-site claim naming an in-scope domain
         self.errors: list[SourceError] = []
         self.skipped: list[str] = []
         self.interrupted = False  # stopped early (Ctrl-C): what is here is partial

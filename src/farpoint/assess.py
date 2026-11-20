@@ -282,6 +282,8 @@ def derive(report: Mapping, kev: Mapping[str, dict] | None = None, today: date |
         detail = f"a public file in {lead.get('repository')} names {lead.get('domain')} next to '{lead.get('keyword')}'" + (
             ": a configuration file, which often holds the credential itself" if config else ": read it for credentials")
         out.extend(_seen([_finding("medium" if config else "low", "code-leak-lead", f"{lead.get('repository')}/{lead['path']}", detail, [lead["url"]])], lead))
+    for c in report.get("ransomware", []):
+        out.extend(_seen([_ransomware_finding(c, today)], c))
     for t in report.get("tenants", []):
         if t.get("public"):
             tied = t.get("tie") in ("records", "cname")
@@ -440,6 +442,26 @@ def _exposed_findings(fingerprints: Sequence[Mapping]) -> list[dict]:
 def _address_target(address: str, port: int, transport: str = "tcp") -> str:
     target = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
     return f"{target}/udp" if transport == "udp" else target
+
+
+RANSOMWARE_RECENT_DAYS = 365  # a leak-site claim this recent is high: what was taken may still be current
+
+
+def _ransomware_finding(claim: Mapping, today: date) -> dict:
+    """A ransomware group's leak-site claim: high within a year of being posted, otherwise medium; one level
+    lower when the domain is a related domain rather than a scan domain. A claim with no date is not recent."""
+    try:
+        posted = date.fromisoformat((claim.get("discovered") or claim.get("attackdate") or "")[:10])
+    except ValueError:
+        posted = None
+    level = "high" if posted and (today - posted).days <= RANSOMWARE_RECENT_DAYS else "medium"
+    when = f" on {posted.isoformat()}" if posted else ""
+    detail = (f"{claim.get('group') or 'a ransomware group'} listed {claim.get('victim') or claim['domain']} ({claim['domain']}) on its leak site{when}: "
+              "data taken in the attack (documents, credentials, network details) may be public")
+    if claim.get("related_to"):
+        level = "medium" if level == "high" else "low"
+        detail += f"; {claim['scope_domain']} is a domain related to {claim['related_to']}, so confirm it is the organisation's"
+    return _finding(level, "ransomware-claim", claim["domain"], detail, [claim.get("reference", "")], about=claim["id"])
 
 
 def _days_left(tls: Mapping, today: date) -> int | None:

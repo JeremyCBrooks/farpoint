@@ -64,6 +64,7 @@ A scan runs these phases in order. Each phase works on what the earlier ones fou
 | Discovery | Collects hostnames from certificate logs, passive DNS, archives, public code and other datasets | The data sources | always |
 | Code leads | Lists public GitHub files that name a scan domain next to a credential word | GitHub | `--code` |
 | Related domains | Finds other registered domains the organisation owns | Registries, the domains found, Microsoft | `--related` |
+| Ransomware claims | Searches ransomware groups' leak-site claims for the scan domains and strongly related domains | ransomware.live | `--ransomware` |
 | Resolution | Looks up every name's addresses and CNAMEs, including earlier scans' hosts; with `--ranges`, the PTR names of the organisation's own addresses | Your DNS resolver | always (`--no-resolve` skips) |
 | Tenants | Finds the organisation's accounts on SaaS and cloud platforms, and how each domain signs in to Microsoft and Google | The platforms' nameservers, Okta and Auth0, Microsoft, Google | `--tenants` |
 | Buckets | Finds S3 and Google Cloud Storage buckets the organisation's CNAMEs point at or named after it | AWS, Google | `--buckets` |
@@ -96,6 +97,7 @@ are then merged into the inventory in the output folder, and every output file i
 | `--tenants` | Look for the organisation's tenants on SaaS and cloud platforms, and ask Microsoft how each domain signs in. **Not passive.** |
 | `--buckets` | Look for S3 and Google Cloud Storage buckets the organisation's CNAMEs point at, or named after it, and flag public listings. See [Buckets](#buckets---buckets). **Not passive.** |
 | `--code` | List public GitHub files that name a scan domain next to a credential word. Needs `GITHUB_TOKEN`. See [Code leads](#code-leads---code). |
+| `--ransomware` | Search ransomware.live for ransomware groups' leak-site claims against the scan domains and strongly related domains. `RANSOMWARE_LIVE_API_KEY` lifts the one-search-a-minute limit. See [Ransomware claims](#ransomware-claims---ransomware). |
 | `--tenant-budget N` | DNS lookups `--tenants` may make in total (default 800). |
 | `--guess` | Predict unseen hostnames and test them in DNS. **Not passive.** |
 | `--guess-budget N` | DNS lookups `--guess` may make per domain (default 2000). |
@@ -209,6 +211,29 @@ is not proof: the file may be an example, someone else's, or long since rotated.
 This is passive: only GitHub sees the queries (four per domain, paced to its limit of 10 a minute).
 The `github` discovery source uses the same token to add the in-scope hostnames the matched lines
 mention.
+
+## Ransomware claims (`--ransomware`)
+
+Ransomware groups post their victims on leak sites to pressure them into paying, and often publish what
+they took. With `--ransomware`, [ransomware.live](https://www.ransomware.live), which tracks those
+sites, is searched once per scan domain and once per related domain with a strong tie (`--related`).
+A claim is kept only when the website ransomware.live recorded for the victim is the domain or a name
+under it. Claims that only match the victim's name are dropped, because company names collide. Each claim
+is recorded in `ransomware.csv` with the group, victim, website, country, sector, attack and discovery
+dates, and a link to its ransomware.live page. **farpoint never stores the leak-site post, the
+description or the screenshot**: they often link to the stolen files.
+
+With `--assess`, each claim is a `ransomware-claim`: high when posted within the last year, medium if
+older or undated. A claim against a related domain is one level lower and asks you to confirm the domain
+is the organisation's. Claims accumulate across scans, so one that drops off the leak site stays on
+record. ransomware.live sometimes records the wrong website for a victim, so check its page before
+reporting a claim.
+
+This is passive: only ransomware.live sees the domains. The free API allows one search a minute, so
+`--ransomware` adds about a minute per domain. With `RANSOMWARE_LIVE_API_KEY` set (a free PRO key from
+[my.ransomware.live](https://my.ransomware.live)), the PRO API is used instead, at one search a
+second. ransomware.live says its free API is for personal use only. For work for a client, use a PRO
+key and read its [terms](https://www.ransomware.live/t&c) first.
 
 ## Resolution
 
@@ -601,6 +626,7 @@ a source that failed, or re-scan regularly into the same folder. To start fresh,
 | `ips.csv` | ip, org, network, ports (Shodan's history), open_ports (found by fingerprinting), udp_probed (UDP ports `--udp` asked), tags, vulns, hostnames, sources |
 | `netblocks.csv` | The networks (as RDAP registers them) the inventory's addresses sit in, the organisation's own first: network, org, `hosting` (a cloud, CDN or hosting provider's network, whose other addresses are other customers'), `in_ranges` (yes, partly or no: how much `--ranges` covers), addresses, hosts, live_hosts, ips. Candidates to confirm with the organisation and pass to `--ranges` |
 | `code.csv` | With `--code`: repository, path, keyword, domain, url. Never the file's text |
+| `ransomware.csv` | With `--ransomware`: discovered, attackdate, group, victim, domain, country, activity, scope_domain (the domain searched), related_to (the scan domain, for a related domain), reference (ransomware.live's page), id. Never the leak-site post |
 | `lookalikes.csv` | Registered lookalike domains: domain, addresses, mail servers, registration date, newest certificate, `capable` (mail, web: what it can do now), `flagged` (ready, parked), sources |
 | `phishing-block.txt` | With `--assess`: the flagged lookalikes, one per line, ready ones first, for the mail gateway |
 | `identity.csv` | With `--tenants`: one row per scan domain: sign_in, provider, sign_in_host, brand, tenant_id, region (Microsoft), google_sso, google_sign_in_host (Google Workspace) |
@@ -719,6 +745,7 @@ The `kind` column of `findings.csv`, by area. Where a kind can take more than on
 | DNS and domains | `subdomain-takeover`, `dangling-cname`, `zone-transfer`, `no-dnssec`, `no-caa`, `single-nameserver`, `domain-unregistered`, `domain-expiring`, `no-transfer-lock`, `parked-domain` |
 | Phishing and identity | `lookalike-ready`, `lookalike-parked`, `self-hosted-federation` |
 | Credentials | `credential-theft`, `credential-breach`, `credential-summary`, `code-leak-lead` (`--code`) |
+| Incidents | `ransomware-claim` (`--ransomware`) |
 
 ## Development
 

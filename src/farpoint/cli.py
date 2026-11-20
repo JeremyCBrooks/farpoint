@@ -35,6 +35,7 @@ from farpoint.probe import NetworkProber, user_agent
 from farpoint.progress import LiveReporter, NullReporter
 from farpoint.resolve import DnsResolver
 from farpoint.sources import build_sources, select_sources
+from farpoint.sources.ransomwarelive import RansomwareLive
 from farpoint.sources.web import CrtSh
 from farpoint.related import NetworkProbes
 from farpoint.tenants import TenantConfig
@@ -109,6 +110,12 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also list public GitHub files that name a scan domain next to a credential word (password, secret, api_key, "
         "token), by repository and path only: never their text (needs GITHUB_TOKEN; GitHub only sees the queries)",
+    )
+    p.add_argument(
+        "--ransomware",
+        action="store_true",
+        help="also search ransomware.live for ransomware groups' leak-site claims against the scan domains and strongly "
+        "related domains (ransomware.live sees the domains; one search a minute without RANSOMWARE_LIVE_API_KEY)",
     )
     p.add_argument("--tenant-budget", type=int, default=800, metavar="N", help="DNS lookups in all for --tenants (default: 800)")
     p.add_argument(
@@ -312,6 +319,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_sources:
         for s in all_sources:
             print(f"{s.name:<14} {'ready' if s.available() else 'unavailable (missing key or binary)'}")
+        pro = os.environ.get("RANSOMWARE_LIVE_API_KEY", "").strip()
+        print(f"{'ransomware':<14} ready for --ransomware ({'PRO API key' if pro else 'free API: one search a minute'})")
         print("credential providers:")
         for name in build_credential_providers(http, all_sources):
             print(f"{name:<18} ready (no key needed)")
@@ -433,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
         web=_platform_get(http) if args.tenants or args.buckets else None,
         buckets=args.buckets,
         code=code,
+        ransomware=RansomwareLive(http, os.environ.get("RANSOMWARE_LIVE_API_KEY", "").strip() or None) if args.ransomware else None,
         known=[] if args.no_resolve else [h["hostname"] for h in (prior_report or {}).get("hosts", [])],
         ranges=ranges,
         certificate_orgs=_certificate_orgs(prior_report),

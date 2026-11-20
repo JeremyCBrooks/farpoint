@@ -1,5 +1,5 @@
-"""Orchestration: sources -> (opt-in) related domains -> scoped inventory -> DNS resolution -> (opt-in)
-tenants and guessing -> IP enrichment -> (opt-in) fingerprinting."""
+"""Orchestration: sources -> (opt-in) related domains -> (opt-in) ransomware claims -> scoped inventory ->
+DNS resolution -> (opt-in) tenants and guessing -> IP enrichment -> (opt-in) fingerprinting."""
 
 from __future__ import annotations
 
@@ -77,6 +77,7 @@ class Pipeline:
     web: Callable[[str], tuple[int, str] | None] | None = None  # GET a platform's URL (never the organisation's): (status, body)
     buckets: bool = False  # --buckets: storage buckets named after the organisation (needs `web`)
     code: object | None = None  # --code: leads(domain) -> files naming it next to a credential word (sources.github.GitHubCode)
+    ransomware: object | None = None  # --ransomware: claims(domain) -> leak-site claims against it (sources.ransomwarelive.RansomwareLive)
     _pending: dict[Key, list[Observation]] = field(default_factory=dict, init=False, repr=False)
 
     def run(self, domains: Iterable[str]) -> Inventory:
@@ -97,6 +98,8 @@ class Pipeline:
                 inv.add(Observation(KNOWN, host))  # in scope only, like everything else
             if self.related:
                 self._related(inv)
+            if self.ransomware:
+                self._ransomware(inv)
             if self.lookup:
                 self._resolve(inv)
                 if self.ranges and self.dns:
@@ -315,6 +318,16 @@ class Pipeline:
             for lead in leads:
                 inv.code_leads.setdefault(lead["url"], lead)
             self.reporter.job_finished(("github-leads", domain), len(leads), None)
+
+    def _ransomware(self, inv: Inventory) -> None:
+        """--ransomware: claims on ransomware leak sites against the scan domains and their strongly tied
+        related domains. Third parties only; a failed search is an error, never "no claims"."""
+        related = {d: r.related_to for d, r in sorted(inv.related.items()) if r.tie == "strong" and d not in inv.domains}
+        jobs = {("ransomware", d): (lambda d=d: self.ransomware.claims(d)) for d in [*inv.domains, *related]}
+        for (_, domain), claims in self._fan_out(inv, jobs, rows=True):
+            for claim in claims:
+                inv.ransomware_claims.setdefault(claim["id"], {**claim, "scope_domain": domain, "related_to": related.get(domain, "")})
+            self.reporter.job_finished(("ransomware", domain), len(claims), None)
 
     def _ranges(self, inv: Inventory) -> None:
         """--ranges: every address in the organisation's ranges is recorded (and later looked up passively),
