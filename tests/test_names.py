@@ -66,6 +66,11 @@ def test_extract_hostnames_finds_only_in_scope_names_in_free_text():
     }
 
 
+def test_extract_hostnames_reads_names_inside_url_encoded_and_js_escaped_text():
+    text = r"redirect=https%3A%2F%2Fapp.example.com%2Fhome url:'\u002F\u002Fcdn.example.com' %2fapi.example.com"
+    assert extract_hostnames(text, "example.com") == {"app.example.com", "cdn.example.com", "api.example.com"}
+
+
 def test_parse_domains_accepts_urls_and_ignores_comments_and_blanks():
     lines = ["# corp domains", "", "Example.com", "https://www.example.org/login", "example.com", "  "]
     assert parse_domains(lines) == ["example.com", "www.example.org"]

@@ -36,6 +36,18 @@ def test_only_the_services_own_scripts_are_fetched_and_their_api_paths_recorded(
     assert {"api-internal.example.com", "sso.example.com"} <= set(svc.links)
 
 
+def test_names_in_url_encoded_or_js_escaped_text_are_read_without_the_escape():
+    home = (b"<a href='/sso?next=https%3A%2F%2Ftriview.example.com%2Flogin'>x</a>"
+            rb"<script>var u = 'https:\u002F\u002Fportal.example.com\x2Fapp';</script>")
+    p = FakeProber(ports={(IP, 443): "open"}, tls={(H, 443): TlsResult("TLSv1.3")},
+                   http={("https", H, 443, "/"): HttpResult(200, [], home)})
+
+    svc = fingerprint_service(p, H, IP, 443, config=FingerprintConfig(paths=(), legacy_tls=False, scripts=True))
+
+    assert {"triview.example.com", "portal.example.com"} <= set(svc.links)
+    assert not [n for n in svc.links if n.startswith(("2f", "u002f", "x2f"))]
+
+
 def test_without_scripts_nothing_more_is_fetched():
     p = prober()
     svc = fingerprint_service(p, H, IP, 443, config=FingerprintConfig(paths=(), legacy_tls=False))

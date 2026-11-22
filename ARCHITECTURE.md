@@ -565,7 +565,8 @@ prober which nameserver an `AXFR` address belongs to, so a nameserver excluded b
    page is dropped. `--no-archive` leaves the `Archive` out.
    **Scripts** (`fingerprint._scripts`, with `--scripts`). After the homepage, up to `MAX_SCRIPTS` of
    its `<script src>` URLs that are the same service (`_same_service`) are fetched. API paths in their
-   string literals become `ServiceRecord.api_paths`; hostnames in the page and scripts become
+   string literals become `ServiceRecord.api_paths`; hostnames in the page and scripts, after
+   `names.unescape` decodes URL and JavaScript escapes (as `names.extract_hostnames` does), become
    `ServiceRecord.links`, which is never saved: `Pipeline._fingerprint` adds them through
    `Inventory.add` (source `javascript`, so only in-scope ones stay) and resolves the new ones.
 

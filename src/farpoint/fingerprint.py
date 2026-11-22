@@ -25,6 +25,7 @@ from urllib.parse import urljoin, urlsplit
 
 from farpoint import runtime
 from farpoint.models import ServiceRecord, Tech
+from farpoint.names import unescape
 from farpoint.probe import HttpResult, Prober, UnsupportedHere, _name_matches, cert_summary
 
 # Management and data services attackers scan for first, plus the common web and appliance ports.
@@ -644,7 +645,7 @@ def _scripts(prober: Prober, rec: ServiceRecord, home: HttpResult, scheme: str, 
         if got is not None and got.status == 200 and got.body:
             texts.append(_text(got.body))
     rec.api_paths = sorted({m for t in texts[1:] for m in _API_PATH.findall(t)})[:MAX_API_PATHS]
-    rec.links = sorted({m.lower() for t in texts for m in _HOSTNAME_IN_TEXT.findall(t)})[:MAX_LINKS]
+    rec.links = sorted({m.lower() for t in texts for m in _HOSTNAME_IN_TEXT.findall(unescape(t))})[:MAX_LINKS]
 
 
 def _path_note(path: str, got: HttpResult, home: HttpResult) -> str | None:

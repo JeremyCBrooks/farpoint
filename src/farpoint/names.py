@@ -99,8 +99,19 @@ class Exclusions:
         return any(addr in net for net in self.networks if net.version == addr.version)
 
 
+# %2F in a URL, / or / in a script: left in, the escape's hex digits read as part of the name
+# that follows (%2Fapp.example.com -> 2fapp.example.com).
+_ESCAPE = re.compile(r"%([0-9a-f]{2})|\\u00([0-9a-f]{2})|\\x([0-9a-f]{2})", re.IGNORECASE)
+
+
+def unescape(text: str) -> str:
+    r"""Decode URL (%2F) and JavaScript (\u002F, \x2F) escapes, so names inside encoded text can be read."""
+    return _ESCAPE.sub(lambda m: chr(int(next(g for g in m.groups() if g), 16)), text)
+
+
 def extract_hostnames(text: str, domain: str) -> set[str]:
-    """Pull every in-scope hostname out of arbitrary text (HTML, CLI output, URLs)."""
+    """Pull every in-scope hostname out of arbitrary text (HTML, CLI output, URLs), escaped or not."""
+    text = unescape(text)
     pattern = re.compile(
         rf"(?<![a-z0-9_.-])((?:[a-z0-9_-]+\.)*{re.escape(domain)})(?!\.?[a-z0-9_-])",
         re.IGNORECASE,

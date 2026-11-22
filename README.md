@@ -425,7 +425,8 @@ A site's JavaScript names the APIs and hosts it talks to, many of which no datas
 `--scripts`, each web service's homepage scripts are fetched, up to 5 and only from the same scheme,
 host and port (never a third party's script, nor another of the host's ports). In-scope hostnames
 the page or its scripts name join the inventory as source `javascript` and are resolved; they are
-fingerprinted on the next scan. API paths the scripts call (`/api/...`, `/v2/...`, `/graphql` and the
+fingerprinted on the next scan. Names inside URL-encoded (`%2F`) or JavaScript-escaped (`\u002F`, `\x2F`)
+text are read with the escape decoded, so `next=https%3A%2F%2Fapp.example.com` gives `app.example.com`. API paths the scripts call (`/api/...`, `/v2/...`, `/graphql` and the
 like) are recorded in `fingerprints.csv`'s `api_paths`.
 
 **Not passive:** each web service sees up to 5 more ordinary GETs.
